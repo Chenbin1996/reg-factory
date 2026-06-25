@@ -228,7 +228,21 @@ def count_pool():
 
 def append_to_emails_pool(email, password):
     """把成功号桥接进 emails.txt 池，供账号注册侧 common/emails.next_email 消费。
-    token/client_id 用占位符 fresh —— 消费侧 Graph token 会失败并回退到 broker 浏览器取码。"""
+    注册成功后立即用纯 HTTP OAuth 抽 Graph refresh_token（extract_graph_tokens.get_graph_token），
+    写真 token/client_id —— 之后 ChatGPT 取码全走 Graph API，免浏览器登录/取码。
+    抽取失败（偶发风控/网络）才回退占位符 fresh，消费侧届时退化到浏览器取码。"""
+    token = client_id = "fresh"
+    try:
+        from extract_graph_tokens import get_graph_token
+        res = get_graph_token(email, password)
+        if res and res.get("refresh_token"):
+            token = res["refresh_token"]
+            client_id = res.get("client_id") or "fresh"
+            log(f"graph token extracted for {email}", "OK")
+        else:
+            log(f"graph token 抽取失败，回退 fresh: {email}", "WARN")
+    except Exception as e:
+        log(f"graph token 抽取异常，回退 fresh: {type(e).__name__}: {e}", "WARN")
     try:
         existing = set()
         if os.path.isfile(EMAILS_POOL):
@@ -240,8 +254,8 @@ def append_to_emails_pool(email, password):
         if email.lower() in existing:
             return
         with open(EMAILS_POOL, "a", encoding="utf-8") as f:
-            f.write(f"{email}----{password}----fresh----fresh\n")
-        log(f"emails.txt += {email}", "OK")
+            f.write(f"{email}----{password}----{token}----{client_id}\n")
+        log(f"emails.txt += {email} (token={'yes' if token != 'fresh' else 'fresh'})", "OK")
     except Exception as e:
         log(f"append_to_emails_pool failed: {type(e).__name__}: {e}", "WARN")
 
