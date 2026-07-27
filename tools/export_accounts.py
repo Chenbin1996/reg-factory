@@ -6,8 +6,8 @@
 （chatgpt / grok），转换成扩展直登用的统一格式。
 
 用法:
-    python export_accounts.py                # 导出全部平台
-    python export_accounts.py claude chatgpt # 只导出指定平台
+    python tools/export_accounts.py                # 导出全部平台
+    python tools/export_accounts.py claude chatgpt # 只导出指定平台
 """
 
 import glob

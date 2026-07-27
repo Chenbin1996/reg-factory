@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 验证 accounts 文件里的 sessionKey 是否有效
-用法: python validate_keys.py accounts-3.24.txt
+用法: python tools/validate_keys.py accounts-3.24.txt
 """
 import asyncio
 import sys
 import os
 from datetime import datetime
-from urllib.parse import urlparse
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -34,24 +38,8 @@ def validation_browser_options():
             "isIpCountry": True,
         }
     }
-    proxy_url = os.environ.get(
-        "CLASH_PROXY", "http://127.0.0.1:7897"
-    ).strip()
-    if not proxy_url or proxy_url.lower() in {"none", "off", "direct"}:
-        return options
-    parsed = urlparse(proxy_url if "://" in proxy_url else f"http://{proxy_url}")
-    if not parsed.hostname or not parsed.port:
-        return options
-    options.update({
-        "proxyMethod": 2,
-        "proxyType": "http",
-        "host": parsed.hostname,
-        "port": str(parsed.port),
-    })
-    if parsed.username:
-        options["proxyUserName"] = parsed.username
-    if parsed.password:
-        options["proxyPassword"] = parsed.password
+    from common import proxy_switch
+    options.update(proxy_switch.browser_proxy_fields())
     return options
 
 

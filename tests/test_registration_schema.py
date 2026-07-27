@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import register
-import validate_keys
+from tools import validate_keys
 from webui.scripts import ENV_SCHEMA, SCRIPTS
 
 
@@ -15,6 +15,7 @@ class RegistrationSchemaTests(unittest.TestCase):
         with patch.dict(
             validate_keys.os.environ,
             {
+                "PROXY_MODE": "clash_auto",
                 "CLASH_PROXY": "http://user:pass@127.0.0.1:7897",
                 "CLAUDE_BROWSER_CORE_VERSION": "146",
             },
@@ -29,6 +30,23 @@ class RegistrationSchemaTests(unittest.TestCase):
         self.assertEqual(
             options["browserFingerPrint"]["coreVersion"], "146"
         )
+
+    def test_claude_bitbrowser_uses_authenticated_residential_proxy(self):
+        with patch.dict(
+            register.os.environ,
+            {
+                "PROXY_MODE": "residential",
+                "REG_FACTORY_PROXY": "http://resident:secret@home.test:9100",
+            },
+            clear=True,
+        ):
+            fields = register.claude_browser_proxy_fields()
+
+        self.assertEqual(fields["proxyType"], "http")
+        self.assertEqual(fields["host"], "home.test")
+        self.assertEqual(fields["port"], "9100")
+        self.assertEqual(fields["proxyUserName"], "resident")
+        self.assertEqual(fields["proxyPassword"], "secret")
 
     def test_both_grok_tasks_expose_sub2api_import(self):
         for script_id in ("register_grok", "register_grok_browser"):
@@ -50,6 +68,7 @@ class RegistrationSchemaTests(unittest.TestCase):
         args = {item["flag"]: item for item in _script("register_claude")["args"]}
         self.assertTrue(args["--latest-rt"]["default"])
         self.assertIn("--client-id", args)
+        self.assertIn("yyds", args["--provider"]["choices"])
         self.assertEqual(args["--node"]["default"], "auto")
         self.assertEqual(args["--challenge-node-retries"]["default"], 3)
         self.assertEqual(args["--captcha-manual-timeout"]["default"], 0)

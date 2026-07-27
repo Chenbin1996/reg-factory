@@ -31,6 +31,22 @@ class WebUIEnvReloadTests(unittest.TestCase):
                     child = server._child_env()
         self.assertEqual(child["DYNAMIC_TEST_KEY"], "system-value")
 
+    def test_child_env_uses_clash_proxy_in_auto_mode(self):
+        path = self._env_file("unused")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("PROXY_MODE=clash_auto\nCLASH_PROXY=http://127.0.0.1:7897\n")
+        with patch.object(server, "ENV_PATH", path), patch.object(server, "BOOT_ENV", {}):
+            child = server._child_env()
+        self.assertEqual(child["HTTPS_PROXY"], "http://127.0.0.1:7897")
+
+    def test_child_env_uses_residential_proxy(self):
+        path = self._env_file("unused")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("PROXY_MODE=residential\nREG_FACTORY_PROXY=http://home.test:9000\n")
+        with patch.object(server, "ENV_PATH", path), patch.object(server, "BOOT_ENV", {}):
+            child = server._child_env()
+        self.assertEqual(child["HTTPS_PROXY"], "http://home.test:9000")
+
     def test_status_exposes_loaded_version_and_process_id(self):
         with patch.object(server, "_fingerprint_provider", return_value="bitbrowser"):
             with patch.object(server, "_read_config_val", side_effect=lambda _key, default="": default):

@@ -5,44 +5,57 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=">
 <title>reg-factory 控制面板</title>
-<link rel="stylesheet" href="/static/style.css?v=20260724-claude-2">
+<link rel="stylesheet" href="/static/style.css?v=20260728-network-1">
 </head>
 <body>
 <header class="topbar">
   <div class="brand-row">
-    <button id="btn-nav" class="menu-toggle" type="button" aria-label="打开任务菜单" aria-expanded="false">☰</button>
-    <div class="brand">🏭 reg-factory <span class="sub">控制面板</span></div>
+    <button id="btn-nav" class="menu-toggle" type="button" aria-label="打开任务菜单" aria-expanded="false"><span aria-hidden="true">☰</span></button>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">RF</span><span>reg-factory</span></div>
   </div>
   <div class="top-actions">
-    <div class="status" id="status">
-      <span class="status-item"><span class="dot" id="dot-bb"></span><span id="browser-label">BitBrowser</span></span>
-      <span class="status-item"><span class="dot" id="dot-clash"></span>Clash</span>
-      <span class="status-item"><span class="dot pending" id="dot-k12"></span>Codex K12</span>
-      <span class="version" id="version" title="当前 WebUI 提交版本">v--</span>
-      <span class="node" id="node">节点 --</span>
-      <span class="running" id="running"></span>
+    <div class="health-summary" id="status" title="浏览器、网络出口与 Codex K12 服务状态">
+      <span class="dot pending" id="health-dot"></span>
+      <span id="health-label">服务检测中</span>
     </div>
-    <button id="btn-telegram" class="contact-button" type="button">Telegram</button>
+    <span class="running" id="running"></span>
   </div>
 </header>
 
 <div class="layout">
   <button id="nav-backdrop" class="nav-backdrop" type="button" aria-label="关闭任务菜单"></button>
   <nav class="sidebar">
-    <div class="nav-section">
-      <button class="navbtn active" data-view="run">▶ 运行任务</button>
-      <button class="navbtn navbtn-k12" data-view="k12">▣ Codex K12 <span id="k12-nav-state" class="nav-state">检测中</span></button>
-      <button class="navbtn" data-view="mailpool">📥 邮箱池</button>
-      <button class="navbtn" data-view="env">⚙️ 配置 (.env)</button>
+    <div class="sidebar-title">
+      <span>任务库</span>
+      <span id="task-count" class="task-count">--</span>
     </div>
-    <div id="script-nav"></div>
+    <div id="script-nav" class="script-nav"></div>
+    <div class="sidebar-tools">
+      <div class="sidebar-label">工具</div>
+      <button class="navbtn" data-view="mailpool"><span class="nav-icon" aria-hidden="true">@</span><span>邮箱池</span></button>
+      <button class="navbtn" data-view="network"><span class="nav-icon" aria-hidden="true">IP</span><span>网络出口</span></button>
+      <button class="navbtn" data-view="env"><span class="nav-icon" aria-hidden="true">⚙</span><span>环境配置</span></button>
+      <button class="navbtn navbtn-k12" data-view="k12"><span class="nav-icon" aria-hidden="true">K</span><span>Codex K12</span><span id="k12-nav-state" class="nav-state">检测中</span></button>
+    </div>
+    <div class="sidebar-footer">
+      <div class="service-list" aria-label="服务状态">
+        <span class="status-item"><span class="dot" id="dot-bb"></span><span id="browser-label">BitBrowser</span></span>
+        <span class="status-item"><span class="dot" id="dot-clash"></span><span id="network-label">网络出口</span></span>
+        <span class="status-item"><span class="dot pending" id="dot-k12"></span>Codex K12</span>
+      </div>
+      <div class="instance-meta">
+        <span class="version" id="version" title="当前 WebUI 提交版本">v--</span>
+        <span class="node" id="node">出口 --</span>
+      </div>
+      <button id="btn-telegram" class="contact-button" type="button">联系支持 <span aria-hidden="true">↗</span></button>
+    </div>
   </nav>
 
   <main class="content">
     <!-- 运行视图 -->
     <section id="view-run">
       <div id="form-panel" class="panel">
-        <p class="hint">← 左侧选择一个任务</p>
+        <p class="loading-state">正在载入任务…</p>
       </div>
       <div class="panel log-panel">
         <div class="log-head">
@@ -52,7 +65,7 @@
           </div>
           <button id="btn-stop" class="btn-stop" disabled>停止</button>
         </div>
-        <pre id="log" class="log"></pre>
+        <pre id="log" class="log" data-empty="暂无运行输出"></pre>
       </div>
     </section>
 
@@ -110,7 +123,7 @@
     <section id="view-mailpool" style="display:none">
       <div class="panel">
         <div class="env-head">
-          <h2>📥 批量导入邮箱池</h2>
+          <h2>批量导入邮箱池</h2>
           <span id="mailpool-total" class="env-msg"></span>
         </div>
         <p class="hint">外部邮箱直接入池，三平台注册可直接用，无需自己注册。每行一个，至少 <b>邮箱+密码</b>。<br>
@@ -121,6 +134,60 @@
         <div>
           <button id="btn-import-mail" class="btn-run">导入到邮箱池</button>
           <span id="mailpool-msg" class="env-msg"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 网络出口视图 -->
+    <section id="view-network" style="display:none">
+      <div class="panel network-panel">
+        <div class="network-head">
+          <div>
+            <h2>网络出口</h2>
+            <p>统一控制注册任务使用的 Clash 节点或住宅代理。</p>
+          </div>
+          <div class="network-current">
+            <span class="dot pending" id="network-current-dot"></span>
+            <span id="network-current">正在读取配置</span>
+          </div>
+        </div>
+
+        <div class="mode-switch" role="group" aria-label="代理模式">
+          <button type="button" data-proxy-mode="clash_auto">自动轮换</button>
+          <button type="button" data-proxy-mode="clash_fixed">固定节点</button>
+          <button type="button" data-proxy-mode="residential">动态住宅 IP</button>
+        </div>
+
+        <div id="network-clash-fields" class="network-fields">
+          <div class="network-section-title">Clash 连接</div>
+          <div class="network-grid">
+            <label class="network-field"><span>控制器地址</span><input id="proxy-clash-api" type="text" placeholder="http://127.0.0.1:9097"></label>
+            <label class="network-field"><span>控制器密钥</span><input id="proxy-clash-secret" type="password" autocomplete="off"></label>
+            <label class="network-field"><span>混合代理地址</span><input id="proxy-clash-proxy" type="text" placeholder="http://127.0.0.1:7897"></label>
+            <label class="network-field"><span>代理组</span><input id="proxy-clash-group" type="text" placeholder="GLOBAL"></label>
+          </div>
+          <div id="network-fixed-field" class="network-fixed-row">
+            <label class="network-field"><span>固定节点</span><select id="proxy-fixed-node"></select></label>
+            <button id="btn-refresh-nodes" class="icon-button" type="button" title="刷新节点" aria-label="刷新节点">↻</button>
+          </div>
+        </div>
+
+        <div id="network-residential-fields" class="network-fields" style="display:none">
+          <div class="network-section-title">住宅代理</div>
+          <div class="network-grid">
+            <label class="network-field network-field-wide"><span>单个代理</span><input id="proxy-residential-url" type="password" autocomplete="off" placeholder="http://user:pass@host:port"></label>
+            <label class="network-field network-field-wide"><span>代理池</span><textarea id="proxy-residential-pool" spellcheck="false" placeholder="每行一个代理，配置代理池后优先使用代理池"></textarea></label>
+            <label class="network-field"><span>换 IP 接口</span><input id="proxy-rotate-url" type="password" autocomplete="off" placeholder="https://provider.example/rotate"></label>
+            <label class="network-field"><span>请求方法</span><select id="proxy-rotate-method"><option>GET</option><option>POST</option></select></label>
+            <label class="network-field"><span>ChatGPT 拦截轮换上限</span><input id="proxy-chatgpt-retries" type="number" min="1" step="1" value="3"></label>
+          </div>
+        </div>
+
+        <div class="network-actions">
+          <button id="btn-save-proxy" class="btn-run" type="button">保存并应用</button>
+          <button id="btn-rotate-proxy" class="btn-secondary" type="button">立即轮换</button>
+          <button id="btn-test-proxy" class="btn-secondary" type="button">测试出口 IP</button>
+          <span id="proxy-msg" class="network-message" role="status" aria-live="polite"></span>
         </div>
       </div>
     </section>
@@ -146,6 +213,6 @@
   <a href="https://t.me/TIANTIANAIPRO" target="_blank" rel="noopener">@TIANTIANAIPRO</a>
 </dialog>
 
-<script src="/static/app.js?v=20260724-claude-2"></script>
+<script src="/static/app.js?v=20260728-network-2"></script>
 </body>
 </html>

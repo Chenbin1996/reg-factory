@@ -3,7 +3,7 @@ import urllib.parse
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import outlook_reg_loop
-import extract_graph_tokens
+from tools import extract_graph_tokens
 import register_outlook_standalone
 from webui import scripts as webui_scripts
 

@@ -159,7 +159,7 @@ SCRIPTS = [
         "file": "register.py",
         "category": "单平台注册",
         "title": "Claude 注册",
-        "desc": "Claude 单平台注册；自动处理节点预检、magic-link 原生验证和 hCaptcha，成功后保存 sessionKey。",
+        "desc": "Claude 单平台注册；支持 YYDS 临时邮箱，自动处理节点预检、magic-link 原生验证和 hCaptcha，成功后保存 sessionKey。",
         "warning": "运行前必须在“配置 (.env) → Claude 注册与验证”中填写视觉 API 地址和 key，否则无法自动通过图形验证。",
         "args": [
             {"flag": "--count", "type": "int", "default": 1, "help": "注册数量"},
@@ -171,6 +171,9 @@ SCRIPTS = [
             {"flag": "--client-id", "type": "str", "default": "", "help": "与 refresh token 配套的 Outlook OAuth client_id"},
             {"flag": "--latest-rt", "type": "bool", "default": True,
              "help": "默认使用 emails.txt 中最新未占用且可读 Graph 的 RT 邮箱"},
+            {"flag": "--provider", "type": "choice",
+             "choices": ["", "yyds", "gptmail", "cfmail", "moemail", "custom"], "default": "",
+             "help": "临时邮箱来源；选择 yyds 后忽略 Outlook/最新 RT，并使用配置页的 YYDS_API_KEY"},
             {"flag": "--node", "type": "str", "default": "auto", "help": "Clash 节点(auto=验证失败时自动轮换)"},
             {"flag": "--challenge-wait", "type": "int", "default": 45,
              "help": "每个节点等待 Cloudflare 自动验证的秒数"},
@@ -194,12 +197,12 @@ SCRIPTS = [
             {"flag": "--timeout", "type": "int", "default": 600, "help": "超时(秒)"},
         ],
     },
-    # ---------------------------------------------------------------- 养号 / 邮箱
+    # ---------------------------------------------------------------- 邮箱注册
     {
         "id": "outlook_reg_loop",
         "file": "outlook_reg_loop.py",
-        "category": "养号/邮箱",
-        "title": "Outlook 自注册养号",
+        "category": "邮箱注册",
+        "title": "Outlook 邮箱注册",
         "desc": "持续自注册 Outlook，产出到 _outlook_pool/ 与 emails.txt。count=0 为无限循环。",
         "args": [
             {"flag": "--count", "type": "int", "default": 0, "help": "注册数量(0=无限循环)"},
@@ -217,7 +220,7 @@ SCRIPTS = [
     {
         "id": "unlock_outlook",
         "file": "unlock_outlook.py",
-        "category": "养号/邮箱",
+        "category": "邮箱注册",
         "title": "解锁被锁 Outlook",
         "desc": "批量解锁被锁账号，结果分类输出到 unlock_results/。",
         "args": [
@@ -228,8 +231,8 @@ SCRIPTS = [
     },
     {
         "id": "extract_graph_tokens",
-        "file": "extract_graph_tokens.py",
-        "category": "养号/邮箱",
+        "file": "tools/extract_graph_tokens.py",
+        "category": "邮箱注册",
         "title": "提取 Graph refresh_token",
         "desc": "用账号密码换 Microsoft Graph refresh_token(免浏览器)，输出到 outlook_accounts/。",
         "args": [
@@ -243,7 +246,7 @@ SCRIPTS = [
     {
         "id": "mailbox_broker",
         "file": "mailbox_broker.py",
-        "category": "养号/邮箱",
+        "category": "邮箱注册",
         "title": "共享取码服务(常驻)",
         "desc": "并行流水线时起共享取码服务，避免三窗口并发登录同一邮箱。常驻运行。",
         "args": [
@@ -255,7 +258,7 @@ SCRIPTS = [
     # ---------------------------------------------------------------- 导出 / 上传
     {
         "id": "upload_tokens",
-        "file": "upload_tokens.py",
+        "file": "tools/upload_tokens.py",
         "category": "导出/上传",
         "title": "上传标准 token",
         "desc": "把 tokens/ 下标准 token 上传到 CPA/SUB2API/webchat2api；Grok 会导入 SUB2API Grok 渠道。",
@@ -266,7 +269,7 @@ SCRIPTS = [
     },
     {
         "id": "export_chatgpt2api",
-        "file": "export_chatgpt2api.py",
+        "file": "tools/export_chatgpt2api.py",
         "category": "导出/上传",
         "title": "导出/上传 chatgpt2api",
         "desc": "聚合普通网页号导入 chatgpt2api(--post 直传 / 默认导出 txt)。",
@@ -279,7 +282,7 @@ SCRIPTS = [
     },
     {
         "id": "export_accounts",
-        "file": "export_accounts.py",
+        "file": "tools/export_accounts.py",
         "category": "导出/上传",
         "title": "导出账号 cookie",
         "desc": "导出已注册账号 cookie 供直登扩展使用(无参=全部平台)。",
@@ -298,6 +301,18 @@ def script_by_id(sid):
 # ============================================================ 外部工具链接
 # 不在本机跑的 web 服务/工具，面板上以"打开链接"卡片呈现(新标签打开)。
 EXTERNAL_LINKS = [
+    {
+        "id": "download_clash_verge",
+        "title": "下载 Clash Verge 2.5.2",
+        "url": "https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe",
+        "desc": "Windows x64 安装包",
+    },
+    {
+        "id": "download_bitbrowser",
+        "title": "下载 BitBrowser",
+        "url": "https://www.bitbrowser.cn/download",
+        "desc": "BitBrowser 官方下载页",
+    },
 ]
 
 
@@ -320,7 +335,9 @@ ENV_SCHEMA = [
         {"key": "K12_AUTO_START", "type": "choice", "choices": ["1", "0"], "default": "1",
          "help": "启动主 WebUI 时是否自动拉起本地 Codex K12 服务。"},
     ]},
-    {"group": "Clash 代理(节点切换/出口)", "tests": [{"target": "clash", "label": "测试 Clash 连通"}], "items": [
+    {"group": "网络出口", "tests": [{"target": "clash", "label": "测试 Clash 连通"}], "items": [
+        {"key": "PROXY_MODE", "type": "choice", "choices": ["clash_auto", "clash_fixed", "residential"],
+         "default": "clash_auto", "help": "Clash 自动轮换、固定节点，或动态住宅代理。建议在左侧“网络出口”页配置。"},
         {"key": "CLASH_SECRET", "required": True, "secret": True,
          "help": "Clash Verge → 设置 → 外部控制器(External Controller) 里设的 secret/密钥。"
                  "若该处留空,这里也留空。设了密钥不填会连不上控制器(节点切换失效)。"},
@@ -330,10 +347,23 @@ ENV_SCHEMA = [
          "help": "Clash 混合代理端口(mixed-port),脚本走它出网。Verge 默认 7897。"},
         {"key": "CLASH_GROUP", "default": "GLOBAL",
          "help": "决定出口的代理组名。global 模式下填 GLOBAL;规则模式填你的节点选择组名。"},
+        {"key": "CLASH_FIXED_NODE", "help": "固定节点模式使用的 Clash 节点全名。"},
+        {"key": "REG_FACTORY_PROXY", "secret": True,
+         "help": "住宅代理 URL，例如 http://user:pass@host:port 或 socks5://..."},
+        {"key": "REG_FACTORY_PROXY_POOL", "secret": True,
+         "help": "住宅代理池；.env 中使用逗号分隔，专用网络页支持逐行填写。"},
+        {"key": "REG_FACTORY_PROXY_ROTATE_URL", "secret": True,
+         "help": "可选的住宅代理供应商换 IP 接口。"},
+        {"key": "REG_FACTORY_PROXY_ROTATE_METHOD", "type": "choice", "choices": ["GET", "POST"],
+         "default": "GET", "help": "调用换 IP 接口时使用的方法。"},
+        {"key": "CHATGPT_RESIDENTIAL_ROTATE_RETRIES", "default": "3",
+         "help": "ChatGPT 遇到 Cloudflare 拦截时最多轮换住宅 IP 的次数。"},
     ]},
     {"group": "指纹浏览器", "tests": [{"target": "bitbrowser", "label": "测试 指纹浏览器连通"}], "items": [
-        {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["bitbrowser", "adspower"],
-         "default": "bitbrowser", "help": "选择当前指纹浏览器"},
+        {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["bundled", "bitbrowser", "adspower"],
+         "default": "bundled", "help": "选择当前浏览器；bundled 使用天天 AI 工坊内置 Chromium"},
+        {"key": "REG_FACTORY_BROWSER_PATH", "help": "内置 Chromium 可执行文件路径"},
+        {"key": "REG_FACTORY_BROWSER_HELPER", "help": "内置 Chromium 启动器路径"},
         {"key": "BITBROWSER_API", "default": "http://127.0.0.1:54345", "help": "比特浏览器本地 API"},
         {"key": "GROK_BROWSER_CORE_VERSION", "default": "146",
          "help": "Grok 浏览器使用的 BitBrowser Chromium 内核；旧 130 会触发 xAI 发码 403"},
@@ -379,10 +409,12 @@ ENV_SCHEMA = [
     {"group": "Outlook 自注册", "items": [
         {"key": "OUTLOOK_PROXIES", "help": "Outlook 自注册住宅代理池(换行/逗号分隔)"},
     ]},
-    {"group": "临时邮箱(Grok 注册取码)", "tests": [{"target": "yyds", "label": "测试 YYDS"}], "items": [
+    {"group": "临时邮箱(Claude/Grok 注册取码)", "tests": [{"target": "yyds", "label": "测试 YYDS"}], "items": [
+        {"key": "CLAUDE_USE_TEMP_EMAIL", "type": "choice", "choices": ["false", "true"], "default": "false",
+         "help": "Claude 命令行未指定邮箱时默认使用下方临时邮箱；任务表单选择 provider 时无需打开"},
         {"key": "TEMP_EMAIL_PROVIDER", "type": "choice",
          "choices": ["yyds", "gptmail", "moemail", "cfmail", "custom"], "default": "yyds",
-         "help": "Grok 注册默认用的临时邮箱 provider(需配好对应 key)。也可在「Grok 注册」表单里临时指定。"},
+         "help": "Claude/Grok 默认临时邮箱 provider(需配好对应 key)，任务表单也可临时指定。"},
         {"key": "YYDS_API_KEY", "secret": True, "help": "YYDS Mail key(profile 页,AC- 开头)"},
         {"key": "YYDS_BASE_URL", "default": "https://maliapi.215.im", "help": "YYDS Mail API 根地址；可粘贴 vip.215.im 或完整 /v1/accounts 地址，程序会自动纠正"},
         {"key": "GPTMAIL_API_KEY", "secret": True, "help": "GPTMail key(mail.chatgpt.org.uk)"},

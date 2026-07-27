@@ -38,7 +38,8 @@ if sys.platform == "win32":
         pass
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-EMAILS_FILE = os.path.join(ROOT, "emails.txt")
+DATA_ROOT = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
+EMAILS_FILE = os.path.join(DATA_ROOT, "emails.txt")
 
 # 导入 config 以触发 .env 加载（CLASH_SECRET 等环境变量来自 .env / 真实环境）。
 try:
@@ -49,7 +50,9 @@ except Exception:
 # 默认基建端点（密钥走环境变量，端点可被环境变量覆盖）。
 CLASH_API_DEFAULT = os.environ.get("CLASH_API", "http://127.0.0.1:9097")
 CLASH_SECRET_DEFAULT = os.environ.get("CLASH_SECRET", "")
-PROXY_DEFAULT = os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897")
+from common import proxy_switch
+
+PROXY_DEFAULT = proxy_switch.effective_proxy_url()
 
 
 def log(msg, level="INFO"):
@@ -98,6 +101,11 @@ def build_child_env(args):
     env = dict(os.environ)
     env.setdefault("PYTHONUNBUFFERED", "1")
     if args.proxy:
+        configured_mode = proxy_switch.proxy_mode(env)
+        configured_proxy = proxy_switch.effective_proxy_url(env)
+        if configured_mode == "residential" or args.proxy != configured_proxy:
+            env["PROXY_MODE"] = "residential"
+            env["REG_FACTORY_PROXY"] = args.proxy
         env["HTTP_PROXY"] = env["HTTPS_PROXY"] = args.proxy
         env["http_proxy"] = env["https_proxy"] = args.proxy
         # 关键：localhost API(BitBrowser 54345 / Clash 控制器 9097) 必须直连，
@@ -131,7 +139,7 @@ def stage_email(args, env):
         return ("dry-run@outlook.com", "DryRunPass1!", "", "")
 
     proc = subprocess.Popen(
-        cmd, cwd=ROOT, env=env,
+        cmd, cwd=DATA_ROOT, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
@@ -206,7 +214,7 @@ def stage_platforms(args, env, email, password, token="", client_id=""):
     log(f"Stage B cmd: {redact_command(cmd)}", "B")
     if args.dry_run:
         return 0
-    proc = subprocess.Popen(cmd, cwd=ROOT, env=env)
+    proc = subprocess.Popen(cmd, cwd=DATA_ROOT, env=env)
     return proc.wait()
 
 

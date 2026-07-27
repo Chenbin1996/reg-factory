@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-upload_tokens.py — 把本地标准 token 批量上传到下游接口（CPA / SUB2API / webchat2api）。
+tools/upload_tokens.py — 把本地标准 token 批量上传到下游接口（CPA / SUB2API / webchat2api）。
 
 注册脚本只负责把 token 落到 tokens/ 目录；上传由本脚本单独触发。
 
 用法:
-    python upload_tokens.py                # all（chatgpt + grok）
-    python upload_tokens.py chatgpt        # 只传 ChatGPT（CPA + SUB2API）
-    python upload_tokens.py grok           # 只传 Grok（SUB2API + webchat2api）
+    python tools/upload_tokens.py                # all（chatgpt + grok）
+    python tools/upload_tokens.py chatgpt        # 只传 ChatGPT（CPA + SUB2API）
+    python tools/upload_tokens.py grok           # 只传 Grok（SUB2API + webchat2api）
 
 幂等: 上传成功的 email 会记到 tokens/<platform>/uploaded_<target>.txt，下次跳过。
 配置缺失的 target 自动跳过（不报错）。
@@ -17,6 +17,11 @@ import glob
 import json
 import os
 import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform == "win32":
     try:

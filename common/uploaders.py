@@ -7,7 +7,7 @@ common/uploaders.py — 把本地标准 token 上传到下游管理接口。
   - upload_sub2api      background/sub2api-api.js: loginSub2Api/getGroupsByNames/importCurrentChatGptSession
   - upload_webchat2api  flows/grok/background/publisher-webchat2api.js: uploadGrokSsoToWebchat2Api
 
-每个函数返回 (ok: bool, message: str)。仅在被 upload_tokens.py 调用时使用。
+每个函数返回 (ok: bool, message: str)。仅在被 tools/upload_tokens.py 调用时使用。
 """
 
 import json

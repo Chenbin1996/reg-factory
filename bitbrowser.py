@@ -35,6 +35,9 @@ class BitBrowser:
     provider_name = "bitbrowser"
 
     def __new__(cls, api_base=None):
+        if cls is BitBrowser and _selected_provider() in {"bundled", "embedded", "local"}:
+            from common.bundled_browser import BundledBrowser
+            return BundledBrowser(api_base=api_base)
         if cls is BitBrowser and _use_adspower():
             from adspower import AdsPower
             return AdsPower(api_base=api_base)

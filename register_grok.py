@@ -21,7 +21,6 @@ import string
 import sys
 import time
 import uuid
-from urllib.parse import unquote, urlsplit
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -460,7 +459,7 @@ def register_via_protocol_rt(email, refresh_token, client_id, password, attempts
                 continue
             client = XConsoleAuthClient(
                 debug=False,
-                proxy=proxy_switch.CLASH_PROXY,
+                proxy=proxy_switch.effective_proxy_url(),
                 signup_url=SIGNUP_URL,
                 impersonate="chrome131",
                 timeout=40,
@@ -545,13 +544,11 @@ def save_and_import_grok(sso, email, password, mark_pool=True):
             sso,
             account_email=email,
             proxy_id=SUB2API_GROK_PROXY_ID,
-            local_proxy=os.environ.get(
-                "CLASH_PROXY", f"http://{CLASH_PROXY_HOST}:{CLASH_PROXY_PORT}"
-            ),
+            local_proxy=proxy_switch.effective_proxy_url(),
         )
         print(f"  [{'OK' if ok else 'FAIL'}] {msg}")
         if not ok:
-            print("  [hint] SSO 已保存，可修复配置后运行: python upload_tokens.py grok")
+            print("  [hint] SSO 已保存，可修复配置后运行: python tools/upload_tokens.py grok")
             return False
         mark_uploaded("grok", "sub2api", email)
     if mark_pool:
@@ -732,20 +729,7 @@ async def signup_error_page(page):
 
 
 def clash_browser_proxy_fields():
-    raw = os.environ.get("CLASH_PROXY", f"http://{CLASH_PROXY_HOST}:{CLASH_PROXY_PORT}").strip()
-    parsed = urlsplit(raw if "://" in raw else "http://" + raw)
-    if not parsed.hostname or not parsed.port:
-        raise ValueError(f"CLASH_PROXY 格式无效: {raw}")
-    fields = {
-        "proxyMethod": 2,
-        "proxyType": "socks5" if parsed.scheme.lower() == "socks5" else "http",
-        "host": parsed.hostname,
-        "port": str(parsed.port),
-    }
-    if parsed.username:
-        fields["proxyUserName"] = unquote(parsed.username)
-        fields["proxyPassword"] = unquote(parsed.password or "")
-    return fields
+    return proxy_switch.browser_proxy_fields()
 
 
 async def prelogin_via_direct_browser(email, email_pw, p):

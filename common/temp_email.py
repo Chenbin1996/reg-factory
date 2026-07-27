@@ -272,7 +272,7 @@ def _moemail_fetch(mailbox_id, api_key, base_url, sess):
 
 
 # ==================================================================== YYDS Mail
-def _yyds_pick_domain(key, base, sess):
+def _yyds_pick_domain(key, base, sess, exclude=()):
     base = _norm_yyds_base(base)
     try:
         r = sess.get(f"{base}/v1/domains", headers={"X-API-Key": key}, timeout=HTTP_TIMEOUT)
@@ -295,7 +295,11 @@ def _yyds_pick_domain(key, base, sess):
             ok.append((name, bool(d.get("wildcardMxValid"))))
         if not ok:
             return None
-        pref = [n for n, w in ok if w] or [n for n, _ in ok]
+        excluded = {str(x).lower().strip().rstrip(".") for x in exclude}
+        available = [(n, w) for n, w in ok if str(n).lower().strip().rstrip(".") not in excluded]
+        if not available:
+            return None
+        pref = [n for n, w in available if w] or [n for n, _ in available]
         return random.choice(pref)
     except Exception:
         return None
@@ -306,16 +310,34 @@ def _yyds_create(name, domain, expiry_ms, api_key, base_url, sess):
     if not key:
         raise ValueError("YYDS Mail 需要 API key（YYDS_API_KEY，通常 AC- 开头）")
     base = _norm_yyds_base(base_url)
-    dom = (domain or "").strip().lstrip("@").strip(".") or _yyds_pick_domain(key, base, sess) or ""
+    explicit_domain = (domain or "").strip().lstrip("@").strip(".")
+    dom = explicit_domain or _yyds_pick_domain(key, base, sess) or ""
     payload = {"domain": dom}
     local = (name or "").strip().lower()
     if local:
         payload["localPart"] = local
     headers = {"X-API-Key": key, "Content-Type": "application/json"}
-    r = sess.post(f"{base}/v1/accounts", json=payload, headers=headers, timeout=HTTP_TIMEOUT)
-    if r.status_code >= 400:
-        hint = "；YYDS_BASE_URL 应填 https://maliapi.215.im" if r.status_code == 404 else ""
-        raise RuntimeError(f"YYDS create {r.status_code} ({base}/v1/accounts): {r.text[:200]}{hint}")
+    tried_domains = set()
+    for _attempt in range(4):
+        tried_domains.add(dom.lower().rstrip("."))
+        r = sess.post(f"{base}/v1/accounts", json=payload, headers=headers, timeout=HTTP_TIMEOUT)
+        if r.status_code < 400:
+            break
+        body_text = (r.text or "")[:200]
+        shared_domain_block = r.status_code == 403 and "shared domain" in body_text.lower()
+        if not shared_domain_block or explicit_domain:
+            hint = "；YYDS_BASE_URL 应填 https://maliapi.215.im" if r.status_code == 404 else ""
+            raise RuntimeError(f"YYDS create {r.status_code} ({base}/v1/accounts): {body_text}{hint}")
+        next_dom = _yyds_pick_domain(key, base, sess, exclude=tried_domains)
+        if not next_dom:
+            raise RuntimeError(
+                f"YYDS create 403 ({base}/v1/accounts): {body_text}; no alternate shared domain"
+            )
+        dom = next_dom
+        payload["domain"] = dom
+        print(f"  [temp-email] YYDS shared domain rejected, retrying with {dom}")
+    else:
+        raise RuntimeError(f"YYDS create {r.status_code} ({base}/v1/accounts): {(r.text or '')[:200]}")
     data = r.json()
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     eid = body.get("id") or body.get("inboxId") or body.get("accountId")

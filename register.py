@@ -47,6 +47,7 @@ from config import (
     CLAUDE_LOGIN_URL,
     CLAUDE_NODE_PROBE_LIMIT,
     CLAUDE_NODE_PROBE_TIMEOUT_SECONDS,
+    CLAUDE_USE_TEMP_EMAIL,
     COOKIE_OUTPUT_DIR,
     SMS_API_BASE,
     SMS_COUNTRY_BLACKLIST,
@@ -62,6 +63,7 @@ from config import (
     EZCAPTCHA_API_BASE,
     YESCAPTCHA_API_KEY,
     YESCAPTCHA_API_BASE,
+    TEMP_EMAIL_PROVIDER,
 )
 
 # single registration timeout (seconds)
@@ -91,7 +93,13 @@ CLAUDE_COOKIE_ACCEPT_LABELS = (
 )
 # 节点轮换：同一节点 IP 连续注册 1-2 个新 Claude 号就会被风控打 /restricted，
 # 故记录最近用过的节点、auto 选号时避开，雨露均沾分散 IP 信誉。
-CLAUDE_NODE_USAGE_FILE = "claude_node_usage.txt"
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+CLAUDE_NODE_USAGE_FILE = os.path.join(
+    _PROJECT_ROOT, "runtime", "state", "claude_node_usage.txt"
+)
+CLAUDE_NODE_USAGE_LEGACY_FILE = os.path.join(
+    _PROJECT_ROOT, "claude_node_usage.txt"
+)
 CLAUDE_WEB_LOGIN_HCAPTCHA_SITEKEY = "a8086506-2036-46f4-ae50-00d8be805efa"
 CLAUDE_HCAPTCHA_DRAG_MARKERS = (
     "drag", "drop", "move the", "drag-and-drop",
@@ -212,16 +220,19 @@ HCAPTCHA_HOOK_JS = r"""
 
 
 def _recent_claude_nodes(limit=CLAUDE_NODE_AVOID_RECENT):
-    try:
-        with open(CLAUDE_NODE_USAGE_FILE, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
-        return lines[-limit:]
-    except Exception:
-        return []
+    lines = []
+    for path in (CLAUDE_NODE_USAGE_LEGACY_FILE, CLAUDE_NODE_USAGE_FILE):
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines.extend(l.strip() for l in f if l.strip())
+        except OSError:
+            continue
+    return lines[-limit:]
 
 
 def _record_claude_node(node):
     try:
+        os.makedirs(os.path.dirname(CLAUDE_NODE_USAGE_FILE), exist_ok=True)
         with open(CLAUDE_NODE_USAGE_FILE, "a", encoding="utf-8") as f:
             f.write(node + "\n")
     except Exception:
@@ -262,6 +273,11 @@ def _claude_json_response(response):
 def _pick_claude_node(exclude=None):
     """Quickly probe fresh nodes, then fall back to recent known-good nodes."""
     markers = CLAUDE_HTTP_BLOCK_MARKERS
+    if proxy_switch.proxy_mode() == "residential":
+        if exclude:
+            result = proxy_switch.rotate_proxy()
+            return result.get("node") if result.get("ok") else None
+        return proxy_switch.current_node()
     try:
         alln = proxy_switch.concrete_nodes()
     except Exception as e:
@@ -418,6 +434,18 @@ def validate_session_key(session_key: str) -> bool:
     return True  # 同步版本不可用，跳过
 
 
+def claude_browser_proxy_fields():
+    """Return the selected egress as BitBrowser profile fields."""
+    if proxy_switch is not None:
+        return proxy_switch.browser_proxy_fields()
+    return {
+        "proxyMethod": 2,
+        "proxyType": "http",
+        "host": CLAUDE_PROXY_HOST,
+        "port": CLAUDE_PROXY_PORT,
+    }
+
+
 async def validate_session_key_with_page(page, session_key: str) -> bool:
     """用全新的 BitBrowser 窗口验证 sessionKey 是否独立可用。
     开新窗口 → 设 sessionKey cookie → 打开 claude.ai → 检查是否登录成功 → 发消息收到回复。
@@ -426,7 +454,8 @@ async def validate_session_key_with_page(page, session_key: str) -> bool:
     profile_id = None
     try:
         name = f"validate_{datetime.now().strftime('%H%M%S')}"
-        profile_id = bb.create_browser(name=name)
+        browser_options = claude_browser_proxy_fields() if (CLAUDE_PROXY_NODE or CLAUDE_PROXY_AUTO) else {}
+        profile_id = bb.create_browser(name=name, **browser_options)
         info = bb.open_browser(profile_id)
         ws = info.get("ws", "")
 
@@ -1852,6 +1881,47 @@ def get_magic_link_by_token(
     )
 
 
+async def get_magic_link_by_temp_email(mailbox, max_wait=90, poll_interval=5):
+    """Poll temp email inbox for Claude magic link URL.
+
+    Uses common/temp_email.fetch_messages which already extracts links.
+    Consumed links are remembered on the mailbox so a resend or re-login does
+    not accidentally reuse an expired nonce. Returns the link or None.
+    """
+    from common.temp_email import fetch_messages
+
+    MAGIC_LINK_RE = re.compile(r"https://claude\.ai/magic-link#[A-Za-z0-9_\-:=+/]+")
+    consumed = mailbox.setdefault("_consumed_magic_links", set())
+    start = time.time()
+    while time.time() - start < max_wait:
+        try:
+            msgs = await asyncio.to_thread(
+                fetch_messages,
+                mailbox["id"], mailbox["provider"],
+                email=mailbox["email"], token=mailbox.get("token", ""),
+            )
+        except Exception as e:
+            print(f"  [temp-email] fetch error: {str(e)[:80]}")
+            await asyncio.sleep(poll_interval)
+            continue
+
+        for m in msgs:
+            for link in m.get("extracted", {}).get("links", []):
+                match = MAGIC_LINK_RE.search(str(link))
+                if match and match.group(0) not in consumed:
+                    magic_link = match.group(0)
+                    consumed.add(magic_link)
+                    print("  [temp-email] magic link found")
+                    return magic_link
+
+        elapsed = int(time.time() - start)
+        print(f"  [temp-email] waiting for magic link... ({elapsed}s/{max_wait}s)")
+        await asyncio.sleep(poll_interval)
+
+    print("  [temp-email] timeout, no magic link")
+    return None
+
+
 # ---- 多语言按钮匹配（BitBrowser 节点地区不同，Claude 登录界面语言可能是 英/日/中/繁/韩/西/法/德）----
 CONTINUE_EMAIL_LABELS = [
     # 具体"用邮箱继续"优先，避免误点 Continue with Google/Apple
@@ -1978,8 +2048,8 @@ def request_claude_magic_link_http(email):
         session = curl_requests.Session(impersonate="chrome131", http_version="v2")
         if proxy_switch is not None and (CLAUDE_PROXY_NODE or CLAUDE_PROXY_AUTO):
             session.proxies = {
-                "http": proxy_switch.CLASH_PROXY,
-                "https": proxy_switch.CLASH_PROXY,
+                "http": proxy_switch.effective_proxy_url(),
+                "https": proxy_switch.effective_proxy_url(),
             }
         if not _warm_claude_http_session(session, "magic-send"):
             return False
@@ -2996,8 +3066,8 @@ def _verify_claude_magic_link_http(magic_link):
         session = curl_requests.Session(impersonate="chrome131", http_version="v2")
         if proxy_switch is not None and (CLAUDE_PROXY_NODE or CLAUDE_PROXY_AUTO):
             session.proxies = {
-                "http": proxy_switch.CLASH_PROXY,
-                "https": proxy_switch.CLASH_PROXY,
+                "http": proxy_switch.effective_proxy_url(),
+                "https": proxy_switch.effective_proxy_url(),
             }
         if not _warm_claude_http_session(session, "magic-http"):
             return None
@@ -4872,7 +4942,14 @@ async def _open_bitbrowser_with_retry(bb, profile_id, attempts=8):
     raise last_error
 
 
-async def register(profile_id, email="", email_password="", email_token="", email_client_id=""):
+async def register(
+    profile_id,
+    email="",
+    email_password="",
+    email_token="",
+    email_client_id="",
+    temp_mailbox=None,
+):
     """Run one registration. Returns sessionKey on success, None on failure."""
     bb = BitBrowser()
     start_time = time.time()
@@ -5013,8 +5090,12 @@ async def register(profile_id, email="", email_password="", email_token="", emai
                 except Exception:
                     pass
 
+            if temp_mailbox:
+                email = temp_mailbox["email"]
+                email_password = email_token = email_client_id = ""
+                print(f"\n[3/6] use {temp_mailbox['provider']} temp email: {email}")
             # 如果没有邮箱，先尝试自注册，失败则从 emails.txt 读取
-            if not email:
+            elif not email:
                 print("\n[3/6] get outlook email...")
                 # 尝试自注册
                 print("  [outlook] trying self-register...")
@@ -5065,11 +5146,14 @@ async def register(profile_id, email="", email_password="", email_token="", emai
                 )
             check_timeout()
 
-            # poll magic link from outlook inbox
+            # Poll the selected mailbox source for the magic link.
             print("\n[4/6] get magic link...")
             magic_link = None
             outlook_page = None
-            if email_token:
+            if temp_mailbox:
+                print(f"  reading magic link via {temp_mailbox['provider']} temp email...")
+                magic_link = await get_magic_link_by_temp_email(temp_mailbox, max_wait=60)
+            elif email_token:
                 print("  reading magic link via Graph refresh token...")
                 magic_link = get_magic_link_by_token(
                     email,
@@ -5105,7 +5189,9 @@ async def register(profile_id, email="", email_password="", email_token="", emai
                 except Exception as e:
                     print(f"  resend error: {e}")
                 await asyncio.sleep(3)
-                if email_token:
+                if temp_mailbox:
+                    magic_link = await get_magic_link_by_temp_email(temp_mailbox, max_wait=60)
+                elif email_token:
                     magic_link = get_magic_link_by_token(
                         email,
                         email_token,
@@ -5477,9 +5563,21 @@ async def register(profile_id, email="", email_password="", email_token="", emai
                         # 获取新 magic link（等几秒让新邮件到达，避免读到旧的）
                         print("  getting new magic link (waiting 10s for new email)...")
                         await asyncio.sleep(10)
-                        re_outlook = await context.new_page()
-                        re_magic = await get_magic_link_outlook_pw(re_outlook, email, email_password, max_wait=60)
-                        await re_outlook.close()
+                        if temp_mailbox:
+                            re_magic = await get_magic_link_by_temp_email(temp_mailbox, max_wait=60)
+                        elif email_token:
+                            re_magic = get_magic_link_by_token(
+                                email,
+                                email_token,
+                                client_id=email_client_id or "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+                                max_wait=60,
+                            )
+                        else:
+                            re_outlook = await context.new_page()
+                            re_magic = await get_magic_link_outlook_pw(
+                                re_outlook, email, email_password, max_wait=60
+                            )
+                            await re_outlook.close()
                         if not re_magic:
                             print("  re-login: magic link not received")
                             break
@@ -5568,6 +5666,17 @@ async def register(profile_id, email="", email_password="", email_token="", emai
     return session_key
 
 
+def _resolve_temp_email_provider(
+    provider=None, *, has_email=False, has_email_file=False, latest_rt=False
+):
+    """Resolve the Claude mailbox source without making any external calls."""
+    if provider:
+        return provider
+    if CLAUDE_USE_TEMP_EMAIL and not (has_email or has_email_file or latest_rt):
+        return TEMP_EMAIL_PROVIDER
+    return None
+
+
 async def main():
     global REGISTER_TIMEOUT, CLAUDE_PROXY_NODE, CLAUDE_PROXY_PORT, CLAUDE_PROXY_AUTO
     global CLAUDE_CHALLENGE_WAIT_SECONDS, CLAUDE_CHALLENGE_NODE_RETRIES
@@ -5584,6 +5693,12 @@ async def main():
     parser.add_argument("--client-id", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--latest-rt", action="store_true",
                         help="use newest unused Outlook accounts with working Graph RT")
+    parser.add_argument(
+        "--provider",
+        choices=("yyds", "gptmail", "cfmail", "moemail", "custom"),
+        default=None,
+        help="temporary email provider; yyds uses YYDS_API_KEY",
+    )
     parser.add_argument("--node", type=str, default="auto",
                         help="Clash 出口节点绕 claude 区域封锁：none=不走代理 / auto=自动探测 / 具体节点名")
     parser.add_argument("--proxy-port", type=str, default="7897", help="Clash mixed-port 代理端口")
@@ -5635,19 +5750,29 @@ async def main():
             except Exception as e:
                 print(f"  [proxy] 切节点失败(确认 Clash 在跑): {e}")
 
+    temp_email_provider = _resolve_temp_email_provider(
+        args.provider,
+        has_email=bool(args.email),
+        has_email_file=bool(args.emails),
+        latest_rt=args.latest_rt,
+    )
+    use_temp_email = bool(temp_email_provider)
+
     print("=" * 50)
     print("  Claude.ai Auto Register")
     print(f"  count={args.count}  concurrency={args.concurrency}  timeout={args.timeout}s")
+    if use_temp_email:
+        print(f"  temp-email provider={temp_email_provider}")
     print("=" * 50)
 
     # 读取邮箱文件
     email_list = []
-    if args.email:
+    if args.email and not use_temp_email:
         email_list.append((
             args.email.strip(), args.password.strip(), args.token.strip(), args.client_id.strip()
         ))
         print(f"  using fixed email: {args.email.strip()}")
-    if args.emails:
+    if args.emails and not use_temp_email:
         try:
             with open(args.emails, "r", encoding="utf-8") as f:
                 for line in f:
@@ -5669,7 +5794,7 @@ async def main():
             print(f"  failed to load emails: {e}")
             return
 
-    if args.latest_rt and not email_list:
+    if args.latest_rt and not email_list and not use_temp_email:
         from common import emails as email_pool
         for _ in range(args.count):
             account = email_pool.latest_email(
@@ -5707,13 +5832,33 @@ async def main():
 
             ts = datetime.now().strftime("%m%d_%H%M%S") + f"_{i}"
             name = f"claude_{ts}"
+            temp_mailbox = None
+            if use_temp_email:
+                try:
+                    from common.temp_email import create_mailbox
+
+                    print(f"\n  create {temp_email_provider} temp mailbox...")
+                    temp_mailbox = await asyncio.to_thread(
+                        create_mailbox, provider=temp_email_provider
+                    )
+                    email = temp_mailbox["email"]
+                    print(f"  temp mailbox: {email}")
+                except Exception as e:
+                    print(f"  FATAL: temp mailbox create failed: {str(e)[:160]}")
+                    async with results_lock:
+                        results.append({
+                            "index": i, "profile": name, "status": "ERROR", "sk": None
+                        })
+                    return
             print(f"\n  create browser: {name}")
             profile_id = None
+            browser_proxy = claude_browser_proxy_fields() if (CLAUDE_PROXY_NODE or CLAUDE_PROXY_AUTO) else {}
             for _retry in range(3):
                 try:
                     profile_id = bb.create_browser(
                         name=name,
                         browserFingerPrint=claude_browser_fingerprint(),
+                        **browser_proxy,
                     )
                     break
                 except Exception as e:
@@ -5732,31 +5877,17 @@ async def main():
                 async with results_lock:
                     results.append({"index": i, "profile": name, "status": "ERROR", "sk": None})
                 return
-            # 走 Clash 节点：更新窗口为 http 代理（绕 claude 区域封锁）
-            if CLAUDE_PROXY_NODE or CLAUDE_PROXY_AUTO:
-                proxy_update_error = None
-                for update_attempt in range(3):
-                    try:
-                        bb._post("/browser/update", {
-                            "id": profile_id, "name": name, "proxyMethod": 2,
-                            "proxyType": "http", "host": CLAUDE_PROXY_HOST,
-                            "port": CLAUDE_PROXY_PORT,
-                            "browserFingerPrint": claude_browser_fingerprint(),
-                        })
-                        proxy_update_error = None
-                        print(f"  [proxy] window via {CLAUDE_PROXY_HOST}:{CLAUDE_PROXY_PORT} "
-                              f"(node={CLAUDE_PROXY_NODE or 'pending-auto'})")
-                        break
-                    except Exception as e:
-                        proxy_update_error = e
-                        print(f"  [proxy] window update retry {update_attempt + 1}/3: "
-                              f"{str(e)[:100]}")
-                        await asyncio.sleep(2 + update_attempt)
-                if proxy_update_error is not None:
-                    raise proxy_update_error
+            if browser_proxy.get("host"):
+                print(f"  [proxy] BitBrowser via {browser_proxy['host']}:{browser_proxy['port']} "
+                      f"(mode={proxy_switch.proxy_mode() if proxy_switch else 'legacy'})")
             try:
                 sk = await register(
-                    profile_id, email, email_password, email_token, email_client_id
+                    profile_id,
+                    email,
+                    email_password,
+                    email_token,
+                    email_client_id,
+                    temp_mailbox=temp_mailbox,
                 )
                 async with results_lock:
                     results.append({"index": i, "profile": name, "status": "OK" if sk else "FAIL", "sk": sk})
@@ -5795,10 +5926,13 @@ async def main():
         accounts_file = os.path.join(COOKIE_OUTPUT_DIR, "accounts.txt")
         if os.path.exists(accounts_file) and os.path.getsize(accounts_file) > 0:
             print(f"\n{'=' * 50}")
-            print(f"  AUTO VALIDATE: running validate_keys.py on {accounts_file}")
+            print(f"  AUTO VALIDATE: running tools/validate_keys.py on {accounts_file}")
             print(f"{'=' * 50}")
             import subprocess
-            subprocess.run([sys.executable, "validate_keys.py", accounts_file], cwd=os.path.dirname(os.path.abspath(__file__)))
+            subprocess.run(
+                [sys.executable, "tools/validate_keys.py", accounts_file],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+            )
 
 
 if __name__ == "__main__":

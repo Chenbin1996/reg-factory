@@ -10,6 +10,52 @@ from common import proxy_switch
 
 
 class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
+    def test_explicit_temp_provider_overrides_outlook_source(self):
+        self.assertEqual(
+            register._resolve_temp_email_provider(
+                "yyds", has_email=True, has_email_file=True, latest_rt=True
+            ),
+            "yyds",
+        )
+
+    def test_env_temp_provider_does_not_override_explicit_latest_rt(self):
+        with (
+            patch.object(register, "CLAUDE_USE_TEMP_EMAIL", True),
+            patch.object(register, "TEMP_EMAIL_PROVIDER", "yyds"),
+        ):
+            self.assertIsNone(
+                register._resolve_temp_email_provider(None, latest_rt=True)
+            )
+            self.assertEqual(register._resolve_temp_email_provider(), "yyds")
+
+    async def test_temp_mailbox_magic_link_polling_skips_consumed_links(self):
+        first = "https://claude.ai/magic-link#first-token"
+        second = "https://claude.ai/magic-link#second-token"
+        mailbox = {
+            "id": "box-1",
+            "email": "a@example.com",
+            "token": "mail-token",
+            "provider": "yyds",
+        }
+        messages = [
+            [{"extracted": {"links": [first]}}],
+            [{"extracted": {"links": [first, second]}}],
+        ]
+
+        with patch("common.temp_email.fetch_messages", side_effect=messages):
+            self.assertEqual(
+                await register.get_magic_link_by_temp_email(
+                    mailbox, max_wait=1, poll_interval=0
+                ),
+                first,
+            )
+            self.assertEqual(
+                await register.get_magic_link_by_temp_email(
+                    mailbox, max_wait=1, poll_interval=0
+                ),
+                second,
+            )
+
     def test_claude_uses_modern_exit_ip_derived_browser_fingerprint(self):
         fingerprint = register.claude_browser_fingerprint()
 

@@ -78,7 +78,7 @@ except Exception:
 PROVIDER = TEMP_EMAIL_PROVIDER
 
 PLATFORM = "grok"
-CLASH_PROXY = os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897")
+CLASH_PROXY = proxy_switch.effective_proxy_url()
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
 GROK_SENDER = ("x.ai", "grok", "noreply", "no-reply")
@@ -222,7 +222,8 @@ def register_one(index, total, sub2api=False, sub2api_group="", mailbox_attempts
                  code_timeout=75):
     email = ""
     print(f"\n#{index}/{total}")
-    c = XConsoleAuthClient(debug=True, proxy=CLASH_PROXY, signup_url=SIGNUP_URL,
+    active_proxy = proxy_switch.effective_proxy_url()
+    c = XConsoleAuthClient(debug=True, proxy=active_proxy, signup_url=SIGNUP_URL,
                            impersonate="chrome131", timeout=40.0)
     try:
         # 1. warm-up + 动态抓 next-action / sitekey（同时拿 cf_clearance cookie）
@@ -327,11 +328,11 @@ def register_one(index, total, sub2api=False, sub2api_group="", mailbox_attempts
                 sso,
                 account_email=email,
                 proxy_id=SUB2API_GROK_PROXY_ID,
-                local_proxy=CLASH_PROXY,
+                local_proxy=proxy_switch.effective_proxy_url(),
             )
             print(f"  [{'OK' if ok else 'FAIL'}] {msg}")
             if not ok:
-                print("  [hint] SSO 已落盘，可修复配置后运行: python upload_tokens.py grok")
+                print("  [hint] SSO 已落盘，可修复配置后运行: python tools/upload_tokens.py grok")
                 return None
             try:
                 mark_uploaded("grok", "sub2api", email)
@@ -367,6 +368,13 @@ def _find_signup_node():
         warmup_url="https://console.x.ai/home",
         required_markers=("/_next/static/chunks/", "self.__next_f.push"),
     )
+
+
+def _rotate_signup_egress():
+    if proxy_switch.proxy_mode() == "residential":
+        result = proxy_switch.rotate_proxy()
+        return result.get("node") if result.get("ok") else None
+    return _find_signup_node()
 
 
 def main():
@@ -431,7 +439,7 @@ def main():
                 and not last_attempt_failed
             ):
                 print(f"\n  批量轮换节点 ({i - 1}/{args.count})...")
-                rotated = _find_signup_node()
+                rotated = _rotate_signup_egress()
                 print(f"  新节点: {rotated or proxy_switch.current_node()}")
             result = register_one(
                 i,
@@ -445,7 +453,7 @@ def main():
             last_attempt_failed = not bool(result)
             if last_attempt_failed and args.node.lower() == "auto" and i < args.count:
                 print(f"\n  #{i} 失败，立即更换注册节点...")
-                rotated = _find_signup_node()
+                rotated = _rotate_signup_egress()
                 print(f"  新节点: {rotated or proxy_switch.current_node()}")
         except Exception as e:
             print(f"  #{i} fatal: {e}")

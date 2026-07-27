@@ -84,10 +84,12 @@ MAIL_AUTH_TOKEN = _env("MAIL_AUTH_TOKEN", "")
 # 新建邮箱统一密码
 MAIL_NEW_PASS = _env("MAIL_NEW_PASS", "")
 
-# ---------------------------------------------------------------- 临时邮箱（纯 HTTP API 取码，Grok 注册用）
+# ---------------------------------------------------------------- 临时邮箱（纯 HTTP API 取码，Grok/Claude 注册用）
 # 参考 grokcli-2api：用临时邮箱 HTTP API 直接拉验证码，免去 Outlook 浏览器登录/轮询的重开销。
 # GROK_USE_TEMP_EMAIL=true 时 register_grok.py 走临时邮箱；创建失败自动回退 emails.txt Outlook。
 GROK_USE_TEMP_EMAIL = _env("GROK_USE_TEMP_EMAIL", "false").strip().lower() in ("1", "true", "yes", "on")
+# CLAUDE_USE_TEMP_EMAIL=true 时 register.py 走临时邮箱取 magic link，免去 Outlook 注册/轮询。
+CLAUDE_USE_TEMP_EMAIL = _env("CLAUDE_USE_TEMP_EMAIL", "false").strip().lower() in ("1", "true", "yes", "on")
 # provider: moemail | yyds | gptmail | cfmail（默认 gptmail，带公共测试 key 开箱即用）
 TEMP_EMAIL_PROVIDER = _env("TEMP_EMAIL_PROVIDER", "gptmail").strip().lower() or "gptmail"
 

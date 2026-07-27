@@ -24,7 +24,8 @@ from common import emails as email_pool
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(ROOT, "tri_register_logs")
+DATA_ROOT = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
+LOG_DIR = os.path.join(DATA_ROOT, "tri_register_logs")
 
 
 def build_command(platform, args, account):
@@ -98,7 +99,7 @@ async def run_platform(platform, cmd, run_id, child_env=None):
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
-        cwd=ROOT,
+        cwd=DATA_ROOT,
         env=child_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,

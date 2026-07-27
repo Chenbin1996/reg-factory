@@ -1,4 +1,6 @@
 import unittest
+import copy
+from unittest.mock import patch
 
 from common import temp_email
 
@@ -22,11 +24,11 @@ class FakeSession:
         self.calls = []
 
     def get(self, url, **kwargs):
-        self.calls.append(("GET", url, kwargs))
+        self.calls.append(("GET", url, copy.deepcopy(kwargs)))
         return self.responses.pop(0)
 
     def post(self, url, **kwargs):
-        self.calls.append(("POST", url, kwargs))
+        self.calls.append(("POST", url, copy.deepcopy(kwargs)))
         return self.responses.pop(0)
 
 
@@ -52,6 +54,27 @@ class YydsMailTests(unittest.TestCase):
 
         self.assertEqual(mailbox["id"], "box-1")
         self.assertEqual(sess.calls[0][1], "https://maliapi.215.im/v1/accounts")
+
+    def test_create_rotates_shared_domain_after_403(self):
+        sess = FakeSession([
+            FakeResponse(data={"domains": [
+                {"domain": "blocked.example", "wildcardMxValid": True},
+                {"domain": "usable.example", "wildcardMxValid": True},
+            ]}),
+            FakeResponse(status_code=403, text="This shared domain is currently restricted"),
+            FakeResponse(data={"domains": [
+                {"domain": "blocked.example", "wildcardMxValid": True},
+                {"domain": "usable.example", "wildcardMxValid": True},
+            ]}),
+            FakeResponse(data={"data": {"id": "box-2", "address": "b@usable.example", "token": "mail-token"}}),
+        ])
+
+        with patch.object(temp_email.random, "choice", side_effect=lambda values: values[0]):
+            mailbox = temp_email._yyds_create(None, None, None, "AC-test", None, sess)
+
+        self.assertEqual(mailbox["email"], "b@usable.example")
+        self.assertEqual(sess.calls[1][2]["json"]["domain"], "blocked.example")
+        self.assertEqual(sess.calls[3][2]["json"]["domain"], "usable.example")
 
     def test_fetch_prefers_mailbox_token_and_public_messages_route(self):
         sess = FakeSession([

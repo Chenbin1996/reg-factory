@@ -6,8 +6,8 @@ Uses pure requests to simulate OAuth2 authorization code flow (no browser needed
 Output format: email----password----refresh_token----client_id
 
 Usage:
-  python extract_graph_tokens.py outlook_accounts/accounts_20260413_043056.txt
-  python extract_graph_tokens.py --email user@outlook.com --password pass123
+  python tools/extract_graph_tokens.py outlook_accounts/accounts_20260413_043056.txt
+  python tools/extract_graph_tokens.py --email user@outlook.com --password pass123
 """
 
 import argparse
@@ -20,6 +20,11 @@ import urllib.parse
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")

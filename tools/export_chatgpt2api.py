@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-export_chatgpt2api.py — 把注册落下的普通 ChatGPT 网页号聚合成 chatgpt2api
+tools/export_chatgpt2api.py — 把注册落下的普通 ChatGPT 网页号聚合成 chatgpt2api
 (basketikun/chatgpt2api)的一键批量导入格式。
 
 数据源:tokens/chatgpt/c2a-*.json(注册成功时由 session_export.save_chatgpt_tokens 落盘)。
 若 c2a-*.json 缺失,回退到 *.session.json 现算(build_chatgpt2api_account)。
 
 用法:
-    python export_chatgpt2api.py
+    python tools/export_chatgpt2api.py
         -> 生成 tokens/chatgpt/chatgpt2api-tokens.txt(一行一个 access_token),
            粘进 chatgpt2api 的 access_token 批量导入框。
 
-    python export_chatgpt2api.py --json
+    python tools/export_chatgpt2api.py --json
         -> 生成 chatgpt2api-import.json({accounts:[...]}),走 /api/accounts 导入。
 
-    python export_chatgpt2api.py --post https://your-host --key <ADMIN_KEY>
+    python tools/export_chatgpt2api.py --post https://your-host --key <ADMIN_KEY>
         -> 直接 POST {accounts:[...]} 到 <host>/api/accounts 一键批量导入。
 
 对端口径(已核对 chatgpt2api 源码):
@@ -28,6 +28,11 @@ import glob
 import json
 import os
 import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform == "win32":
     try:
@@ -184,7 +189,7 @@ def main():
             f.write("\n".join(a["access_token"] for a in accounts) + "\n")
         print(f"[chatgpt2api] 已写出 {out}(一行一个 access_token,共 {len(accounts)} 个)")
         print("  导入: 粘贴进 chatgpt2api 的 access_token 批量导入框")
-    print(f"  或直接上传: python export_chatgpt2api.py --post <host> --key <admin key>")
+    print(f"  或直接上传: python tools/export_chatgpt2api.py --post <host> --key <admin key>")
 
 
 if __name__ == "__main__":

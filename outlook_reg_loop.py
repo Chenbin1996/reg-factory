@@ -35,23 +35,24 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-ARTIFACT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ARTIFACT_DIR = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or SCRIPT_DIR
 POOL_DIR = os.path.join(ARTIFACT_DIR, "_outlook_pool")
 # 账号注册侧消费的池（common/emails.next_email 读取），格式 email----password----token----clientid
 EMAILS_POOL = os.path.join(ARTIFACT_DIR, "emails.txt")
 # 注册成功但 Graph refresh_token 抽取失败的号：邮箱+密码单独存这里，别丢。
-# 之后可用 extract_graph_tokens.py 对这个文件补抽 RT，或浏览器登录直接用。
+# 之后可用 tools/extract_graph_tokens.py 对这个文件补抽 RT，或浏览器登录直接用。
 NO_GRAPH_POOL = os.path.join(ARTIFACT_DIR, "outlook_no_graph.txt")
 DEFAULT_MAX_PRESS = "5"
 
 STANDALONE_PATH = os.environ.get(
     "SELF_REG_SCRIPT_PATH",
-    os.path.join(ARTIFACT_DIR, "register_outlook_standalone.py"),
+    os.path.join(SCRIPT_DIR, "register_outlook_standalone.py"),
 )
 
 # Optional Clash rotation between attempts. Without this, MS PerimeterX
 # learns the egress IP after 1-2 signups and ERR_CONNECTION_CLOSEDs us out.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, SCRIPT_DIR)
 try:
     import _clash_verge  # type: ignore
 except ImportError:
@@ -70,13 +71,14 @@ def _env_truthy_norotate():
 
 
 def ensure_clash_proxy_env():
-    """Use .env CLASH_PROXY for direct loop runs, while keeping local APIs direct."""
+    """Use the selected egress for direct loop runs while local APIs stay direct."""
+    from common import proxy_switch
     existing = (
         os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
         or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
         or ""
     ).strip()
-    proxy = existing or os.environ.get("CLASH_PROXY", "").strip()
+    proxy = existing or proxy_switch.effective_proxy_url()
     if not proxy:
         return ""
     if not existing:
@@ -421,10 +423,35 @@ def count_pool():
         return 0
 
 
+def _rotate_graph_retry_egress():
+    """Rotate a Graph retry without violating the configured proxy mode."""
+    from common import proxy_switch as ps
+
+    mode = ps.proxy_mode()
+    if mode == "residential":
+        result = ps.rotate_proxy()
+        proxy = ps.effective_proxy_url()
+        if proxy:
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                os.environ[key] = proxy
+        return result
+    if mode == "clash_fixed":
+        return ps.ensure_proxy_mode()
+
+    import random
+    current = ps.current_node()
+    candidates = [node for node in ps.concrete_nodes() if node != current]
+    if candidates:
+        node = random.choice(candidates)
+        ps.set_node(node)
+        return {"ok": True, "node": node}
+    return {"ok": False, "node": current}
+
+
 def extract_graph_for_account(email, password, attempts=3):
     """Return Graph token data for a freshly registered Outlook account."""
     try:
-        from extract_graph_tokens import get_graph_token
+        from tools.extract_graph_tokens import get_graph_token
         for attempt in range(attempts):
             res = get_graph_token(email, password)
             if res and res.get("refresh_token"):
@@ -437,12 +464,7 @@ def extract_graph_for_account(email, password, attempts=3):
             if attempt < attempts - 1:
                 log(f"graph token attempt {attempt + 1}/{attempts} failed, rotate and retry: {email}", "WARN")
                 try:
-                    from common import proxy_switch as _ps
-                    import random as _rnd
-                    cur = _ps.current_node()
-                    candidates = [n for n in _ps.concrete_nodes() if n != cur]
-                    if candidates:
-                        _ps.set_node(_rnd.choice(candidates))
+                    _rotate_graph_retry_egress()
                 except Exception as exc:
                     log(f"graph retry node switch failed: {str(exc)[:50]}", "WARN")
                 time.sleep(3 * (attempt + 1))
@@ -480,7 +502,7 @@ def append_graph_account_to_emails_pool(email, password, graph):
 
 def append_to_emails_pool(email, password):
     """把成功号桥接进 emails.txt 池，供账号注册侧 common/emails.next_email 消费。
-    注册成功后立即用纯 HTTP OAuth 抽 Graph refresh_token（extract_graph_tokens.get_graph_token），
+    注册成功后立即用纯 HTTP OAuth 抽 Graph refresh_token（tools.extract_graph_tokens.get_graph_token），
     写真 token/client_id —— 之后 ChatGPT 取码全走 Graph API，免浏览器登录/取码。
     抽取失败（偶发风控/网络）才回退占位符 fresh，消费侧届时退化到浏览器取码。"""
     token = client_id = "fresh"
@@ -488,7 +510,7 @@ def append_to_emails_pool(email, password):
     if graph is not None:
         return append_graph_account_to_emails_pool(email, password, graph)
     try:
-        from extract_graph_tokens import get_graph_token
+        from tools.extract_graph_tokens import get_graph_token
         # 抽取经代理偶发 TLS 抖动(SSLEOFError)，单试一次一抖就回退 fresh、白丢 token 快路；
         # 这里重试 3 次(短退避)，绝大多数抖动二/三次就过。
         res = None
@@ -500,12 +522,7 @@ def append_to_emails_pool(email, password):
                 # 抽取经代理偶发 TLS 抖动：第 2 次起先切 Clash 节点换出口再试(绕开坏节点)。
                 log(f"graph token 抽取第{_try+1}次未成，切节点重试: {email}", "WARN")
                 try:
-                    from common import proxy_switch as _ps
-                    import random as _rnd
-                    _cur = _ps.current_node()
-                    _cands = [n for n in _ps.concrete_nodes() if n != _cur]
-                    if _cands:
-                        _ps.set_node(_rnd.choice(_cands))
+                    _rotate_graph_retry_egress()
                 except Exception as _e:
                     log(f"切节点失败(忽略): {str(_e)[:50]}", "WARN")
                 time.sleep(3 * (_try + 1))
@@ -537,7 +554,7 @@ def append_to_emails_pool(email, password):
 def append_no_graph_account(email, password):
     """注册成功但 Graph refresh_token 提取失败的号：邮箱+密码单独存到 NO_GRAPH_POOL，
     别丢弃。这些号本体有效(能登录/收码)，只是没抽到 RT，后续可用
-    extract_graph_tokens.py 重跑补 token 再入池。去重按邮箱。格式 email----password。"""
+    tools/extract_graph_tokens.py 重跑补 token 再入池。去重按邮箱。格式 email----password。"""
     try:
         existing = set()
         if os.path.isfile(NO_GRAPH_POOL):
@@ -743,13 +760,23 @@ def main():
     else:
         log(f"using clash proxy: {proxy}")
 
+    from common import proxy_switch
+    proxy_mode = proxy_switch.proxy_mode()
+    if proxy_mode == "clash_fixed":
+        proxy_switch.ensure_proxy_mode()
+
     # Initialize Clash controller for per-attempt node rotation. MS PerimeterX
     # learns the egress IP fast — without rotation we get ERR_CONNECTION_CLOSED
     # after 1-2 signups from the same node.
     # --no-rotate / OUTLOOK_NO_ROTATE 时不连 Clash 控制器，固定用当前节点。
-    if no_rotate:
+    if no_rotate or proxy_mode != "clash_auto":
         clash_client, clash_group = None, None
-        log("node rotation DISABLED (--no-rotate / OUTLOOK_NO_ROTATE) — 固定当前节点")
+        if no_rotate:
+            log("egress rotation DISABLED (--no-rotate / OUTLOOK_NO_ROTATE)")
+        elif proxy_mode == "clash_fixed":
+            log(f"fixed Clash node: {proxy_switch.current_node()}")
+        elif proxy_mode == "residential":
+            log("residential proxy rotation enabled")
     else:
         clash_client, clash_group = init_clash()
 
@@ -773,10 +800,19 @@ def main():
         # Rotate Clash node before each attempt so MS PX sees a fresh IP.
         # --no-rotate / OUTLOOK_NO_ROTATE 开启时跳过轮换，固定用当前节点。
         if not no_rotate:
-            rotate_info = maybe_rotate_verified(clash_client, clash_group)
-            if clash_client is not None and clash_group and rotate_info and not rotate_info.get("ok"):
+            if proxy_mode == "residential":
+                rotate_info = proxy_switch.rotate_proxy()
+                proxy = proxy_switch.effective_proxy_url()
+                if proxy:
+                    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                        os.environ[key] = proxy
+            elif proxy_mode == "clash_auto":
+                rotate_info = maybe_rotate_verified(clash_client, clash_group)
+            else:
+                rotate_info = None
+            if rotate_info and not rotate_info.get("ok"):
                 failed += 1
-                log("skip attempt: no reachable Clash egress", "WARN")
+                log("skip attempt: no reachable proxy egress", "WARN")
                 time.sleep(args.sleep)
                 continue
         log(f"=== attempt #{n}  (pool={ps}, succ={succ}, fail={failed}) ===")

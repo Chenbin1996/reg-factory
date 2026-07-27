@@ -119,7 +119,11 @@ class ChatGPTFlowTests(unittest.TestCase):
     def test_browser_profile_uses_configured_clash_proxy(self):
         with patch.dict(
             os.environ,
-            {"CLASH_PROXY": "http://proxy-user:proxy-pass@127.0.0.1:7897"},
+            {
+                "PROXY_MODE": "clash_auto",
+                "CLASH_PROXY": "http://proxy-user:proxy-pass@127.0.0.1:7897",
+            },
+            clear=True,
         ):
             fields = register_chatgpt.clash_browser_proxy_fields()
 

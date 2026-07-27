@@ -19,7 +19,7 @@ import random
 import string
 import sys
 import time
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -127,6 +127,12 @@ def _order_chatgpt_nodes(candidates):
 
 def _discover_chatgpt_nodes():
     """Return real leaf proxies from the configured Clash selector group."""
+    from common import proxy_switch
+    if proxy_switch.proxy_mode() == "clash_fixed":
+        node = proxy_switch.fixed_node()
+        if not node:
+            raise RuntimeError("固定节点模式需要配置 CLASH_FIXED_NODE")
+        return [node]
     import _clash_verge as cv
 
     api = _os.environ.get("CLASH_API", "http://127.0.0.1:9097")
@@ -157,6 +163,12 @@ def _chatgpt_node_candidates():
     """Resolve and cache the candidate pool shared by preflight and CF rotation."""
     global _active_cf_nodes
     if _active_cf_nodes:
+        return list(_active_cf_nodes)
+
+    from common import proxy_switch
+    if proxy_switch.proxy_mode() == "residential":
+        retries = max(1, _env_int("CHATGPT_RESIDENTIAL_ROTATE_RETRIES", 3))
+        _active_cf_nodes = [f"residential-{index + 1}" for index in range(retries)]
         return list(_active_cf_nodes)
 
     candidates = list(CF_NODES) if CF_NODES else _discover_chatgpt_nodes()
@@ -210,15 +222,17 @@ def _activate_cf_node(node):
     """切换 Clash 节点并断开旧连接，避免新注册会话沿用旧出口。"""
     global ACTIVE_CHATGPT_NODE
     try:
+        from common import proxy_switch
         import _clash_verge as cv
         api = _os.environ.get("CLASH_API", "http://127.0.0.1:9097")
         secret = _os.environ.get("CLASH_SECRET", "")
         group = _os.environ.get("CLASH_GROUP", "GLOBAL") or "GLOBAL"
+        active = proxy_switch.fixed_node() if proxy_switch.proxy_mode() == "clash_fixed" else node
+        proxy_switch.set_node(active, group)
         client = cv.ClashClient(api, secret)
-        client.switch(group, node)
         client.close_connections()
-        ACTIVE_CHATGPT_NODE = node
-        return node
+        ACTIVE_CHATGPT_NODE = active
+        return active
     except Exception as e:
         print(f"  [cf] 切节点失败: {str(e)[:80]}")
         return None
@@ -226,6 +240,14 @@ def _activate_cf_node(node):
 
 def _switch_cf_node():
     """把 Clash 代理组切到候选池中的下一个节点。"""
+    from common import proxy_switch
+    if proxy_switch.proxy_mode() == "residential":
+        result = proxy_switch.rotate_proxy()
+        if result.get("ok"):
+            global ACTIVE_CHATGPT_NODE
+            ACTIVE_CHATGPT_NODE = proxy_switch.current_node()
+            return ACTIVE_CHATGPT_NODE
+        return None
     candidates = _chatgpt_node_candidates()
     node = candidates[_cf_node_idx[0] % len(candidates)]
     _cf_node_idx[0] += 1
@@ -234,27 +256,16 @@ def _switch_cf_node():
 
 def clash_browser_proxy_fields():
     """把 CLASH_PROXY 转成 BitBrowser/AdsPower profile 代理字段。"""
-    raw = _os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897").strip()
-    parsed = urlsplit(raw if "://" in raw else "http://" + raw)
-    if not parsed.hostname or not parsed.port:
-        raise ValueError(f"CLASH_PROXY 格式无效: {raw}")
-    fields = {
-        "proxyMethod": 2,
-        "proxyType": "socks5" if parsed.scheme.lower() == "socks5" else "http",
-        "host": parsed.hostname,
-        "port": str(parsed.port),
-    }
-    if parsed.username:
-        fields["proxyUserName"] = unquote(parsed.username)
-        fields["proxyPassword"] = unquote(parsed.password or "")
-    return fields
+    from common import proxy_switch
+    return proxy_switch.browser_proxy_fields()
 
 
 def _probe_chatgpt_node():
     """验证当前 Clash 出口能访问 ChatGPT，并返回 Cloudflare 识别地区。"""
     from curl_cffi import requests as creq
 
-    proxy = _os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897")
+    from common import proxy_switch
+    proxy = proxy_switch.effective_proxy_url()
     session = creq.Session(impersonate="chrome131", http_version="v2")
     session.proxies = {"http": proxy, "https": proxy}
     try:
@@ -280,12 +291,24 @@ def select_chatgpt_node(requested, allow_blocked=False):
     """注册开始前选定一个节点；账号会话建立后不再静默换出口。"""
     global ACTIVE_CHATGPT_NODE
     value = (requested or "auto").strip()
+    from common import proxy_switch
+    mode = proxy_switch.proxy_mode()
+    if mode in {"residential", "direct"} and value.lower() == "auto":
+        ACTIVE_CHATGPT_NODE = None
+        print("  [node] ChatGPT 使用直连住宅代理，跳过 Clash 节点探测")
+        return None
     if value.lower() in {"none", "off", "direct"}:
         ACTIVE_CHATGPT_NODE = None
         print("  [node] ChatGPT 使用直连模式")
         return None
 
-    if value.lower() == "auto":
+    if mode == "clash_fixed":
+        fixed = proxy_switch.fixed_node()
+        if not fixed:
+            raise RuntimeError("固定节点模式需要配置 CLASH_FIXED_NODE")
+        candidates = [fixed]
+        print(f"  [node] ChatGPT 使用固定 Clash 节点: {fixed}")
+    elif value.lower() == "auto":
         candidates = _chatgpt_node_candidates()
         print(f"  [node] ChatGPT auto 从 Clash 读取 {len(candidates)} 个候选节点")
     else:
@@ -614,7 +637,7 @@ def import_chatgpt2api(session, email):
         return
     try:
         from common.session_export import build_chatgpt2api_account
-        from export_chatgpt2api import import_accounts
+        from tools.export_chatgpt2api import import_accounts
         account = build_chatgpt2api_account(session, email=email)
         ok, msg = import_accounts(host, key, [account])
         print(f"  [c2a] import {email}: {'OK' if ok else 'FAIL'} - {msg}")

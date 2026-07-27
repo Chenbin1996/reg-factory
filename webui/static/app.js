@@ -7,6 +7,7 @@ let evtSrc = null;     // EventSource
 let smsTimer = null;   // 接码助手倒计时刷新
 let k12Url = 'http://127.0.0.1:8806/';
 let k12Starting = false;
+let proxyMode = 'clash_auto';
 
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -31,16 +32,24 @@ async function pollStatus(){
   try{
     const s = await (await fetch('/api/status')).json();
     $('#dot-bb').classList.toggle('on', s.bitbrowser);
-    const label = s.browser_provider === 'adspower' ? 'AdsPower' : 'BitBrowser';
+    const label = s.browser_provider === 'adspower' ? 'AdsPower' : (s.browser_provider === 'bundled' ? '内置浏览器' : 'BitBrowser');
     $('#browser-label').textContent = label;
-    $('#dot-clash').classList.toggle('on', s.clash);
+    const networkOnline = s.network ?? s.clash;
+    $('#dot-clash').classList.toggle('on', !!networkOnline);
+    const modeLabels = {clash_auto:'Clash 自动', clash_fixed:'Clash 固定', residential:'住宅代理', direct:'直连'};
+    $('#network-label').textContent = modeLabels[s.proxy_mode] || '网络出口';
     $('#dot-k12').classList.remove('pending');
     $('#dot-k12').classList.toggle('on', !!s.k12);
     $('#k12-nav-state').textContent = s.k12 ? '在线' : '离线';
     $('#k12-nav-state').classList.toggle('on', !!s.k12);
     $('#version').textContent = 'v' + (s.version || '--');
-    $('#node').textContent = '节点 ' + (s.node || '--');
-    $('#running').textContent = s.running ? `● ${s.running} 个任务运行中` : '';
+    $('#node').textContent = '出口 ' + (s.node || '--');
+    const online = [s.bitbrowser, networkOnline, s.k12].filter(Boolean).length;
+    $('#health-dot').classList.remove('pending', 'on', 'partial');
+    if(online === 3) $('#health-dot').classList.add('on');
+    else if(online) $('#health-dot').classList.add('partial');
+    $('#health-label').textContent = `${online}/3 服务在线`;
+    $('#running').textContent = s.running ? `${s.running} 个任务运行中` : '';
   }catch(e){}
 }
 setInterval(pollStatus, 5000);
@@ -51,15 +60,143 @@ function showView(v){
   document.body.classList.toggle('k12-active', v==='k12');
   $('#view-run').style.display  = v==='run' ? '' : 'none';
   $('#view-env').style.display  = v==='env' ? 'block' : 'none';
+  $('#view-network').style.display = v==='network' ? 'block' : 'none';
   $('#view-embed').style.display = v==='embed' ? 'block' : 'none';
   $('#view-mailpool').style.display = v==='mailpool' ? 'block' : 'none';
   $('#view-k12').style.display = v==='k12' ? 'block' : 'none';
   $$('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view===v));
+  if(v!=='run' && v!=='embed') $$('.scriptbtn').forEach(b=>b.classList.remove('active'));
   if(v==='env') loadEnv();
+  if(v==='network') loadProxyPanel();
   if(v==='mailpool') loadMailpool();
   if(v==='k12') openK12Channel();
 }
 $$('.navbtn').forEach(b=> b.onclick = ()=> showView(b.dataset.view));
+
+// ---------------------------------------------------------------- 网络出口
+function setProxyMode(mode){
+  proxyMode = mode;
+  $$('[data-proxy-mode]').forEach(button=>button.classList.toggle('active', button.dataset.proxyMode===mode));
+  const clash = mode === 'clash_auto' || mode === 'clash_fixed';
+  $('#network-clash-fields').style.display = clash ? 'block' : 'none';
+  $('#network-fixed-field').style.display = mode === 'clash_fixed' ? 'flex' : 'none';
+  $('#network-residential-fields').style.display = mode === 'residential' ? 'block' : 'none';
+  $('#btn-rotate-proxy').textContent = mode === 'clash_fixed' ? '重新应用节点' : '立即轮换';
+}
+
+function setProxyMessage(text, ok=null){
+  const message = $('#proxy-msg');
+  message.textContent = text || '';
+  message.classList.toggle('ok', ok===true);
+  message.classList.toggle('bad', ok===false);
+}
+
+function renderProxyNodes(nodes, selected){
+  const select = $('#proxy-fixed-node');
+  select.innerHTML = '';
+  const values = [...(nodes||[])];
+  if(selected && !values.includes(selected)) values.unshift(selected);
+  if(!values.length){
+    const option = document.createElement('option');
+    option.value = ''; option.textContent = '未读取到节点';
+    select.appendChild(option);
+    return;
+  }
+  values.forEach(node=>{
+    const option = document.createElement('option');
+    option.value = node; option.textContent = node; option.selected = node===selected;
+    select.appendChild(option);
+  });
+}
+
+async function loadProxyPanel(includeNodes=false){
+  setProxyMessage('读取中…');
+  try{
+    const data = await (await fetch(includeNodes ? '/api/proxy?nodes=1' : '/api/proxy')).json();
+    const config = data.config || {};
+    setProxyMode(config.PROXY_MODE || 'clash_auto');
+    $('#proxy-clash-api').value = config.CLASH_API || '';
+    $('#proxy-clash-secret').value = config.CLASH_SECRET || '';
+    $('#proxy-clash-proxy').value = config.CLASH_PROXY || '';
+    $('#proxy-clash-group').value = config.CLASH_GROUP || '';
+    $('#proxy-residential-url').value = config.REG_FACTORY_PROXY || '';
+    $('#proxy-residential-pool').value = config.REG_FACTORY_PROXY_POOL || '';
+    $('#proxy-rotate-url').value = config.REG_FACTORY_PROXY_ROTATE_URL || '';
+    $('#proxy-rotate-method').value = config.REG_FACTORY_PROXY_ROTATE_METHOD || 'GET';
+    $('#proxy-chatgpt-retries').value = config.CHATGPT_RESIDENTIAL_ROTATE_RETRIES || '3';
+    renderProxyNodes(data.nodes, config.CLASH_FIXED_NODE || data.current);
+    $('#network-current').textContent = `${data.current || '未连接'} · ${config.PROXY_MODE || 'clash_auto'}`;
+    $('#network-current-dot').classList.remove('pending');
+    $('#network-current-dot').classList.toggle('on', !!data.current);
+    setProxyMessage('');
+  }catch(error){
+    setProxyMessage('读取网络配置失败: '+error, false);
+  }
+}
+
+function collectProxyConfig(){
+  return {
+    PROXY_MODE: proxyMode,
+    CLASH_API: $('#proxy-clash-api').value.trim(),
+    CLASH_SECRET: $('#proxy-clash-secret').value.trim(),
+    CLASH_PROXY: $('#proxy-clash-proxy').value.trim(),
+    CLASH_GROUP: $('#proxy-clash-group').value.trim(),
+    CLASH_FIXED_NODE: $('#proxy-fixed-node').value,
+    REG_FACTORY_PROXY: $('#proxy-residential-url').value.trim(),
+    REG_FACTORY_PROXY_POOL: $('#proxy-residential-pool').value.trim(),
+    REG_FACTORY_PROXY_ROTATE_URL: $('#proxy-rotate-url').value.trim(),
+    REG_FACTORY_PROXY_ROTATE_METHOD: $('#proxy-rotate-method').value,
+    CHATGPT_RESIDENTIAL_ROTATE_RETRIES: $('#proxy-chatgpt-retries').value,
+  };
+}
+
+async function saveProxy(){
+  const button = $('#btn-save-proxy');
+  button.disabled = true; setProxyMessage('正在保存并应用…');
+  try{
+    const response = await fetch('/api/proxy', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({config:collectProxyConfig()})});
+    const data = await response.json();
+    if(!data.ok) throw new Error(data.error || '保存失败');
+    setProxyMessage(`已应用，当前出口：${data.current || data.applied?.node || '--'}`, true);
+    await pollStatus();
+  }catch(error){
+    setProxyMessage(error.message || String(error), false);
+  }finally{ button.disabled = false; }
+}
+
+async function rotateProxy(){
+  const button = $('#btn-rotate-proxy');
+  button.disabled = true; setProxyMessage('正在切换出口…');
+  try{
+    const response = await fetch('/api/proxy/rotate', {method:'POST'});
+    const data = await response.json();
+    if(!data.ok) throw new Error(data.error || '轮换失败');
+    const delay = data.latency_ms ? `，延迟 ${data.latency_ms} ms` : '';
+    const applies = data.mode === 'residential' ? '，新建 BitBrowser 窗口生效' : '';
+    setProxyMessage(`当前出口：${data.node || '--'}${delay}${applies}`, true);
+    $('#network-current').textContent = `${data.node || '--'} · ${data.mode || proxyMode}`;
+    await pollStatus();
+  }catch(error){ setProxyMessage(error.message || String(error), false); }
+  finally{ button.disabled = false; }
+}
+
+async function testProxy(){
+  const button = $('#btn-test-proxy');
+  button.disabled = true; setProxyMessage('正在检测公网出口…');
+  try{
+    const response = await fetch('/api/proxy/test', {method:'POST'});
+    const data = await response.json();
+    if(!data.ok) throw new Error(data.error || '检测失败');
+    setProxyMessage(`出口 IP：${data.ip} · ${data.node || data.mode}`, true);
+  }catch(error){ setProxyMessage(error.message || String(error), false); }
+  finally{ button.disabled = false; }
+}
+
+$$('[data-proxy-mode]').forEach(button=>button.onclick=()=>setProxyMode(button.dataset.proxyMode));
+$('#btn-save-proxy').onclick = saveProxy;
+$('#btn-rotate-proxy').onclick = rotateProxy;
+$('#btn-test-proxy').onclick = testProxy;
+$('#btn-refresh-nodes').onclick = ()=>loadProxyPanel(true);
 
 // ---------------------------------------------------------------- Codex K12 集成通道
 function renderK12Status(status){
@@ -115,66 +252,109 @@ $('#btn-k12-start').onclick = startK12Service;
 $('#btn-k12-retry').onclick = openK12Channel;
 
 // ---------------------------------------------------------------- 脚本导航
+function appendNavGroup(nav, title, items, renderItem, open=false){
+  const group = document.createElement('details');
+  group.className = 'nav-group';
+  group.open = open;
+  const summary = document.createElement('summary');
+  summary.innerHTML = `<span>${title}</span><span class="nav-count">${items.length}</span>`;
+  group.appendChild(summary);
+  const body = document.createElement('div');
+  body.className = 'nav-group-items';
+  items.forEach(item=>body.appendChild(renderItem(item)));
+  group.appendChild(body);
+  nav.appendChild(group);
+}
+
 async function loadScripts(){
   SCRIPTS = (await (await fetch('/api/scripts')).json()).scripts;
   const nav = $('#script-nav');
   const cats = {};
   SCRIPTS.forEach(s => (cats[s.category]=cats[s.category]||[]).push(s));
   nav.innerHTML = '';
+  $('#task-count').textContent = SCRIPTS.length;
 
-  // 内嵌功能页(Gmail 等) —— 放最上面
+  let catIndex = 0;
+  for(const cat of Object.keys(cats)){
+    appendNavGroup(nav, cat, cats[cat], s=>{
+      const b=document.createElement('button');
+      b.className='scriptbtn'; b.textContent=s.title; b.dataset.id=s.id;
+      b.onclick=()=>{ showView('run'); selectScript(s.id); };
+      return b;
+    }, catIndex++===0);
+  }
+
   try{
     EMBEDS = (await (await fetch('/api/embeds')).json()).embeds || [];
     if(EMBEDS.length){
-      const t=document.createElement('div'); t.className='cat-title'; t.textContent='功能'; nav.appendChild(t);
-      EMBEDS.forEach(e=>{
+      appendNavGroup(nav, '辅助功能', EMBEDS, e=>{
         const b=document.createElement('button');
-        b.className='scriptbtn'; b.textContent='🌐 '+e.title; b.dataset.embed=e.id;
+        b.className='scriptbtn'; b.textContent=e.title; b.dataset.embed=e.id;
         b.onclick=()=>openEmbed(e.id);
-        nav.appendChild(b);
+        return b;
       });
     }
   }catch(err){}
 
-  for(const cat of Object.keys(cats)){
-    const t = document.createElement('div');
-    t.className='cat-title'; t.textContent=cat; nav.appendChild(t);
-    cats[cat].forEach(s=>{
-      const b=document.createElement('button');
-      b.className='scriptbtn'; b.textContent=s.title; b.dataset.id=s.id;
-      b.onclick=()=>{ showView('run'); selectScript(s.id); };
-      nav.appendChild(b);
-    });
-  }
-  // 外部工具链接(新标签打开)
   try{
     const links = (await (await fetch('/api/links')).json()).links || [];
     if(links.length){
-      const t = document.createElement('div');
-      t.className='cat-title'; t.textContent='外部工具'; nav.appendChild(t);
-      links.forEach(l=>{
+      appendNavGroup(nav, '外部工具', links, l=>{
         const a=document.createElement('a');
         a.className='scriptbtn linkbtn'; a.href=l.url; a.target='_blank'; a.rel='noopener';
-        a.title=l.desc||l.url; a.innerHTML=`🔗 ${l.title}`;
-        nav.appendChild(a);
+        a.title=l.desc||l.url; a.textContent=l.title+' ↗';
+        return a;
       });
     }
   }catch(e){}
+
+  if(!curSrc && SCRIPTS.length) selectScript(SCRIPTS[0].id);
 }
 
 function selectScript(id){
   curSrc = SCRIPTS.find(s=>s.id===id);
+  if(!curSrc) return;
   $$('.scriptbtn').forEach(b=>b.classList.toggle('active', b.dataset.id===id));
+  const active = $(`.scriptbtn[data-id="${id}"]`);
+  if(active?.closest('details')) active.closest('details').open = true;
   if(!evtSrc) setRunState('idle', '待运行');
   renderForm(curSrc);
 }
 
 // ---------------------------------------------------------------- 渲染表单
+function renderArgField(a){
+  const f = document.createElement('div');
+  f.className='field';
+  const label = a.flag.replace(/^--/,'');
+  if(a.type==='bool'){
+    f.className='field checkbox';
+    f.innerHTML = `<input type="checkbox" id="f_${label}" ${a.default?'checked':''}>
+      <label for="f_${label}"><span>${label}</span>${a.help?`<small>${a.help}</small>`:''}</label>`;
+  }else if(a.type==='choice'){
+    f.innerHTML = `<label for="f_${label}">${label}</label>
+      <select id="f_${label}">${a.choices.map(c=>`<option ${c==a.default?'selected':''}>${c}</option>`).join('')}</select>
+      ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
+  }else if(a.type==='multi'){
+    const def = a.default||[];
+    f.classList.add('field-wide');
+    f.innerHTML = `<label>${label}</label>
+      <div class="multi">${a.choices.map(c=>`<label><input type="checkbox" value="${c}" ${def.includes(c)?'checked':''} data-multi="${label}">${c}</label>`).join('')}</div>
+      ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
+  }else{
+    const t = a.type==='int' ? 'number' : 'text';
+    f.innerHTML = `<label for="f_${label}">${label}</label>
+      <input type="${t}" id="f_${label}" value="${a.default!==undefined&&a.default!==''?a.default:''}" placeholder="${a.help||''}">
+      ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
+  }
+  return f;
+}
+
 function renderForm(s){
   const p = $('#form-panel');
   p.innerHTML = '';
   const h = document.createElement('div');
-  h.innerHTML = `<h2 class="form-title">${s.title}</h2><p class="form-desc">${s.desc||''}</p>`;
+  h.className = 'form-head';
+  h.innerHTML = `<div><span class="form-eyebrow">${s.category}</span><h1 class="form-title">${s.title}</h1></div><p class="form-desc">${s.desc||''}</p>`;
   p.appendChild(h);
   if(s.warning){
     const warning = document.createElement('div');
@@ -184,38 +364,28 @@ function renderForm(s){
     p.appendChild(warning);
   }
 
-  s.args.forEach(a=>{
-    const f = document.createElement('div'); f.className='field';
-    const label = a.flag.replace(/^--/,'');
-    if(a.type==='bool'){
-      f.className='field checkbox';
-      f.innerHTML = `<input type="checkbox" id="f_${label}" ${a.default?'checked':''}>
-        <label for="f_${label}">${label}</label>`;
-      if(a.help){ const hh=document.createElement('div'); hh.className='fhelp'; hh.textContent=a.help; f.appendChild(hh); }
-    }else if(a.type==='choice'){
-      f.innerHTML = `<label>${label}</label>
-        <select id="f_${label}">${a.choices.map(c=>`<option ${c==a.default?'selected':''}>${c}</option>`).join('')}</select>
-        ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
-    }else if(a.type==='multi'){
-      const def = a.default||[];
-      f.innerHTML = `<label>${label}</label>
-        <div class="multi">${a.choices.map(c=>`<label><input type="checkbox" value="${c}" ${def.includes(c)?'checked':''} data-multi="${label}">${c}</label>`).join('')}</div>
-        ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
-    }else{
-      const t = a.type==='int' ? 'number' : 'text';
-      f.innerHTML = `<label>${label}</label>
-        <input type="${t}" id="f_${label}" value="${a.default!==undefined&&a.default!==''?a.default:''}" placeholder="${a.help||''}">
-        ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
-    }
-    p.appendChild(f);
-  });
+  const primaryArgs = s.args.slice(0, 6);
+  const advancedArgs = s.args.slice(6);
+  const grid = document.createElement('div'); grid.className='form-grid';
+  primaryArgs.forEach(a=>grid.appendChild(renderArgField(a)));
+  p.appendChild(grid);
+  if(advancedArgs.length){
+    const more = document.createElement('details'); more.className='advanced-fields';
+    more.innerHTML = `<summary><span>更多设置</span><span>${advancedArgs.length} 项</span></summary>`;
+    const moreGrid = document.createElement('div'); moreGrid.className='form-grid';
+    advancedArgs.forEach(a=>moreGrid.appendChild(renderArgField(a)));
+    more.appendChild(moreGrid);
+    p.appendChild(more);
+  }
 
+  const actions = document.createElement('div'); actions.className='form-actions';
   const btn = document.createElement('button');
-  btn.className='btn-run'; btn.textContent='▶ 运行';
+  btn.className='btn-run btn-run-task'; btn.textContent='▶ 运行任务';
   btn.onclick = runScript;
-  p.appendChild(btn);
   const cmd = document.createElement('div'); cmd.className='cmd-line'; cmd.id='cmd-preview';
-  p.appendChild(cmd);
+  actions.appendChild(btn);
+  actions.appendChild(cmd);
+  p.appendChild(actions);
 }
 
 function collectArgs(s){

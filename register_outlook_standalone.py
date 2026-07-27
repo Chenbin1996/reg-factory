@@ -532,7 +532,7 @@ async def inject_arkose_token(page, token):
 # ======================== Graph API Token ========================
 
 # Thunderbird's public client is enabled for consumer Microsoft accounts and
-# is also used by extract_graph_tokens.py. Keep each RT paired with this ID.
+# is also used by tools/extract_graph_tokens.py. Keep each RT paired with this ID.
 GRAPH_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
 GRAPH_REDIRECT_URI = "http://localhost"
 GRAPH_SCOPE = "offline_access https://graph.microsoft.com/Mail.Read"
@@ -1196,7 +1196,7 @@ async def _extract_graph_token_device(page, email, password, idx=0):
 def extract_graph_token_http(email, password, idx=0, attempts=3):
     """Extract Graph refresh_token through the shared pure-HTTP OAuth flow."""
     try:
-        from extract_graph_tokens import get_graph_token
+        from tools.extract_graph_tokens import get_graph_token
     except Exception as exc:
         print(f"  [#{idx}] [graph] import error: {exc}")
         return None

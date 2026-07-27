@@ -28,9 +28,13 @@ from fastapi.staticfiles import StaticFiles
 BOOT_ENV = dict(os.environ)
 
 # 项目根 = webui 的上一级
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = (
+    getattr(sys, "_MEIPASS", "")
+    if getattr(sys, "frozen", False)
+    else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 WEBUI = os.path.join(ROOT, "webui")
-ENV_PATH = os.path.join(ROOT, ".env")
+ENV_PATH = os.environ.get("REG_FACTORY_ENV_FILE") or os.path.join(ROOT, ".env")
 ENV_EXAMPLE = os.path.join(ROOT, ".env.example")
 K12_DIR = os.path.join(ROOT, "codex_k12")
 K12_SERVER = os.path.join(K12_DIR, "server", "index.ts")
@@ -40,11 +44,20 @@ K12_LOG_PATH = os.path.join(K12_DIR, "server.log")
 
 sys.path.insert(0, WEBUI)
 sys.path.insert(0, ROOT)
-import scripts as schema  # noqa: E402
+from webui import scripts as schema  # noqa: E402
 
 
 def _git_version():
     """Return the commit loaded by this WebUI process."""
+    version_file = os.path.join(ROOT, "VERSION")
+    if getattr(sys, "frozen", False):
+        try:
+            with open(version_file, encoding="utf-8") as handle:
+                version = handle.read().strip()
+            if version:
+                return version
+        except OSError:
+            pass
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=12", "HEAD"],
@@ -58,6 +71,13 @@ def _git_version():
             return result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         pass
+    try:
+        with open(version_file, encoding="utf-8") as handle:
+            version = handle.read().strip()
+        if version:
+            return version
+    except OSError:
+        pass
     return "archive"
 
 
@@ -67,11 +87,11 @@ WEBUI_VERSION = _git_version()
 def _ensure_proxy_env():
     """接码等公网服务直连不通(sms-man 直连超时)，必须经 Clash。把 CLASH_PROXY 注进本进程
     环境，让 common.sms 的 requests(trust_env) 自动走代理；localhost API 直连(NO_PROXY)。"""
-    proxy = ""
     try:
-        proxy = _read_config_val("CLASH_PROXY", "http://127.0.0.1:7897")
+        from common import proxy_switch
+        proxy = proxy_switch.effective_proxy_url()
     except Exception:
-        proxy = "http://127.0.0.1:7897"
+        proxy = ""
     if proxy and not os.environ.get("HTTPS_PROXY"):
         os.environ["HTTP_PROXY"] = os.environ["HTTPS_PROXY"] = proxy
         os.environ["http_proxy"] = os.environ["https_proxy"] = proxy
@@ -295,19 +315,25 @@ def _apply_saved_env(updates):
         else:
             os.environ[key] = value
 
-    if "CLASH_PROXY" in updates and "HTTPS_PROXY" not in BOOT_ENV:
-        proxy = updates["CLASH_PROXY"].strip()
+    import importlib
+    for name in ("config", "common.direct_proxy", "common.proxy_switch", "common.sms", "common.temp_email"):
+        module = sys.modules.get(name)
+        if module is not None:
+            importlib.reload(module)
+
+    if "HTTPS_PROXY" not in BOOT_ENV:
+        try:
+            from common import proxy_switch
+            proxy = proxy_switch.effective_proxy_url()
+        except Exception:
+            proxy = ""
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             if proxy:
                 os.environ[key] = proxy
             else:
                 os.environ.pop(key, None)
-
-    import importlib
-    for name in ("config", "common.proxy_switch", "common.sms", "common.temp_email"):
-        module = sys.modules.get(name)
-        if module is not None:
-            importlib.reload(module)
+        if proxy:
+            os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost,::1"
 
 
 # ============================================================ 连通测试
@@ -361,6 +387,11 @@ def _fingerprint_provider():
 def _test_bitbrowser():
     """Test selected fingerprint browser local API."""
     provider = _fingerprint_provider()
+    if provider in {"bundled", "embedded", "local"}:
+        browser = _read_config_val("REG_FACTORY_BROWSER_PATH", "")
+        if os.path.isfile(browser):
+            return True, "Bundled Chromium browser ready"
+        return False, "Bundled Chromium path is not configured"
     if provider in {"adspower", "ads_power", "ads"}:
         api = _read_config_val("ADSPOWER_API", "http://127.0.0.1:50325").rstrip("/")
         name = "AdsPower"
@@ -383,7 +414,11 @@ def _test_bitbrowser():
 def _proxied_get(url, timeout=20):
     """经 Clash 代理 GET(sms-man/firefox 等公网接码服务直连不通，必须走代理)。
     返回 (status, body_text)。"""
-    proxy = _read_config_val("CLASH_PROXY", "http://127.0.0.1:7897")
+    try:
+        from common import proxy_switch
+        proxy = proxy_switch.effective_proxy_url()
+    except Exception:
+        proxy = ""
     handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy}) if proxy else urllib.request.ProxyHandler({})
     opener = urllib.request.build_opener(handler)
     with opener.open(url, timeout=timeout) as r:
@@ -525,7 +560,7 @@ async def api_k12_start():
 
 
 # ============================================================ 邮箱池批量导入
-EMAILS_FILE = os.path.join(ROOT, "emails.txt")
+EMAILS_FILE = os.path.join(os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT, "emails.txt")
 import re as _re
 _EMAIL_RE = _re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
@@ -710,30 +745,180 @@ def index():
 @app.get("/api/status")
 def api_status():
     provider = _fingerprint_provider()
-    if provider in {"adspower", "ads_power", "ads"}:
+    if provider in {"bundled", "embedded", "local"}:
+        bb = _read_config_val("REG_FACTORY_BROWSER_PATH", "")
+        provider_label = "bundled"
+    elif provider in {"adspower", "ads_power", "ads"}:
         bb = _read_config_val("ADSPOWER_API", "http://127.0.0.1:50325")
         provider_label = "adspower"
     else:
         bb = _read_config_val("BITBROWSER_API", "http://127.0.0.1:54345")
         provider_label = "bitbrowser"
-    clash = _read_config_val("CLASH_API", "http://127.0.0.1:9097")
+    mode = "clash_auto"
+    proxy = ""
+    network = False
     node = None
     try:
         from common import proxy_switch as ps
+        mode = ps.proxy_mode()
+        proxy = ps.effective_proxy_url()
         node = ps.current_node()
+        network = bool(proxy) if mode == "residential" else (True if mode == "direct" else _test_clash()[0])
     except Exception:
         node = None
     return {
         "pid": os.getpid(),
         "version": WEBUI_VERSION,
         "root": ROOT,
-        "bitbrowser": _http_alive(bb),
+        "bitbrowser": os.path.isfile(bb) if provider_label == "bundled" else _http_alive(bb),
         "browser_provider": provider_label,
-        "clash": _http_alive(clash),
+        "clash": network,
+        "network": network,
+        "proxy_mode": mode,
+        "direct_proxy": mode == "residential" and bool(proxy),
         "k12": _k12_alive(),
         "node": node,
         "running": sum(1 for r in RUNS.values() if not r["done"]),
     }
+
+
+_PROXY_ENV_KEYS = (
+    "PROXY_MODE",
+    "CLASH_API",
+    "CLASH_SECRET",
+    "CLASH_PROXY",
+    "CLASH_GROUP",
+    "CLASH_FIXED_NODE",
+    "REG_FACTORY_PROXY",
+    "REG_FACTORY_PROXY_POOL",
+    "REG_FACTORY_PROXY_ROTATE_URL",
+    "REG_FACTORY_PROXY_ROTATE_METHOD",
+    "CHATGPT_RESIDENTIAL_ROTATE_RETRIES",
+)
+
+
+def _proxy_panel_data(include_nodes=False):
+    from common import proxy_switch as ps
+
+    config = {key: _read_config_val(key, "") for key in _PROXY_ENV_KEYS}
+    config["PROXY_MODE"] = ps.proxy_mode()
+    config["CLASH_API"] = config["CLASH_API"] or "http://127.0.0.1:9097"
+    config["CLASH_PROXY"] = config["CLASH_PROXY"] or "http://127.0.0.1:7897"
+    config["CLASH_GROUP"] = config["CLASH_GROUP"] or "GLOBAL"
+    config["REG_FACTORY_PROXY_ROTATE_METHOD"] = config["REG_FACTORY_PROXY_ROTATE_METHOD"] or "GET"
+    config["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] = config["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] or "3"
+    config["REG_FACTORY_PROXY_POOL"] = config["REG_FACTORY_PROXY_POOL"].replace(",", "\n")
+    nodes = []
+    if include_nodes or config["PROXY_MODE"] in {"clash_auto", "clash_fixed"}:
+        try:
+            nodes = ps.available_clash_nodes(config["CLASH_GROUP"])
+        except Exception:
+            nodes = []
+    try:
+        current = ps.current_node()
+    except Exception:
+        current = None
+    return {
+        "config": config,
+        "nodes": nodes,
+        "current": current,
+        "effective_proxy": ps.effective_proxy_url(),
+    }
+
+
+@app.get("/api/proxy")
+def api_proxy_get(nodes: bool = False):
+    return _proxy_panel_data(include_nodes=nodes)
+
+
+@app.post("/api/proxy")
+async def api_proxy_set(request: Request):
+    from common import direct_proxy
+
+    data = await request.json()
+    incoming = (data or {}).get("config") or {}
+    updates = {key: str(incoming.get(key) or "").strip() for key in _PROXY_ENV_KEYS}
+    mode = updates["PROXY_MODE"] or "clash_auto"
+    if mode not in {"clash_auto", "clash_fixed", "residential"}:
+        return JSONResponse({"ok": False, "error": "不支持的代理模式"}, status_code=400)
+    updates["PROXY_MODE"] = mode
+    pool_values = [
+        item.strip()
+        for item in updates["REG_FACTORY_PROXY_POOL"].replace("\r", "").replace(",", "\n").replace(";", "\n").split("\n")
+        if item.strip()
+    ]
+    try:
+        if updates["REG_FACTORY_PROXY"]:
+            direct_proxy.parse_proxy(updates["REG_FACTORY_PROXY"])
+        for value in pool_values:
+            direct_proxy.parse_proxy(value)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": f"住宅代理格式错误: {exc}"}, status_code=400)
+    if mode == "clash_fixed" and not updates["CLASH_FIXED_NODE"]:
+        return JSONResponse({"ok": False, "error": "固定节点模式必须选择 CLASH_FIXED_NODE"}, status_code=400)
+    if mode == "residential" and not (updates["REG_FACTORY_PROXY"] or pool_values):
+        return JSONResponse({"ok": False, "error": "动态住宅 IP 模式至少需要一个代理地址"}, status_code=400)
+    method = updates["REG_FACTORY_PROXY_ROTATE_METHOD"] or "GET"
+    if method.upper() not in {"GET", "POST"}:
+        return JSONResponse({"ok": False, "error": "换 IP 接口方法只能是 GET 或 POST"}, status_code=400)
+    updates["REG_FACTORY_PROXY_ROTATE_METHOD"] = method.upper()
+    try:
+        updates["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] = str(max(1, int(updates["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] or "3")))
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "ChatGPT 轮换上限必须是整数"}, status_code=400)
+    updates["REG_FACTORY_PROXY_POOL"] = ",".join(pool_values)
+
+    if not os.path.isfile(ENV_PATH) and os.path.isfile(ENV_EXAMPLE):
+        shutil.copy(ENV_EXAMPLE, ENV_PATH)
+    _write_env_file(ENV_PATH, updates)
+    _apply_saved_env(updates)
+    try:
+        from common import proxy_switch as ps
+        applied = await asyncio.to_thread(ps.ensure_proxy_mode)
+        return {"ok": True, "applied": applied, **_proxy_panel_data()}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "saved": True,
+            "error": f"配置已保存，但当前未能应用: {str(exc)[:160]}",
+            **_proxy_panel_data(),
+        }
+
+
+@app.post("/api/proxy/rotate")
+async def api_proxy_rotate():
+    try:
+        from common import proxy_switch as ps
+        result = await asyncio.to_thread(ps.rotate_proxy)
+        return result
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)[:180]}, status_code=400)
+
+
+@app.post("/api/proxy/test")
+async def api_proxy_test():
+    def _test():
+        from common import proxy_switch as ps
+
+        proxy = ps.effective_proxy_url()
+        if not proxy:
+            raise RuntimeError("当前模式没有配置有效代理")
+        from curl_cffi import requests as creq
+        response = creq.get(
+            "https://api.ipify.org?format=json",
+            impersonate="chrome131",
+            proxies={"http": proxy, "https": proxy},
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.json().get("ip") or response.text.strip()
+
+    try:
+        from common import proxy_switch as ps
+        ip = await asyncio.to_thread(_test)
+        return {"ok": True, "ip": ip, "mode": ps.proxy_mode(), "node": ps.current_node()}
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)[:180]}, status_code=400)
 
 
 @app.get("/api/env")
@@ -778,7 +963,11 @@ async def api_env_set(request: Request):
 
 def _build_cmd(script, args):
     """把前端提交的 args(dict) 按 schema 拼成命令行 list。"""
-    cmd = [sys.executable, "-u", os.path.join(ROOT, script["file"])]
+    cmd = [sys.executable]
+    if getattr(sys, "frozen", False):
+        cmd += ["--task", script["file"]]
+    else:
+        cmd += ["-u", os.path.join(ROOT, script["file"])]
     positional = []
     by_flag = {a["flag"]: a for a in script["args"]}
     for flag, spec in by_flag.items():
@@ -813,7 +1002,11 @@ def _child_env():
             env[key] = value
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
-    proxy = env.get("CLASH_PROXY", "http://127.0.0.1:7897").strip()
+    try:
+        from common import proxy_switch
+        proxy = proxy_switch.effective_proxy_url(env)
+    except Exception:
+        proxy = ""
     if proxy:
         env["HTTP_PROXY"] = env["HTTPS_PROXY"] = proxy
         env["http_proxy"] = env["https_proxy"] = proxy
@@ -829,9 +1022,16 @@ async def api_run(request: Request):
     script = schema.script_by_id(sid)
     if not script:
         return JSONResponse({"error": f"未知脚本: {sid}"}, status_code=400)
+    try:
+        from common import proxy_switch
+        await asyncio.to_thread(proxy_switch.ensure_proxy_mode)
+    except Exception as exc:
+        return JSONResponse({"error": f"网络出口配置未应用: {str(exc)[:160]}"}, status_code=400)
     cmd = _build_cmd(script, args)
+    task_cwd = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
+    os.makedirs(task_cwd, exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=ROOT, env=_child_env(),
+        *cmd, cwd=task_cwd, env=_child_env(),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     _run_seq[0] += 1

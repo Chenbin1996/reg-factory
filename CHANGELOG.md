@@ -1,5 +1,23 @@
 ﻿# 更新日志
 
+## 2026-07-28 — 1.1.0
+
+**WebUI 与项目结构**
+- 精简控制台导航与任务表单，重新整理项目目录、README、配置文档和维护工具入口。
+- README 恢复平台图标和技术栈徽章展示，统一使用“邮箱注册”等明确表述。
+
+**网络出口**
+- 新增 Clash 自动轮换、固定节点与动态住宅 IP 三种模式，并支持立即切换和出口检测。
+- BitBrowser 新建窗口时可写入住宅代理类型、地址、端口、用户名和密码。
+
+**Windows 发布包**
+- 新增 PyInstaller 便携版构建入口，配置与运行数据持久化到 `%LOCALAPPDATA%\RegFactory`。
+- Release 包使用文件白名单生成，不包含 `.env`、邮箱池、Cookie、Token、日志和调试截图。
+- Codex K12 继续保留在源码仓库，但不打入 Windows 主安装包，避免引入整套 Node 依赖。
+- Windows 启动器会自动打开控制台、复用已运行实例或避让被占用端口，并在启动失败时保留错误窗口。
+
+---
+
 ## 2026-07-24 — Claude / ChatGPT 注册稳定性、Outlook Graph 与 WebUI
 
 **Claude**
@@ -58,7 +76,7 @@
   - `human_press_and_hold(page, cx, cy, is_done, max_hold, min_hold)`：完整按住序列——WindMouse 逼近 → 落点停顿 → down → OU 抖动循环（每 ~0.5s 轮询 `is_done()`，进度满后加真人反应延迟再 up）。
   - 自检入口 `python -m common.human_mouse`：校验轨迹连续/精确命中/速度非均匀、抖动自相关高于阈值。
 - **Clash 节点「探测优先」轮换**（`outlook_reg_loop.py`）：切节点前先用 Clash `/delay` 探测延迟，**跳过超时节点**，在一批候选里挑延迟最低的再切换，不再把整次 attempt（~3min）浪费在死节点上。可调 `CLASH_MAX_LATENCY_MS`（默认 2500）、`CLASH_PROBE_BATCH`（默认 8）。
-- **`--no-rotate` / `OUTLOOK_NO_ROTATE=1` 开关**：固定使用当前节点，不探测/不切换，也不连 Clash 控制器。WebUI 养号面板已同步该开关（及原先漏配的 `--sleep-when-full`）。
+- **`--no-rotate` / `OUTLOOK_NO_ROTATE=1` 开关**：固定使用当前节点，不探测/不切换，也不连 Clash 控制器。WebUI 邮箱注册面板已同步该开关（及原先漏配的 `--sleep-when-full`）。
 
 **改进**
 - **按住验证鼠标运动去机器人特征**：`register_outlook_standalone.py` 原按住期间是纯正弦波漂移（完全周期性）、`register.py` 是 ±2px 均匀随机抖动（白噪声无动量），两者 PerimeterX 行为模型都易判；两处入口均改用 `human_press_and_hold`，复用各自原有的「captcha 消失=已通过」判定作 `is_done` 回调。
