@@ -38,8 +38,21 @@ def _ms_session():
     return s
 
 
-def _get_access_token(refresh_token, client_id=DEFAULT_CLIENT_ID, scope="https://graph.microsoft.com/Mail.Read"):
-    # 直连打 token 端点(绕代理)；直连仍偶发瞬时抖动，轻量重试 3 次兜底。业务错误(非200)不重试。
+def _token_failure_reason(response, payload):
+    description = str(payload.get("error_description") or "").lower()
+    error = str(payload.get("error") or "").lower()
+    if "service abuse mode" in description:
+        return "service_abuse"
+    if "different tenant" in description:
+        return "tenant_mismatch"
+    if error == "invalid_grant":
+        return "invalid_grant"
+    return f"http_{response.status_code}"
+
+
+def check_refresh_token(refresh_token, client_id=DEFAULT_CLIENT_ID,
+                        scope="https://graph.microsoft.com/Mail.Read"):
+    """Validate a Graph refresh token without leaking the provider response."""
     sess = _ms_session()
     last_err = None
     for attempt in range(3):
@@ -55,9 +68,29 @@ def _get_access_token(refresh_token, client_id=DEFAULT_CLIENT_ID, scope="https:/
                 timeout=30,
             )
             if resp.status_code != 200:
-                print(f"  [mail] token refresh failed: {resp.status_code} {resp.text[:120]}")
-                return None
-            return resp.json().get("access_token")
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = {}
+                reason = _token_failure_reason(resp, payload)
+                permanent = (
+                    resp.status_code == 400
+                    and str(payload.get("error") or "").lower() == "invalid_grant"
+                )
+                print(f"  [mail] token refresh rejected: {reason}")
+                return {
+                    "ok": False,
+                    "access_token": "",
+                    "permanent": permanent,
+                    "reason": reason,
+                }
+            access_token = resp.json().get("access_token") or ""
+            return {
+                "ok": bool(access_token),
+                "access_token": access_token,
+                "permanent": False,
+                "reason": "" if access_token else "missing_access_token",
+            }
         except (requests.ConnectionError, requests.Timeout) as e:
             last_err = e
             if attempt < 2:
@@ -65,9 +98,24 @@ def _get_access_token(refresh_token, client_id=DEFAULT_CLIENT_ID, scope="https:/
                 continue
         except Exception as e:
             print(f"  [mail] token error: {e}")
-            return None
+            return {
+                "ok": False,
+                "access_token": "",
+                "permanent": False,
+                "reason": "unexpected_error",
+            }
     print(f"  [mail] token 直连重试用尽(3 次): {str(last_err)[:80] if last_err else ''}")
-    return None
+    return {
+        "ok": False,
+        "access_token": "",
+        "permanent": False,
+        "reason": "network_error",
+    }
+
+
+def _get_access_token(refresh_token, client_id=DEFAULT_CLIENT_ID,
+                      scope="https://graph.microsoft.com/Mail.Read"):
+    return check_refresh_token(refresh_token, client_id, scope)["access_token"] or None
 
 
 def fetch_messages(access_token, folder, top=10):

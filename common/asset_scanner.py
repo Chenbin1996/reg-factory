@@ -346,6 +346,18 @@ def _scan_outlook(record: dict, timeout: int) -> dict:
 
     description = str(payload.get("error_description") or payload.get("error") or "").lower()
     error_codes = {str(value) for value in payload.get("error_codes", [])}
+    if "service abuse mode" in description:
+        return {
+            "status": "banned",
+            "detail": "Microsoft 账号处于服务滥用限制",
+            "evidence": "microsoft_oauth:service_abuse",
+        }
+    if "different tenant" in description:
+        return {
+            "status": "expired",
+            "detail": "Graph refresh token 与账号租户不匹配",
+            "evidence": "microsoft_oauth:tenant_mismatch",
+        }
     if "50057" in error_codes or "user account is disabled" in description:
         return {"status": "banned", "detail": "Microsoft 账号已禁用", "evidence": "microsoft_oauth:AADSTS50057"}
     if "50053" in error_codes or "account is locked" in description:

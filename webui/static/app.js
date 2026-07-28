@@ -793,6 +793,35 @@ $('#btn-stop').onclick = async ()=>{
   $('#btn-stop').disabled = true;
 };
 
+$('#btn-stop-all').onclick = async ()=>{
+  if(!confirm('确定停止本项目的全部注册任务吗？')) return;
+  const btn = $('#btn-stop-all');
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = '停止中';
+  try{
+    const response = await fetch('/api/stop-all',{method:'POST'});
+    const result = await response.json();
+    const log = $('#log');
+    if(result.ok){
+      setRunState('stopped', '已全部停止');
+      log.textContent += `\n[webui] 已停止 ${result.stopped || 0} 个任务进程树`;
+    }else{
+      setRunState('failed', '部分停止失败');
+      log.textContent += `\n[webui] 停止失败的 PID: ${(result.failed || []).join(', ')}`;
+    }
+    log.scrollTop = log.scrollHeight;
+    $('#btn-stop').disabled = true;
+    pollStatus();
+  }catch(error){
+    setRunState('failed', '停止失败');
+    $('#log').textContent += `\n[webui] 停止全部失败: ${error}`;
+  }finally{
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+};
+
 // ---------------------------------------------------------------- 配置页
 async function loadEnv(){
   const data = await (await fetch('/api/env')).json();

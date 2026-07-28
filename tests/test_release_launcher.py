@@ -88,6 +88,13 @@ class ReleaseLauncherTests(unittest.TestCase):
         function = source.split("async function testProxy(){", 1)[1].split("\n}", 1)[0]
         self.assertLess(function.index("applyProxyConfig()"), function.index("'/api/proxy/test'"))
 
+    def test_task_exit_code_does_not_trigger_desktop_startup_pause(self):
+        with patch.object(launcher, "main", side_effect=SystemExit(2)):
+            with patch.object(launcher, "_pause_after_error") as pause:
+                with self.assertRaisesRegex(SystemExit, "2"):
+                    launcher._entrypoint()
+        pause.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

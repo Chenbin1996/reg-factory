@@ -1,11 +1,25 @@
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from common import mailbox
 
 
 class MailboxTests(unittest.TestCase):
+    def test_refresh_token_classifies_service_abuse_without_echoing_response(self):
+        response = MagicMock(status_code=400)
+        response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "User account is found to be in service abuse mode.",
+        }
+        session = MagicMock()
+        session.post.return_value = response
+        with patch.object(mailbox, "_ms_session", return_value=session):
+            result = mailbox.check_refresh_token("secret-rt", "client")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["permanent"])
+        self.assertEqual(result["reason"], "service_abuse")
+
     def test_link_reader_skips_old_fractional_graph_timestamp(self):
         messages = [
             {

@@ -14,6 +14,7 @@ import contextlib
 import hmac
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -1227,6 +1228,122 @@ def _child_env():
     return env
 
 
+def _managed_task_files():
+    return {
+        str(item.get("file") or "").replace("\\", "/").lower()
+        for item in schema.SCRIPTS
+        if item.get("file")
+    }
+
+
+def _is_managed_task_process(command_line, executable_path=""):
+    """Match only reg-factory task workers, never the WebUI or browser processes."""
+    command = str(command_line or "").replace("\\", "/").lower()
+    executable = str(executable_path or "").replace("\\", "/").lower()
+    if not command:
+        return False
+    task_files = _managed_task_files()
+    if executable.endswith("/reg-factory.exe"):
+        return "--task" in command and any(task in command for task in task_files)
+    if not executable.endswith(("/python.exe", "/pythonw.exe", "/python", "/python3")):
+        return False
+    allowed_roots = {
+        os.path.abspath(ROOT).replace("\\", "/").lower(),
+        os.path.abspath(os.environ.get("REG_FACTORY_DATA_DIR") or ROOT)
+        .replace("\\", "/").lower(),
+    }
+    return any(root in command for root in allowed_roots) and any(
+        task in command for task in task_files
+    )
+
+
+def _list_orphaned_task_processes():
+    if os.name != "nt":
+        return []
+    ps_script = (
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8-sig",
+            errors="replace",
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return []
+        payload = json.loads(completed.stdout.strip())
+        rows = payload if isinstance(payload, list) else [payload]
+    except Exception:
+        return []
+    matches = []
+    for row in rows:
+        try:
+            pid = int(row.get("ProcessId") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid in {0, os.getpid()}:
+            continue
+        if _is_managed_task_process(row.get("CommandLine"), row.get("ExecutablePath")):
+            matches.append({"pid": pid, "command": row.get("CommandLine") or ""})
+    return matches
+
+
+def _pid_exists(pid):
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return False
+                return exit_code.value == 259
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ProcessLookupError, ValueError):
+        return False
+
+
+def _terminate_process_tree(pid):
+    pid = int(pid or 0)
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if not _pid_exists(pid):
+        return True
+    if os.name == "nt":
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return completed.returncode == 0 or not _pid_exists(pid)
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    return not _pid_exists(pid)
+
+
 @app.post("/api/run")
 async def api_run(request: Request):
     data = await request.json()
@@ -1243,9 +1360,15 @@ async def api_run(request: Request):
     cmd = _build_cmd(script, args)
     task_cwd = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
     os.makedirs(task_cwd, exist_ok=True)
+    process_options = (
+        {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=task_cwd, env=_child_env(),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        **process_options,
     )
     _run_seq[0] += 1
     run_id = f"r{_run_seq[0]}"
@@ -1307,11 +1430,45 @@ async def api_stop(run_id: str):
         return JSONResponse({"error": "无此任务"}, status_code=404)
     if not rec["done"]:
         rec["stopped"] = True
-        try:
-            rec["proc"].terminate()
-        except Exception:
-            pass
-    return {"ok": True}
+        stopped = await asyncio.to_thread(_terminate_process_tree, rec["proc"].pid)
+        return {"ok": stopped, "stopped": 1 if stopped else 0}
+    return {"ok": True, "stopped": 0}
+
+
+@app.post("/api/stop-all")
+async def api_stop_all():
+    tracked = {}
+    for rec in RUNS.values():
+        if rec.get("done"):
+            continue
+        rec["stopped"] = True
+        pid = int(getattr(rec.get("proc"), "pid", 0) or 0)
+        if pid > 0:
+            tracked[pid] = rec
+
+    discovered = await asyncio.to_thread(_list_orphaned_task_processes)
+    targets = set(tracked)
+    orphaned = 0
+    for item in discovered:
+        pid = int(item.get("pid") or 0)
+        if pid > 0 and pid not in targets:
+            targets.add(pid)
+            orphaned += 1
+
+    stopped = 0
+    failed = []
+    for pid in sorted(targets):
+        if await asyncio.to_thread(_terminate_process_tree, pid):
+            stopped += 1
+        else:
+            failed.append(pid)
+    return {
+        "ok": not failed,
+        "stopped": stopped,
+        "tracked": len(tracked),
+        "orphaned": orphaned,
+        "failed": failed,
+    }
 
 
 @app.on_event("startup")

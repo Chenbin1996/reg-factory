@@ -208,12 +208,18 @@ def main() -> None:
     uvicorn.run("webui.server:app", host=args.host, port=port, log_level="warning")
 
 
-if __name__ == "__main__":
+def _entrypoint() -> None:
     try:
         main()
     except KeyboardInterrupt:
         pass
+    except SystemExit:
+        raise
     except BaseException as exc:
         print(f"\n[reg-factory] 启动失败：{exc}", file=sys.stderr, flush=True)
         _pause_after_error()
         raise
+
+
+if __name__ == "__main__":
+    _entrypoint()

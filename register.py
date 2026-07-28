@@ -5792,7 +5792,7 @@ async def main():
             print(f"  loaded {len(email_list)} emails from {args.emails}")
         except Exception as e:
             print(f"  failed to load emails: {e}")
-            return
+            return 2
 
     if args.latest_rt and not email_list and not use_temp_email:
         from common import emails as email_pool
@@ -5806,7 +5806,8 @@ async def main():
         print(f"  loaded {len(email_list)} latest mailboxes with working Graph RT")
         if not email_list:
             print("  no usable RT mailbox available")
-            return
+            print("  add a working Graph RT mailbox or select a configured temp-email provider")
+            return 2
 
     bb = BitBrowser()
     results = []
@@ -5933,7 +5934,8 @@ async def main():
                 [sys.executable, "tools/validate_keys.py", accounts_file],
                 cwd=os.path.dirname(os.path.abspath(__file__)),
             )
+    return 0 if results and ok == len(results) else 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

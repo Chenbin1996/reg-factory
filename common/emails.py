@@ -86,9 +86,19 @@ def latest_email(platform, require_token=False, validate_token=False):
             if require_token and (not token or not client_id):
                 continue
             if validate_token:
-                from common.mailbox import _get_access_token
-                if not token or not _get_access_token(token, client_id):
-                    print(f"  [email] skip latest mailbox with unusable rt: {email}")
+                from common.mailbox import check_refresh_token
+                validation = check_refresh_token(token, client_id) if token else {
+                    "ok": False, "permanent": True, "reason": "missing_refresh_token"
+                }
+                if not validation["ok"]:
+                    reason = validation.get("reason") or "refresh_token_unusable"
+                    if validation.get("permanent"):
+                        with open(_error_file(platform), "a", encoding="utf-8") as ef:
+                            ef.write(f"{email}----{password}----{reason}\n")
+                        used.add(email.lower())
+                        print(f"  [email] quarantined unusable rt for {platform}: {email} ({reason})")
+                    else:
+                        print(f"  [email] skip mailbox after transient rt check: {email} ({reason})")
                     continue
             with open(_used_file(platform), "a", encoding="utf-8") as uf:
                 uf.write(f"{email}----{password}----reserved\n")

@@ -198,12 +198,20 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,s
 .run-state.success{border-color:rgba(65,184,120,.5);color:var(--green)}
 .run-state.failed{border-color:rgba(226,100,85,.5);color:var(--red)}
 .run-state.stopped{color:var(--muted)}
+.log-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}
 .btn-stop{
   min-height:30px;padding:5px 11px;border:1px solid rgba(226,100,85,.55);border-radius:6px;
   background:transparent;color:var(--red);font-size:11px;cursor:pointer
 }
 .btn-stop:hover:not(:disabled){background:rgba(226,100,85,.1)}
 .btn-stop:disabled{border-color:var(--line);color:var(--quiet);opacity:.6;cursor:not-allowed}
+.btn-stop-all{
+  min-height:30px;padding:5px 11px;border:1px solid #d9594c;border-radius:6px;
+  display:inline-flex;align-items:center;gap:6px;background:#c94e43;color:#fff;
+  font-size:11px;font-weight:650;cursor:pointer
+}
+.btn-stop-all:hover:not(:disabled){background:#db5d51}
+.btn-stop-all:disabled{opacity:.55;cursor:wait}
 .log{
   flex:1;min-height:190px;margin:0;padding:13px;overflow:auto;
   border:1px solid #292d33;border-radius:6px;background:#0b0c0e;color:#cbd0d7;
@@ -535,7 +543,10 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,s
   .form-actions{align-items:stretch;flex-direction:column;margin-top:15px;padding-top:14px}
   .btn-run{width:100%;min-height:41px}
   .log-panel{min-height:330px;padding:11px}
+  .log-head{align-items:flex-start;flex-wrap:wrap}
   .log-heading{gap:6px}
+  .log-actions{width:100%}
+  .log-actions button{flex:1;justify-content:center}
   .log{min-height:260px;padding:10px;font-size:10px}
   .env-head{align-items:stretch;flex-wrap:wrap}
   .env-head h2{width:100%;font-size:16px}

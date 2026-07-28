@@ -140,6 +140,43 @@ class WebUIEnvReloadTests(unittest.TestCase):
 
 
 class WebUIRunStreamTests(unittest.IsolatedAsyncioTestCase):
+    def test_task_process_matcher_excludes_webui_and_other_python_projects(self):
+        self.assertTrue(server._is_managed_task_process(
+            'E:\\reg-factory\\dist\\app\\reg-factory.exe --task outlook_reg_loop.py --count 0',
+            'E:\\reg-factory\\dist\\app\\reg-factory.exe',
+        ))
+        self.assertFalse(server._is_managed_task_process(
+            'E:\\reg-factory\\dist\\app\\reg-factory.exe --port 8799',
+            'E:\\reg-factory\\dist\\app\\reg-factory.exe',
+        ))
+        self.assertFalse(server._is_managed_task_process(
+            'python C:\\other-project\\register.py',
+            'C:\\Python312\\python.exe',
+        ))
+
+    async def test_stop_all_terminates_tracked_and_orphaned_task_trees(self):
+        run_id = "test-stop-all"
+        server.RUNS[run_id] = {
+            "proc": SimpleNamespace(pid=101),
+            "lines": [],
+            "done": False,
+            "stopped": False,
+        }
+        self.addCleanup(server.RUNS.pop, run_id, None)
+        with patch.object(
+            server,
+            "_list_orphaned_task_processes",
+            return_value=[{"pid": 101}, {"pid": 202}],
+        ):
+            with patch.object(server, "_terminate_process_tree", return_value=True) as terminate:
+                result = await server.api_stop_all()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stopped"], 2)
+        self.assertEqual(result["tracked"], 1)
+        self.assertEqual(result["orphaned"], 1)
+        self.assertTrue(server.RUNS[run_id]["stopped"])
+        self.assertEqual({call.args[0] for call in terminate.call_args_list}, {101, 202})
+
     async def test_done_event_exposes_exit_code_and_stop_state(self):
         run_id = "test-result-event"
         server.RUNS[run_id] = {

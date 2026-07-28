@@ -33,12 +33,71 @@ class EmailPoolTests(unittest.TestCase):
             with patch.object(emails, "EMAILS_FILE", pool):
                 with patch.object(emails, "_used_file", return_value=used):
                     with patch.object(emails, "_error_file", return_value=os.path.join(tmp, "errors.txt")):
-                        with patch("common.mailbox._get_access_token",
-                                   side_effect=lambda token, _client: "access" if token == "good-rt" else None):
+                        with patch(
+                            "common.mailbox.check_refresh_token",
+                            side_effect=lambda token, _client: {
+                                "ok": token == "good-rt",
+                                "access_token": "access" if token == "good-rt" else "",
+                                "permanent": token != "good-rt",
+                                "reason": "invalid_grant" if token != "good-rt" else "",
+                            },
+                        ):
                             selected = emails.latest_email(
                                 "grok", require_token=True, validate_token=True
                             )
             self.assertEqual(selected[0], "working@example.com")
+
+    def test_latest_email_quarantines_permanently_invalid_refresh_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = os.path.join(tmp, "emails.txt")
+            errors = os.path.join(tmp, "errors.txt")
+            with open(pool, "w", encoding="utf-8") as f:
+                f.write("blocked@example.com----pw----bad-rt----client\n")
+            with patch.object(emails, "EMAILS_FILE", pool):
+                with patch.object(emails, "_used_file", return_value=os.path.join(tmp, "used.txt")):
+                    with patch.object(emails, "_error_file", return_value=errors):
+                        with patch(
+                            "common.mailbox.check_refresh_token",
+                            return_value={
+                                "ok": False,
+                                "access_token": "",
+                                "permanent": True,
+                                "reason": "service_abuse",
+                            },
+                        ):
+                            selected = emails.latest_email(
+                                "claude", require_token=True, validate_token=True
+                            )
+            self.assertIsNone(selected)
+            with open(errors, encoding="utf-8") as f:
+                self.assertEqual(
+                    f.read().strip(),
+                    "blocked@example.com----pw----service_abuse",
+                )
+
+    def test_latest_email_does_not_quarantine_transient_token_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = os.path.join(tmp, "emails.txt")
+            errors = os.path.join(tmp, "errors.txt")
+            with open(pool, "w", encoding="utf-8") as f:
+                f.write("retry@example.com----pw----rt----client\n")
+            with patch.object(emails, "EMAILS_FILE", pool):
+                with patch.object(emails, "_used_file", return_value=os.path.join(tmp, "used.txt")):
+                    with patch.object(emails, "_error_file", return_value=errors):
+                        with patch(
+                            "common.mailbox.check_refresh_token",
+                            return_value={
+                                "ok": False,
+                                "access_token": "",
+                                "permanent": False,
+                                "reason": "network_error",
+                            },
+                        ):
+                            selected = emails.latest_email(
+                                "claude", require_token=True, validate_token=True
+                            )
+            self.assertIsNone(selected)
+            self.assertFalse(os.path.exists(errors))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from common import asset_scanner
 
@@ -149,6 +149,25 @@ class AssetScannerTests(unittest.TestCase):
         result = asset_scanner._response_status(response, "chatgpt_session")
 
         self.assertEqual(result["status"], "banned")
+
+    def test_outlook_service_abuse_is_reported_as_banned(self):
+        response = MagicMock(status_code=400)
+        response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "User account is found to be in service abuse mode.",
+        }
+        session = MagicMock()
+        session.post.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        record = {
+            "_mailbox": {"refresh_token": "rt", "client_id": "client"},
+            "_history": None,
+        }
+        with patch.object(asset_scanner.requests, "Session", return_value=session):
+            result = asset_scanner._scan_outlook(record, timeout=5)
+        self.assertEqual(result["status"], "banned")
+        self.assertEqual(result["evidence"], "microsoft_oauth:service_abuse")
 
 
 if __name__ == "__main__":

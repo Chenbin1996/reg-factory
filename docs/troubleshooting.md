@@ -21,6 +21,14 @@ python -m common.proxy_switch list
 
 使用 `--node auto` 让流程探测可用节点。图形验证需要正确配置 `CLAUDE_VISION_API_BASE` 和 `CLAUDE_VISION_API_KEY`；需要人工接管时可设置 `CLAUDE_CAPTCHA_MANUAL_TIMEOUT=180`。
 
+## Claude 提示 service abuse 或没有可用 RT 邮箱
+
+`AADSTS70000` 和 `service abuse mode` 来自 Microsoft，表示该 Outlook 账号的 Graph refresh token 已不可用，不是 Claude 节点错误。新版会把这类邮箱写入 `emails_error_claude.txt`，避免每次重复检测。请导入 Graph RT 正常的新邮箱，或在 Claude 任务中选择已配置的临时邮箱来源。
+
+## 注册任务关闭后仍在循环
+
+在运行日志右上角点击“停止全部”。它会结束当前任务树，并扫描清理旧 WebUI 遗留的 reg-factory 注册任务；WebUI、BitBrowser 和 Clash 不会被关闭。
+
 ## Grok 返回 Cloudflare 403
 
 更换干净节点。`register_grok_http.py` 会探测 Clash 节点，但节点质量仍会直接影响结果。
