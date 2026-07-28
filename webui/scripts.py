@@ -335,6 +335,10 @@ ENV_SCHEMA = [
         {"key": "K12_AUTO_START", "type": "choice", "choices": ["1", "0"], "default": "1",
          "help": "启动主 WebUI 时是否自动拉起本地 Codex K12 服务。"},
     ]},
+    {"group": "本地资产 API", "items": [
+        {"key": "REG_FACTORY_ASSET_API_KEY", "secret": True,
+         "help": "可选；配置后调用邮箱/Cookie 读取 API 必须提供 X-API-Key 或 Bearer Token。留空时仅允许本机访问。"},
+    ]},
     {"group": "网络出口", "tests": [{"target": "clash", "label": "测试 Clash 连通"}], "items": [
         {"key": "PROXY_MODE", "type": "choice", "choices": ["clash_auto", "clash_fixed", "residential"],
          "default": "clash_auto", "help": "Clash 自动轮换、固定节点，或动态住宅代理。建议在左侧“网络出口”页配置。"},

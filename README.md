@@ -98,6 +98,10 @@ macOS / Linux：
 
 动态住宅 IP 会在创建 BitBrowser 新窗口时写入完整代理认证；轮换后的代理从下一个新窗口开始使用。
 
+## 本地资产 API
+
+本地接口支持按顺序或指定 `index` 读取邮箱、Claude/ChatGPT/Grok Cookie，并可把 ChatGPT 会话转换为 SUB2API、CPA 或 chatgpt2api 格式。默认仅允许本机访问，可配置 `REG_FACTORY_ASSET_API_KEY`。接口与响应格式见 [本地资产 API](docs/api.md)。
+
 ## 常用命令
 
 ```bash
@@ -178,6 +182,7 @@ node --check webui/static/app.js
 ## 文档
 
 - [配置说明](docs/configuration.md)
+- [本地资产 API](docs/api.md)
 - [CLI 手册](docs/cli.md)
 - [架构与目录约定](docs/architecture.md)
 - [维护工具索引](tools/README.md)

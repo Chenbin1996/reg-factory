@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from webui import server
@@ -57,6 +58,29 @@ class WebUIEnvReloadTests(unittest.TestCase):
         self.assertEqual(status["pid"], os.getpid())
         self.assertEqual(status["version"], server.WEBUI_VERSION)
         self.assertEqual(status["root"], server.ROOT)
+
+    def test_asset_api_without_key_is_loopback_only(self):
+        local = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
+        remote = SimpleNamespace(headers={}, client=SimpleNamespace(host="192.0.2.10"))
+        with patch.object(server, "_read_config_val", return_value=""):
+            self.assertIsNone(server._asset_api_denied(local))
+            self.assertEqual(server._asset_api_denied(remote).status_code, 403)
+
+    def test_asset_api_accepts_header_or_bearer_key(self):
+        by_header = SimpleNamespace(
+            headers={"x-api-key": "asset-secret"}, client=SimpleNamespace(host="192.0.2.10")
+        )
+        by_bearer = SimpleNamespace(
+            headers={"authorization": "Bearer asset-secret"},
+            client=SimpleNamespace(host="192.0.2.10"),
+        )
+        denied = SimpleNamespace(
+            headers={"x-api-key": "wrong"}, client=SimpleNamespace(host="127.0.0.1")
+        )
+        with patch.object(server, "_read_config_val", return_value="asset-secret"):
+            self.assertIsNone(server._asset_api_denied(by_header))
+            self.assertIsNone(server._asset_api_denied(by_bearer))
+            self.assertEqual(server._asset_api_denied(denied).status_code, 401)
 
 
 class WebUIRunStreamTests(unittest.IsolatedAsyncioTestCase):

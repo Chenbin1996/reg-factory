@@ -1,0 +1,118 @@
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from common import asset_store
+
+
+class AssetStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.env = patch.dict(
+            os.environ,
+            {
+                "REG_FACTORY_DATA_DIR": str(self.root),
+                "REG_FACTORY_ENV_FILE": str(self.root / ".env"),
+                "TOKEN_OUTPUT_DIR": "tokens",
+            },
+        )
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_email_sequence_and_explicit_index(self):
+        (self.root / "emails.txt").write_text(
+            "first@example.com----pw1----rt1----cid1\n"
+            "second@example.com----pw2----rt2----cid2\n",
+            encoding="utf-8",
+        )
+
+        first = asset_store.get_email()
+        explicit = asset_store.get_email(index=0, output_format="line")
+        second = asset_store.get_email()
+
+        self.assertEqual(first["index"], 0)
+        self.assertEqual(first["data"]["email"], "first@example.com")
+        self.assertFalse(explicit["cursor_advanced"])
+        self.assertEqual(explicit["data"], "first@example.com----pw1----rt1----cid1")
+        self.assertEqual(second["index"], 1)
+        with self.assertRaises(asset_store.AssetExhausted):
+            asset_store.get_email()
+
+    def _write_chatgpt_assets(self):
+        cookie_dir = self.root / "cookies" / "chatgpt"
+        cookie_dir.mkdir(parents=True)
+        cookie_value = "cookie-secret"
+        (cookie_dir / "accounts.txt").write_text(
+            f"user@example.com|password|{cookie_value}\n", encoding="utf-8"
+        )
+        (cookie_dir / "full_profile_20260101_000000.json").write_text(
+            json.dumps([
+                {
+                    "name": "__Secure-next-auth.session-token",
+                    "value": cookie_value,
+                    "domain": ".chatgpt.com",
+                    "path": "/",
+                },
+                {"name": "noise", "value": "ignored", "domain": ".example.com", "path": "/"},
+            ]),
+            encoding="utf-8",
+        )
+        token_dir = self.root / "tokens" / "chatgpt"
+        token_dir.mkdir(parents=True)
+        session = {
+            "user": {"email": "user@example.com"},
+            "account": {"id": "account-1", "planType": "free"},
+            "accessToken": "access-token",
+            "expires": "2030-01-01T00:00:00Z",
+        }
+        (token_dir / "user@example.com.session.json").write_text(
+            json.dumps(session), encoding="utf-8"
+        )
+
+    def test_chatgpt_cookie_and_downstream_formats(self):
+        self._write_chatgpt_assets()
+
+        raw = asset_store.get_platform_asset("chatgpt", "raw", index=0)
+        header = asset_store.get_platform_asset("chatgpt", "header", index=0)
+        sub2api = asset_store.get_platform_asset("chatgpt", "sub2api", index=0)
+        cpa = asset_store.get_platform_asset("chatgpt", "cpa", index=0)
+        chatgpt2api = asset_store.get_platform_asset("chatgpt", "chatgpt2api", index=0)
+
+        self.assertEqual(raw["email"], "user@example.com")
+        self.assertEqual(len(raw["data"]), 1)
+        self.assertIn("__Secure-next-auth.session-token=cookie-secret", header["data"])
+        self.assertEqual(json.loads(sub2api["data"]["content"])["accessToken"], "access-token")
+        self.assertEqual(cpa["data"]["type"], "codex")
+        self.assertEqual(cpa["data"]["access_token"], "access-token")
+        self.assertEqual(chatgpt2api["data"]["source_type"], "web")
+
+    def test_grok_sub2api_and_summary(self):
+        token_dir = self.root / "tokens" / "grok"
+        token_dir.mkdir(parents=True)
+        (token_dir / "grok@example.com.sso.json").write_text(
+            json.dumps({"email": "grok@example.com", "sso": "sso-token"}), encoding="utf-8"
+        )
+
+        result = asset_store.get_platform_asset("grok", "sub2api", index=0)
+        summary = asset_store.summary()
+
+        self.assertEqual(result["data"]["sso_tokens"], ["sso-token"])
+        self.assertEqual(summary["platforms"]["grok"]["sessions"], 1)
+
+    def test_reset_cursor_and_invalid_format(self):
+        (self.root / "emails.txt").write_text("a@example.com----pw\n", encoding="utf-8")
+        asset_store.get_email()
+        reset = asset_store.reset_cursor("email")
+        self.assertEqual(reset["removed"], ["email"])
+        self.assertEqual(asset_store.get_email()["index"], 0)
+        with self.assertRaises(asset_store.AssetError):
+            asset_store.get_platform_asset("claude", "cpa", index=0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -10,6 +10,11 @@
 - 新增 Clash 自动轮换、固定节点与动态住宅 IP 三种模式，并支持立即切换和出口检测。
 - BitBrowser 新建窗口时可写入住宅代理类型、地址、端口、用户名和密码。
 
+**本地资产 API**
+- 支持顺序读取或通过 `index` 精确读取邮箱和 Claude/ChatGPT/Grok 登录资产。
+- ChatGPT 可输出原始 Cookie、Cookie Header、session、SUB2API、CPA 和 chatgpt2api 格式；Grok 可输出 SUB2API SSO 请求体。
+- 顺序游标独立持久化且可重置；未配置 API key 时仅允许本机调用。
+
 **Windows 发布包**
 - 新增 PyInstaller 便携版构建入口，配置与运行数据持久化到 `%LOCALAPPDATA%\RegFactory`。
 - Release 包使用文件白名单生成，不包含 `.env`、邮箱池、Cookie、Token、日志和调试截图。

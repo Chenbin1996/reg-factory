@@ -11,6 +11,7 @@ webui/server.py — reg-factory 本地 Web 面板后端(FastAPI)。
 """
 import asyncio
 import contextlib
+import hmac
 import json
 import os
 import shutil
@@ -45,6 +46,35 @@ K12_LOG_PATH = os.path.join(K12_DIR, "server.log")
 sys.path.insert(0, WEBUI)
 sys.path.insert(0, ROOT)
 from webui import scripts as schema  # noqa: E402
+
+
+def _asset_api_denied(request: Request):
+    configured = _read_config_val("REG_FACTORY_ASSET_API_KEY", "").strip()
+    if configured:
+        authorization = request.headers.get("authorization", "")
+        bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+        provided = request.headers.get("x-api-key", "") or bearer
+        if hmac.compare_digest(provided, configured):
+            return None
+        return JSONResponse({"error": "资产 API key 无效"}, status_code=401)
+    client_host = request.client.host if request.client else ""
+    if client_host in {"127.0.0.1", "::1", "localhost"}:
+        return None
+    return JSONResponse(
+        {"error": "未配置 REG_FACTORY_ASSET_API_KEY 时，资产 API 仅允许本机访问"},
+        status_code=403,
+    )
+
+
+def _asset_result(callback):
+    from common.asset_store import AssetError
+
+    try:
+        return callback()
+    except AssetError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return JSONResponse({"error": str(exc)[:240]}, status_code=400)
 
 
 def _git_version():
@@ -534,6 +564,58 @@ async def api_test(target: str, request: Request):
 
 
 # ============================================================ API
+@app.get("/api/assets/summary")
+def api_asset_summary(request: Request):
+    denied = _asset_api_denied(request)
+    if denied:
+        return denied
+    from common import asset_store
+
+    return _asset_result(asset_store.summary)
+
+
+@app.get("/api/assets/emails")
+def api_asset_email(request: Request, index: int | None = None, format: str = "json"):
+    denied = _asset_api_denied(request)
+    if denied:
+        return denied
+    from common import asset_store
+
+    return _asset_result(lambda: asset_store.get_email(index=index, output_format=format))
+
+
+@app.get("/api/assets/cookies/{platform}")
+def api_asset_cookie(
+    platform: str,
+    request: Request,
+    format: str = "raw",
+    index: int | None = None,
+):
+    denied = _asset_api_denied(request)
+    if denied:
+        return denied
+    from common import asset_store
+
+    return _asset_result(
+        lambda: asset_store.get_platform_asset(platform, output_format=format, index=index)
+    )
+
+
+@app.post("/api/assets/cursors/reset")
+async def api_asset_cursor_reset(request: Request):
+    denied = _asset_api_denied(request)
+    if denied:
+        return denied
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    from common import asset_store
+
+    scope = data.get("scope", "all") if isinstance(data, dict) else "all"
+    return _asset_result(lambda: asset_store.reset_cursor(scope))
+
+
 @app.get("/api/scripts")
 def api_scripts():
     return {"scripts": schema.SCRIPTS}
