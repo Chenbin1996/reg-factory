@@ -51,10 +51,9 @@ try:
 except Exception:
     pass
 
-# 拟人鼠标(WindMouse 轨迹 + OU 震颤)用于 PerimeterX 按住验证。保证脚本被
-# importlib 从任意路径加载时也能找到 common 包。
+# Outlook 注册和解锁共用同一套 PerimeterX 目标定位与拟人按压。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import human_mouse as _hm
+from common import outlook_press as _outlook_press
 
 # BitBrowser local API
 BITBROWSER_API = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
@@ -1812,25 +1811,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
         gone_rounds = 0              # captcha 消失后连续多少轮仍停在 signup（等跳转）
 
         async def _captcha_visible():
-            """页面上是否还有【可交互】的 PerimeterX 按住验证（按住按钮 / hsprotect iframe）。
-            captcha 通过后会变成 Loading 转圈、这些元素消失 -> 返回 False。"""
-            try:
-                for sel in ['button:has-text("Press and hold")', 'button:has-text("Appuyer et maintenir")',
-                            'button:has-text("按住")', 'button:has-text("长按")',
-                            'button:has-text("Halten")', '#px-captcha']:
-                    el = page.locator(sel).first
-                    if await el.count() > 0:
-                        b = await el.bounding_box()
-                        if b and b['width'] > 30:
-                            return True
-                ifr = page.locator('iframe[src*="hsprotect.net"], iframe[src*="arkose"], iframe[src*="funcaptcha"]')
-                for hi in range(await ifr.count()):
-                    b = await ifr.nth(hi).bounding_box()
-                    if b and b['width'] > 50 and b['height'] > 30:
-                        return True
-            except Exception:
-                pass
-            return False
+            return await _outlook_press.captcha_visible(page)
 
         # headless: 90 s captcha window; browser: 240 s (multiple press rounds)
         _captcha_rounds = 30 if captcha_early_abort else 80
@@ -1939,84 +1920,13 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
             # PerimeterX press-and-hold
             if press_count < max_press:
                 pressed = False
-                target_box = None
-
-                # 定位「按住」按钮。诊断已确认：按钮是可见 hsprotect iframe 内的 #px-captcha
-                # 元素(box 如 y485~527,height 42)，page.locator 穿不进跨域 iframe，必须遍历
-                # page.frames 在 frame 内取 #px-captcha 的真实坐标。优先用它(box_is_button=True)，
-                # 拿不到才退回整个 iframe 框按比例。
-                box_is_button = False
-                # 1) frame 内真按钮 #px-captcha（取可见的那个 frame：width>0）
-                for f in page.frames:
-                    if f == page.main_frame or 'hsprotect.net' not in (f.url or ''):
-                        continue
-                    try:
-                        px = f.locator('#px-captcha').first
-                        if await px.count() > 0:
-                            b = await px.bounding_box()
-                            if b and b['width'] > 30 and b['height'] > 8:
-                                target_box = b; box_is_button = True
-                                break
-                    except Exception:
-                        pass
-                # 2) 退回整个可见 hsprotect iframe 框
-                if not target_box:
-                    try:
-                        hs = page.locator('iframe[src*="hsprotect.net"]')
-                        for hi in range(await hs.count()):
-                            b = await hs.nth(hi).bounding_box()
-                            if b and b['width'] > 50 and b['height'] > 30:
-                                target_box = b
-                                break
-                    except Exception:
-                        pass
-
-                if target_box and target_box['width'] > 30 and target_box['height'] >= 8:
+                hold_result = await _outlook_press.press_and_hold(
+                    page, label=f"  {tag}", press_number=press_count + 1,
+                )
+                if hold_result:
                     press_count += 1
                     pressed = True
                     had_captcha = True   # 出现过 captcha，供「消失=已通过」判定使用
-                    bx, by, bw, bh = target_box['x'], target_box['y'], target_box['width'], target_box['height']
-                    if box_is_button:
-                        # target_box 就是真按钮 #px-captcha：按其中心 + 小随机抖动
-                        cx = bx + bw * random.uniform(0.40, 0.60)
-                        cy = by + bh * random.uniform(0.40, 0.60)
-                    else:
-                        # 退回整个 iframe 框：按钮在中部窄带（实测 0.48-0.62 命中）
-                        cx = bx + bw * random.uniform(0.42, 0.58)
-                        cy = by + bh * random.uniform(0.48, 0.62)
-                    print(f"  {tag} press #{press_count}: ({cx:.0f},{cy:.0f}){' [btn]' if box_is_button else ' [box]'}")
-
-                    # 拟人按住(WindMouse 逼近 + OU 生理震颤)，取代旧的贝塞尔逼近 +
-                    # 正弦漂移。旧正弦是完全周期性运动，PerimeterX 行为模型秒判；这里的
-                    # 轨迹变速 + 自相关抖动更像真人手。is_done 复用 _captcha_visible 取反：
-                    # 进度条走满(按住按钮/iframe 消失)即松手，未满则按住到 max_hold 兜底。
-                    async def _hold_done():
-                        return not await _captcha_visible()
-
-                    try:
-                        held, passed_in_hold = await _hm.human_press_and_hold(
-                            page, cx, cy, is_done=_hold_done,
-                            max_hold=random.uniform(11.0, 15.0), min_hold=1.5,
-                        )
-                    except Exception as _he:
-                        # 页面/context 已关闭(节点掉线或 captcha 过后导航销毁上下文)：
-                        # 此时 page 已死，再 down/up 只会二次抛错。直接标记未过、交给外层
-                        # 循环顶部的「captcha 消失=已通过 / URL 判定」去收尾，别在死页上乱按。
-                        _msg = f"{type(_he).__name__}: {_he}"
-                        print(f"  {tag} human_press_and_hold err: {_msg}")
-                        if "closed" in _msg.lower() or "TargetClosed" in _msg:
-                            print(f"  {tag} page/context 已关闭，跳过重按，交外层判定")
-                            held, passed_in_hold = 0.0, False
-                        else:
-                            # 其它异常(非页面关闭)：退回最简按住兜底，仍防崩
-                            try:
-                                await page.mouse.down()
-                                await asyncio.sleep(random.uniform(11.0, 14.0))
-                                await page.mouse.up()
-                            except Exception:
-                                pass
-                            held, passed_in_hold = 12.0, False
-                    print(f"  {tag} held {held:.1f}s{' (passed)' if passed_in_hold else ''}")
                     await asyncio.sleep(random.uniform(2, 4))
 
                     try:

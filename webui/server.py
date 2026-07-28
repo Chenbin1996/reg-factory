@@ -1225,7 +1225,7 @@ def _build_cmd(script, args):
     """把前端提交的 args(dict) 按 schema 拼成命令行 list。"""
     cmd = [sys.executable]
     if getattr(sys, "frozen", False):
-        cmd += ["--task", script["file"]]
+        cmd += ["-u", "--task", script["file"]]
     else:
         cmd += ["-u", os.path.join(ROOT, script["file"])]
     positional = []
@@ -1470,7 +1470,14 @@ async def api_logs(run_id: str):
                 break
             await asyncio.sleep(0.4)
 
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/stop/{run_id}")

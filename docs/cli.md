@@ -65,9 +65,9 @@ python outlook_reg_loop.py --no-rotate
 # 批量解锁
 python unlock_outlook.py --input accounts.txt --concurrency 2
 
-# 提取 Graph refresh token
-python tools/extract_graph_tokens.py outlook_accounts/accounts.txt
-python tools/extract_graph_tokens.py --email a@outlook.com --password xxx
+# 解锁 Outlook 并提取 Graph refresh token
+python unlock_outlook.py --input outlook_accounts/accounts.txt
+python unlock_outlook.py
 ```
 
 邮箱池格式为：

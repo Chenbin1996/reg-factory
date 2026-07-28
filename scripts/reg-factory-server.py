@@ -21,6 +21,19 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
+def _configure_live_output() -> None:
+    """Make frozen task output visible to the WebUI as each line is written."""
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(line_buffering=True, write_through=True)
+        except (OSError, ValueError):
+            pass
+
+
 def _configure_frozen_runtime() -> None:
     if not getattr(sys, "frozen", False):
         return
@@ -181,6 +194,7 @@ def main() -> None:
     if raw_args[:1] == ["-u"]:
         raw_args = raw_args[1:]
     if raw_args and (raw_args[0] == "--task" or raw_args[0].lower().endswith(".py")):
+        _configure_live_output()
         target = raw_args[1] if raw_args[0] == "--task" and len(raw_args) > 1 else raw_args[0]
         root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
         target_path = root / target

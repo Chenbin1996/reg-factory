@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Outlook Account Batch Unlock Script
-Uses BitBrowser + Playwright — reuses the same PX press-and-hold logic as registration.
+Outlook Account Recovery Script
+Unlocks accounts, then extracts and persists Graph refresh tokens in one run.
 
 Usage:
   python unlock_outlook.py --input outlook_accounts/accounts_xxx.txt
@@ -15,6 +15,8 @@ Input file format (---- separated, one per line):
 
 Output (unlock_results/):
   unlocked_*.txt          successfully unlocked
+  graph_tokens_*.txt      Graph refresh tokens extracted after recovery
+  graph_failed_*.txt      recovered accounts whose Graph extraction failed
   needs_phone_*.txt       requires SMS — cannot auto-unlock
   failed_*.txt            failed / timeout
 """
@@ -30,17 +32,18 @@ except Exception:
     _EZCAPTCHA_BASE = os.environ.get("EZCAPTCHA_API_BASE", "https://api.ez-captcha.com")
 
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stdin.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stdin):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8")
 
 import requests
 from playwright.async_api import async_playwright
 
-# 拟人鼠标(WindMouse 轨迹 + OU 震颤)用于 PerimeterX 按住验证。与 register_outlook_standalone.py
-# 共用同一实现，取代本脚本旧的贝塞尔逼近 + 正弦漂移(周期性运动，PerimeterX 行为模型秒判)。
+# 与 Outlook 注册共用完整的 PerimeterX 目标定位和拟人按压实现。
 # 保证脚本被 importlib 从任意路径加载时也能找到 common 包。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import human_mouse as _hm
+from common import outlook_press as _outlook_press
 
 # ── Config ───────────────────────────────────────────────────────────
 BITBROWSER_API  = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
@@ -325,83 +328,6 @@ async def skip_fido(page):
     return False
 
 
-# ── Press-and-hold (same logic as register_outlook_standalone.py) ────
-async def _captcha_visible(page):
-    """页面上是否还有【可交互】的 PerimeterX 按住验证(按住按钮 / hsprotect iframe)。
-    captcha 通过后会变成 Loading 转圈、这些元素消失 -> 返回 False。"""
-    try:
-        for sel in ['button:has-text("Press and hold")', 'button:has-text("Appuyer et maintenir")',
-                    'button:has-text("按住")', 'button:has-text("长按")',
-                    'button:has-text("Halten")', '#px-captcha']:
-            el = page.locator(sel).first
-            if await el.count() > 0:
-                b = await el.bounding_box()
-                if b and b['width'] > 30:
-                    return True
-        ifr = page.locator('iframe[src*="hsprotect.net"]')
-        for hi in range(await ifr.count()):
-            b = await ifr.nth(hi).bounding_box()
-            if b and b['width'] > 50 and b['height'] > 30:
-                return True
-    except Exception:
-        pass
-    return False
-
-
-async def _find_hold_target(page):
-    """定位「按住」按钮，返回 (box, is_button)。
-
-    诊断已确认：按钮是可见 hsprotect iframe 内的 #px-captcha 元素(高度约 42px)，
-    page.locator 穿不进跨域 iframe，必须遍历 page.frames 在 frame 内取 #px-captcha
-    的真实坐标。优先用它(is_button=True)，拿不到才退回整个 iframe 框按比例(is_button=False)。"""
-    # 1) 主文档里的按住按钮 / #px-captcha(少见，但先试)
-    for sel in ['button:has-text("Press and hold")', 'button:has-text("按住不放")',
-                'button:has-text("长按")', '#px-captcha']:
-        try:
-            btn = page.locator(sel).first
-            if await btn.count() > 0:
-                box = await btn.bounding_box()
-                if box and box['width'] > 30 and box['height'] > 8:
-                    return box, True
-        except Exception:
-            pass
-    # 2) frame 内真按钮 #px-captcha(取可见的那个 frame：width>0)
-    for f in page.frames:
-        if f == page.main_frame or 'hsprotect.net' not in (f.url or ''):
-            continue
-        try:
-            px = f.locator('#px-captcha').first
-            if await px.count() > 0:
-                box = await px.bounding_box()
-                if box and box['width'] > 30 and box['height'] > 8:
-                    return box, True
-        except Exception:
-            pass
-    # 3) 退回整个可见 hsprotect iframe 框
-    try:
-        iframes = page.locator('iframe[src*="hsprotect.net"]')
-        for i in range(await iframes.count()):
-            box = await iframes.nth(i).bounding_box()
-            if box and box['width'] > 50 and box['height'] > 30:
-                return box, False
-    except Exception:
-        pass
-    # 4) 其它 frame 里的通用按钮兜底
-    for f in page.frames:
-        if not f.url or f.url == "about:blank" or f == page.main_frame:
-            continue
-        try:
-            for sel in ['#px-captcha', 'button[class*="hold"]', 'button']:
-                btns = f.locator(sel)
-                for bi in range(await btns.count()):
-                    box = await btns.nth(bi).bounding_box()
-                    if box and box['width'] > 30 and box['height'] > 20:
-                        return box, False
-        except Exception:
-            pass
-    return None, False
-
-
 # ── Core unlock logic ─────────────────────────────────────────────────
 async def unlock_account(page, context, email, password, tag):
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
@@ -557,44 +483,11 @@ async def unlock_account(page, context, email, password, tag):
 
         if state == "px_challenge":
             if press_count < max_press:
-                box, is_button = await _find_hold_target(page)
-                if box:
+                hold_result = await _outlook_press.press_and_hold(
+                    page, label="   ", press_number=press_count + 1,
+                )
+                if hold_result:
                     press_count += 1
-                    bx, by, bw, bh = box['x'], box['y'], box['width'], box['height']
-                    if is_button:
-                        # box 就是真按钮 #px-captcha：按其中心 + 小随机抖动
-                        cx = bx + bw * random.uniform(0.40, 0.60)
-                        cy = by + bh * random.uniform(0.40, 0.60)
-                    else:
-                        # 退回整个 iframe 框：按钮在中部窄带(实测 0.48-0.62 命中)
-                        cx = bx + bw * random.uniform(0.42, 0.58)
-                        cy = by + bh * random.uniform(0.48, 0.62)
-                    print(f"    press #{press_count}: ({cx:.0f},{cy:.0f}){' [btn]' if is_button else ' [box]'}")
-
-                    # 拟人按住(WindMouse 逼近 + OU 生理震颤)，取代旧的贝塞尔逼近 + 正弦漂移。
-                    # is_done 复用 _captcha_visible 取反：进度条走满(按住按钮/iframe 消失)即松手。
-                    async def _hold_done():
-                        return not await _captcha_visible(page)
-
-                    try:
-                        held, passed_in_hold = await _hm.human_press_and_hold(
-                            page, cx, cy, is_done=_hold_done,
-                            max_hold=random.uniform(11.0, 15.0), min_hold=1.5,
-                        )
-                    except Exception as _he:
-                        _msg = f"{type(_he).__name__}: {_he}"
-                        print(f"    human_press_and_hold err: {_msg}")
-                        if "closed" in _msg.lower() or "TargetClosed" in _msg:
-                            held, passed_in_hold = 0.0, False
-                        else:
-                            try:
-                                await page.mouse.down()
-                                await asyncio.sleep(random.uniform(11.0, 14.0))
-                                await page.mouse.up()
-                            except Exception:
-                                pass
-                            held, passed_in_hold = 12.0, False
-                    print(f"    held {held:.1f}s (#{press_count}){' (passed)' if passed_in_hold else ''}")
                     await asyncio.sleep(random.uniform(3, 6))
                     no_btn_rounds = 0
                 else:
@@ -644,7 +537,33 @@ async def unlock_account(page, context, email, password, tag):
 
 
 # ── Worker ────────────────────────────────────────────────────────────
-async def worker(accounts, proxy, worker_id, results, sem):
+async def extract_graph_after_recovery(page, context, email, password, idx=0):
+    """Use the recovered browser session first, then fall back to HTTP OAuth."""
+    from register_outlook_standalone import extract_graph_token
+
+    graph = None
+    try:
+        graph = await extract_graph_token(page, context, email, password, idx)
+    except Exception as exc:
+        print(f"  [#{idx}] [graph] browser-session error: {str(exc)[:140]}")
+
+    if not graph or not graph.get("refresh_token"):
+        print(f"  [#{idx}] [graph] browser-session extraction failed; trying HTTP fallback")
+        from tools.extract_graph_tokens import get_graph_token
+
+        graph = await asyncio.to_thread(get_graph_token, email, password, idx)
+
+    if not graph or not graph.get("refresh_token"):
+        return None
+    return {
+        **graph,
+        "email": email,
+        "password": password,
+        "client_id": graph.get("client_id") or "",
+    }
+
+
+async def worker(accounts, proxy, worker_id, results, graph_attempts, sem):
     async with sem:
         for email, password, raw_line in accounts:
             tag = f"w{worker_id}"
@@ -665,9 +584,27 @@ async def worker(accounts, proxy, worker_id, results, sem):
                         unlock_account(page, ctx, email, password, tag),
                         timeout=UNLOCK_TIMEOUT
                     )
-
-                print(f"[worker-{worker_id}] {email} => {outcome}")
-                results.append((email, password, raw_line, outcome))
+                    print(f"[worker-{worker_id}] {email} => {outcome}")
+                    results.append((email, password, raw_line, outcome))
+                    if outcome in ("unlocked", "already_ok"):
+                        print(f"[worker-{worker_id}] {email} => extracting Graph RT")
+                        try:
+                            graph = await extract_graph_after_recovery(
+                                page, ctx, email, password,
+                                f"{worker_id + 1}-{len(graph_attempts) + 1}",
+                            )
+                        except Exception as exc:
+                            print(f"[worker-{worker_id}] {email} => Graph error: {exc}")
+                            graph = None
+                        graph_attempts.append({
+                            "email": email,
+                            "password": password,
+                            "result": graph,
+                        })
+                        print(
+                            f"[worker-{worker_id}] {email} => Graph "
+                            f"{'OK' if graph else 'FAILED'}"
+                        )
 
             except asyncio.TimeoutError:
                 print(f"[worker-{worker_id}] {email} => timeout")
@@ -695,7 +632,7 @@ def load_accounts(path):
                 print(f"[warn] skip: {line[:60]}")
     return accounts
 
-def scan_all_accounts(statuses=("unlock", "expired")):
+def scan_all_accounts(statuses=("unlock", "expired", "unknown")):
     """Load recovery candidates from the asset pool, then merge legacy account files."""
     reg_dir = "outlook_accounts"
     unlock_dir = "unlock_results"
@@ -834,14 +771,17 @@ def save_results(results, ts):
         from common import asset_scanner
 
         status_map = {
-            "unlocked": ("normal", "Outlook 解锁成功"),
-            "already_ok": ("normal", "Outlook 登录正常"),
             "needs_phone": ("unlock", "需要手机验证解锁"),
             "dead_account": ("banned", "Outlook 账号不可用"),
             "abuse_locked": ("banned", "Outlook Abuse 锁定"),
         }
         outcomes = {}
         for email, _password, _raw, outcome in results:
+            # The merged recovery task is only complete after Graph succeeds.
+            # Keep the previous recoverable status when token extraction fails;
+            # upsert_refresh_tokens marks successful accounts normal below.
+            if outcome in ("unlocked", "already_ok"):
+                continue
             status, detail = status_map.get(outcome, ("unknown", f"解锁结果：{outcome}"))
             outcomes[email.lower()] = {
                 "status": status,
@@ -851,6 +791,56 @@ def save_results(results, ts):
         asset_scanner.update_cached_outlook_statuses(outcomes)
     except Exception as exc:
         print(f"  [asset] status update skipped: {str(exc)[:100]}")
+
+
+def save_graph_results(graph_attempts, ts):
+    """Persist the Graph stage and update the primary Outlook pool once."""
+    if not graph_attempts:
+        return {"succeeded": 0, "failed": 0}
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    succeeded = [
+        item["result"] for item in graph_attempts
+        if item.get("result") and item["result"].get("refresh_token")
+    ]
+    failed = [
+        item for item in graph_attempts
+        if not item.get("result") or not item["result"].get("refresh_token")
+    ]
+
+    if succeeded:
+        path = os.path.join(OUTPUT_DIR, f"graph_tokens_{ts}.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            for item in succeeded:
+                handle.write("----".join([
+                    item["email"],
+                    item["password"],
+                    item.get("refresh_token", ""),
+                    item.get("client_id", ""),
+                ]) + "\n")
+        print(f"  Graph tokens: {len(succeeded)} -> {path}")
+
+        try:
+            from common.outlook_recovery import upsert_refresh_tokens
+
+            update = upsert_refresh_tokens(succeeded)
+            print(
+                "  Main pool updated: "
+                f"updated={update['updated']} appended={update['appended']} "
+                f"error_entries_cleared={update['errors_cleared']}"
+            )
+        except Exception as exc:
+            print(f"  [graph] pool update failed: {str(exc)[:120]}")
+
+    if failed:
+        path = os.path.join(OUTPUT_DIR, f"graph_failed_{ts}.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            for item in failed:
+                handle.write(f"{item['email']}----{item['password']}\n")
+        print(f"  Graph failed: {len(failed)} -> {path}")
+
+    print(f"  Graph RT  : {len(succeeded)}/{len(graph_attempts)}")
+    return {"succeeded": len(succeeded), "failed": len(failed)}
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -886,29 +876,35 @@ async def run(accounts_or_file, proxies, concurrency):
     print(f"Proxies   : {len(proxies)}")
 
     results = []
+    graph_attempts = []
     sem     = asyncio.Semaphore(concurrency)
     chunks  = [[] for _ in range(concurrency)]
     for i, acc in enumerate(accounts):
         chunks[i % concurrency].append(acc)
 
     await asyncio.gather(*[
-        worker(chunks[i], proxies[i % len(proxies)], i, results, sem)
+        worker(
+            chunks[i], proxies[i % len(proxies)], i,
+            results, graph_attempts, sem,
+        )
         for i in range(concurrency)
         if chunks[i]
     ])
 
-    save_results(results, datetime.now().strftime("%Y%m%d_%H%M%S"))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_results(results, timestamp)
+    save_graph_results(graph_attempts, timestamp)
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Batch Outlook Account Unlock",
+        description="Unlock Outlook accounts and extract Graph refresh tokens",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python unlock_outlook.py --input outlook_accounts/accounts_20260414_124527.txt
   python unlock_outlook.py --input emails_locked.txt --concurrency 2
   python unlock_outlook.py --input emails.txt --proxy-file proxies.txt --concurrency 3
-  python unlock_outlook.py                          (auto-scan all accounts, skip unlocked)
+  python unlock_outlook.py                          (auto-recover unlock/expired/missing-RT accounts)
 """)
     parser.add_argument("--input", "-i", default=None,
         help="Input file (email----password per line). "
@@ -918,9 +914,9 @@ Examples:
     parser.add_argument("--concurrency", "-c", type=int, default=1,
         help="Parallel workers (default: 1)")
     parser.add_argument(
-        "--statuses", nargs="+", choices=("unlock", "expired", "banned"),
-        default=("unlock", "expired"),
-        help="Asset scan statuses included by auto mode (default: unlock expired)",
+        "--statuses", nargs="+", choices=("unlock", "expired", "unknown", "banned"),
+        default=("unlock", "expired", "unknown"),
+        help="Asset scan statuses included by auto mode (default: unlock expired unknown)",
     )
     args = parser.parse_args()
 
@@ -933,7 +929,7 @@ Examples:
         # Auto-scan all accounts, skip already unlocked
         accounts_or_file = scan_all_accounts(args.statuses)
         if not accounts_or_file:
-            print("[info] No new accounts to unlock.")
+            print("[info] No Outlook accounts need unlock or Graph recovery.")
             sys.exit(0)
 
     proxy_env = ensure_clash_proxy_env()

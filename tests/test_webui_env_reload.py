@@ -216,6 +216,8 @@ class WebUIRunStreamTests(unittest.IsolatedAsyncioTestCase):
             json.loads(payload),
             {"returncode": 7, "stopped": False},
         )
+        self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
+        self.assertEqual(response.headers["x-accel-buffering"], "no")
 
 
 class WebUIAssetScanTests(unittest.IsolatedAsyncioTestCase):

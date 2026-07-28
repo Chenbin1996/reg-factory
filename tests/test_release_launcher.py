@@ -3,7 +3,7 @@ import tempfile
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +94,17 @@ class ReleaseLauncherTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "2"):
                     launcher._entrypoint()
         pause.assert_not_called()
+
+    def test_frozen_task_output_is_line_buffered_and_write_through(self):
+        stdout = MagicMock()
+        stderr = MagicMock()
+        with patch.object(launcher.sys, "stdout", stdout):
+            with patch.object(launcher.sys, "stderr", stderr):
+                with patch.dict(launcher.os.environ, {}, clear=True):
+                    launcher._configure_live_output()
+
+        stdout.reconfigure.assert_called_once_with(line_buffering=True, write_through=True)
+        stderr.reconfigure.assert_called_once_with(line_buffering=True, write_through=True)
 
 
 if __name__ == "__main__":
