@@ -95,6 +95,7 @@ macOS / Linux：
 - 运行日志：实时查看输出、结果状态并停止当前任务。
 - 邮箱池：批量导入已有 Outlook 邮箱。
 - 资产 API：配置访问密钥，选择邮箱或平台凭据、输出格式及顺序/index 取用，并在线调用和查看结果。
+- 号池扫描：一键校验 Outlook、ChatGPT、Claude 和 Grok，查看正常、待解锁、封禁、过期、受限及检测异常明细。
 - 网络出口：切换 Clash 自动轮换、固定节点或动态住宅 IP，并测试公网出口。
 - 环境配置：分组编辑 `.env` 并测试外部服务连通性。
 - Codex K12：管理 K12 workspace、邮箱资产、任务与 Codex 凭据。
@@ -105,7 +106,7 @@ macOS / Linux：
 
 ## 本地资产 API
 
-本地接口支持按顺序或指定 `index` 读取邮箱、Claude/ChatGPT/Grok Cookie，并可把 ChatGPT 会话转换为 SUB2API、CPA 或 chatgpt2api 格式。控制台左侧打开“资产 API”即可配置、生成调用命令并在线测试。默认仅允许本机访问，可配置 `REG_FACTORY_ASSET_API_KEY`。
+本地接口支持按顺序或指定 `index` 读取邮箱、Claude/ChatGPT/Grok Cookie，并可把 ChatGPT 会话转换为 SUB2API、CPA 或 chatgpt2api 格式。控制台左侧打开“资产 API”即可配置、生成调用命令、在线测试，并一键扫描各类号池状态。默认仅允许本机访问，可配置 `REG_FACTORY_ASSET_API_KEY`。
 
 ```bash
 # 按顺序取下一个邮箱

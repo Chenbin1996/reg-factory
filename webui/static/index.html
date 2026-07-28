@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=">
 <title>reg-factory 控制面板</title>
-<link rel="stylesheet" href="/static/style.css?v=20260728-assets-1">
+<link rel="stylesheet" href="/static/style.css?v=20260728-poolscan-1">
 </head>
 <body>
 <header class="topbar">
@@ -157,6 +157,74 @@
           <div><span>Grok</span><strong id="asset-count-grok">--</strong></div>
         </div>
 
+        <section class="asset-section asset-pool" aria-labelledby="asset-pool-title">
+          <div class="asset-section-head asset-pool-head">
+            <div>
+              <h3 id="asset-pool-title">号池状态</h3>
+              <p>在线校验邮箱与平台登录凭据；检测异常和出口风控单独显示，不计作封禁。</p>
+            </div>
+            <div class="asset-scan-actions">
+              <label class="asset-scan-concurrency"><span>并发</span>
+                <select id="asset-scan-concurrency"><option value="2">2</option><option value="4" selected>4</option><option value="8">8</option></select>
+              </label>
+              <button id="btn-scan-current" class="btn-secondary" type="button">扫描当前类型</button>
+              <button id="btn-scan-all" class="btn-run" type="button">一键扫描全部</button>
+            </div>
+          </div>
+
+          <div id="asset-scan-progress" class="asset-scan-progress">
+            <progress id="asset-scan-progress-bar" max="1" value="0"></progress>
+            <div><span id="asset-scan-progress-text">尚未扫描</span><span id="asset-scan-time"></span></div>
+          </div>
+
+          <div class="asset-status-summary" aria-label="号池状态统计">
+            <button type="button" data-scan-status="normal"><span>正常</span><strong id="asset-status-normal">0</strong></button>
+            <button type="button" data-scan-status="unlock"><span>待解锁</span><strong id="asset-status-unlock">0</strong></button>
+            <button type="button" data-scan-status="banned"><span>封禁</span><strong id="asset-status-banned">0</strong></button>
+            <button type="button" data-scan-status="expired"><span>过期</span><strong id="asset-status-expired">0</strong></button>
+            <button type="button" data-scan-status="restricted"><span>受限</span><strong id="asset-status-restricted">0</strong></button>
+            <button type="button" data-scan-status="invalid"><span>凭据异常</span><strong id="asset-status-invalid">0</strong></button>
+            <button type="button" data-scan-status="unknown"><span>未知</span><strong id="asset-status-unknown">0</strong></button>
+            <button type="button" data-scan-status="error"><span>检测异常</span><strong id="asset-status-error">0</strong></button>
+          </div>
+
+          <div class="asset-scan-toolbar">
+            <label><span>类型</span><select id="asset-scan-platform">
+              <option value="all">全部类型</option>
+              <option value="outlook">Outlook 邮箱</option>
+              <option value="chatgpt">ChatGPT</option>
+              <option value="claude">Claude</option>
+              <option value="grok">Grok</option>
+            </select></label>
+            <label><span>状态</span><select id="asset-scan-status">
+              <option value="all">全部状态</option>
+              <option value="normal">正常</option>
+              <option value="unlock">待解锁</option>
+              <option value="banned">封禁</option>
+              <option value="expired">过期</option>
+              <option value="restricted">受限</option>
+              <option value="invalid">凭据异常</option>
+              <option value="unknown">未知</option>
+              <option value="error">检测异常</option>
+            </select></label>
+            <span id="asset-scan-result-count" class="asset-scan-result-count">0 条</span>
+            <span id="asset-scan-msg" class="asset-message" role="status" aria-live="polite"></span>
+          </div>
+
+          <div class="asset-scan-table-wrap">
+            <table class="asset-scan-table">
+              <thead><tr><th>类型</th><th>账号</th><th>状态</th><th>检测结果</th><th>检测时间</th></tr></thead>
+              <tbody id="asset-scan-rows"></tbody>
+            </table>
+            <div id="asset-scan-empty" class="asset-scan-empty">暂无号池资产</div>
+          </div>
+          <div class="asset-scan-pagination">
+            <button id="btn-scan-prev" class="icon-button" type="button" title="上一页" aria-label="上一页">‹</button>
+            <span id="asset-scan-page">1 / 1</span>
+            <button id="btn-scan-next" class="icon-button" type="button" title="下一页" aria-label="下一页">›</button>
+          </div>
+        </section>
+
         <section class="asset-section" aria-labelledby="asset-access-title">
           <div class="asset-section-head">
             <div><h3 id="asset-access-title">访问配置</h3><p>留空仅允许本机调用；设置后支持 <code>X-API-Key</code> 或 Bearer Token。</p></div>
@@ -297,6 +365,6 @@
   <a href="https://t.me/TIANTIANAIPRO" target="_blank" rel="noopener">@TIANTIANAIPRO</a>
 </dialog>
 
-<script src="/static/app.js?v=20260728-assets-1"></script>
+<script src="/static/app.js?v=20260728-poolscan-1"></script>
 </body>
 </html>

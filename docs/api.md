@@ -62,6 +62,42 @@ curl "http://127.0.0.1:8799/api/assets/cookies/grok?format=sub2api"
 
 响应中的 `index` 是本次下标，`total` 是当前总数，`next_index` 是下一下标。省略 `index` 会推进对应的独立游标；指定 `index` 只读取该条，不改变游标。
 
+## 号池状态扫描
+
+扫描任务在 WebUI 后台运行，不阻塞其他 API。支持的平台是 `outlook`、`chatgpt`、`claude`、`grok`。
+
+```bash
+# 读取当前号池明细、上次结果和正在运行的扫描进度
+curl http://127.0.0.1:8799/api/assets/scan
+
+# 一键扫描全部号池
+curl -X POST http://127.0.0.1:8799/api/assets/scan \
+  -H "Content-Type: application/json" \
+  -d '{"platforms":["outlook","chatgpt","claude","grok"],"concurrency":4,"timeout":15}'
+
+# 只扫描 Outlook 邮箱
+curl -X POST http://127.0.0.1:8799/api/assets/scan \
+  -H "Content-Type: application/json" \
+  -d '{"platforms":["outlook"],"concurrency":2}'
+```
+
+扫描状态：
+
+| 状态 | 含义 |
+|---|---|
+| `normal` | 官方会话、OAuth 或邮箱访问验证正常 |
+| `unlock` | Outlook 明确返回锁定、补充验证，或历史扫描确认需要解锁 |
+| `banned` | 官方响应明确表示账号停用/封禁，或 Outlook 历史结果为 dead/abuse lock |
+| `expired` | Cookie、session、SSO 或 refresh token 已过期/撤销 |
+| `restricted` | HTTP 403、限流、Cloudflare 或出口风控，不能据此判定账号封禁 |
+| `invalid` | 本地资产缺少平台关键凭据或文件结构无效 |
+| `unknown` | 尚未扫描，或缺少足够证据确认状态 |
+| `error` | 请求超时、网络失败或官方服务异常 |
+
+GET 响应中的 `summary` 是全号池统计，`items` 是逐条结果，`scan.progress` 是当前任务进度。重复启动扫描会返回 HTTP 409。
+
+结果保存在 `runtime/state/asset_pool_scan.json`，只包含账号标识、状态、判定依据、来源文件名和检测时间，不包含密码、refresh token、Cookie、access token、sessionKey 或 SSO。
+
 ## 状态与重置
 
 ```bash

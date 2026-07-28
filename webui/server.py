@@ -144,6 +144,16 @@ K12_LOG_HANDLE = None
 K12_START_TASK = None
 K12_LOCK = asyncio.Lock()
 
+# 资产号池扫描在后台线程执行，WebUI 只保存无敏感字段的进度。
+ASSET_SCAN_TASK = None
+ASSET_SCAN_STATE = {
+    "running": False,
+    "started_at": "",
+    "finished_at": "",
+    "error": "",
+    "progress": {"completed": 0, "total": 0, "current": ""},
+}
+
 
 # ============================================================ 配置/状态读取
 def _read_config_val(key, default=""):
@@ -152,12 +162,13 @@ def _read_config_val(key, default=""):
     if val:
         return val
     try:
-        for line in open(ENV_PATH, encoding="utf-8"):
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                if k.strip() == key:
-                    return v.strip().strip('"').strip("'") or default
+        with open(ENV_PATH, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    if k.strip() == key:
+                        return v.strip().strip('"').strip("'") or default
     except Exception:
         pass
     return default
@@ -614,6 +625,104 @@ async def api_asset_cursor_reset(request: Request):
 
     scope = data.get("scope", "all") if isinstance(data, dict) else "all"
     return _asset_result(lambda: asset_store.reset_cursor(scope))
+
+
+def _asset_scan_payload():
+    from common import asset_scanner
+
+    report = asset_scanner.get_report()
+    report["scan"] = {
+        **ASSET_SCAN_STATE,
+        "progress": dict(ASSET_SCAN_STATE.get("progress") or {}),
+    }
+    return report
+
+
+def _set_asset_scan_progress(value):
+    ASSET_SCAN_STATE["progress"] = {
+        "completed": max(0, int(value.get("completed") or 0)),
+        "total": max(0, int(value.get("total") or 0)),
+        "current": str(value.get("current") or "")[:160],
+    }
+
+
+async def _run_asset_scan(platforms, concurrency, timeout):
+    global ASSET_SCAN_TASK
+    from common import asset_scanner
+
+    loop = asyncio.get_running_loop()
+
+    def progress(value):
+        loop.call_soon_threadsafe(_set_asset_scan_progress, value)
+
+    try:
+        report = await asyncio.to_thread(
+            asset_scanner.scan_pool,
+            platforms=platforms,
+            concurrency=concurrency,
+            timeout=timeout,
+            progress=progress,
+        )
+        ASSET_SCAN_STATE["finished_at"] = report.get("finished_at", "")
+        ASSET_SCAN_STATE["error"] = ""
+    except Exception as exc:
+        ASSET_SCAN_STATE["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        ASSET_SCAN_STATE["error"] = str(exc)[:240]
+    finally:
+        ASSET_SCAN_STATE["running"] = False
+        ASSET_SCAN_TASK = None
+
+
+@app.get("/api/assets/scan")
+def api_asset_scan_get(request: Request):
+    denied = _asset_api_denied(request)
+    if denied:
+        return denied
+    return _asset_result(_asset_scan_payload)
+
+
+@app.post("/api/assets/scan")
+async def api_asset_scan_start(request: Request):
+    global ASSET_SCAN_TASK
+    denied = _asset_api_denied(request)
+    if denied:
+        return denied
+    if ASSET_SCAN_STATE["running"]:
+        return JSONResponse(
+            {"error": "号池扫描正在运行", **_asset_scan_payload()},
+            status_code=409,
+        )
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    from common import asset_scanner
+
+    requested = (data or {}).get("platforms") or list(asset_scanner.PLATFORMS)
+    if not isinstance(requested, list):
+        return JSONResponse({"error": "platforms 必须是数组"}, status_code=400)
+    platforms = [str(item).strip().lower() for item in requested if str(item).strip()]
+    invalid = sorted(set(platforms).difference(asset_scanner.PLATFORMS))
+    if invalid:
+        return JSONResponse({"error": f"不支持的平台：{', '.join(invalid)}"}, status_code=400)
+    try:
+        concurrency = min(12, max(1, int((data or {}).get("concurrency") or 4)))
+        timeout = min(60, max(5, int((data or {}).get("timeout") or 15)))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "concurrency 和 timeout 必须是整数"}, status_code=400)
+
+    current = asset_scanner.get_report()
+    total = sum(1 for item in current["items"] if item.get("platform") in set(platforms))
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    ASSET_SCAN_STATE.update({
+        "running": True,
+        "started_at": started_at,
+        "finished_at": "",
+        "error": "",
+        "progress": {"completed": 0, "total": total, "current": ""},
+    })
+    ASSET_SCAN_TASK = asyncio.create_task(_run_asset_scan(platforms, concurrency, timeout))
+    return {"ok": True, "platforms": platforms, "scan": dict(ASSET_SCAN_STATE)}
 
 
 @app.get("/api/scripts")

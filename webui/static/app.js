@@ -9,6 +9,9 @@ let k12Url = 'http://127.0.0.1:8806/';
 let k12Starting = false;
 let proxyMode = 'clash_auto';
 let assetPickMode = 'sequence';
+let assetScanData = null;
+let assetScanPage = 1;
+let assetScanTimer = null;
 
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -208,6 +211,14 @@ const ASSET_FORMATS = {
   claude: ['raw', 'header'],
   grok: ['raw', 'header', 'session', 'sub2api'],
 };
+const ASSET_SCAN_STATUS_LABELS = {
+  normal:'正常', unlock:'待解锁', banned:'封禁', expired:'过期', restricted:'受限',
+  invalid:'凭据异常', unknown:'未知', error:'检测异常',
+};
+const ASSET_SCAN_PLATFORM_LABELS = {
+  outlook:'Outlook', chatgpt:'ChatGPT', claude:'Claude', grok:'Grok',
+};
+const ASSET_SCAN_PAGE_SIZE = 25;
 
 function assetHeaders(json=false){
   const headers = {};
@@ -285,6 +296,123 @@ function renderAssetSummary(data){
   });
 }
 
+function formatAssetScanTime(value){
+  if(!value) return '--';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', {hour12:false});
+}
+
+function appendAssetScanCell(row, text, className=''){
+  const cell = document.createElement('td');
+  if(className) cell.className = className;
+  cell.textContent = text || '--';
+  row.appendChild(cell);
+  return cell;
+}
+
+function filteredAssetScanItems(){
+  if(!assetScanData) return [];
+  const platform = $('#asset-scan-platform').value;
+  const status = $('#asset-scan-status').value;
+  return (assetScanData.items || []).filter(item=>
+    (platform === 'all' || item.platform === platform) &&
+    (status === 'all' || item.status === status)
+  );
+}
+
+function renderAssetScanTable(){
+  const items = filteredAssetScanItems();
+  const pages = Math.max(1, Math.ceil(items.length / ASSET_SCAN_PAGE_SIZE));
+  assetScanPage = Math.min(Math.max(1, assetScanPage), pages);
+  const start = (assetScanPage - 1) * ASSET_SCAN_PAGE_SIZE;
+  const visible = items.slice(start, start + ASSET_SCAN_PAGE_SIZE);
+  const body = $('#asset-scan-rows');
+  body.innerHTML = '';
+  visible.forEach(item=>{
+    const row = document.createElement('tr');
+    appendAssetScanCell(row, ASSET_SCAN_PLATFORM_LABELS[item.platform] || item.platform, 'asset-scan-platform');
+    const account = appendAssetScanCell(row, item.email || item.source, 'asset-scan-account');
+    account.title = item.source || '';
+    const statusCell = document.createElement('td');
+    const badge = document.createElement('span');
+    badge.className = `asset-status-badge ${item.status || 'unknown'}`;
+    badge.textContent = ASSET_SCAN_STATUS_LABELS[item.status] || item.status || '未知';
+    statusCell.appendChild(badge);
+    row.appendChild(statusCell);
+    const detail = appendAssetScanCell(row, item.detail || '尚未扫描', 'asset-scan-detail');
+    detail.title = `${item.evidence || 'none'} · ${item.source || ''}`;
+    appendAssetScanCell(row, formatAssetScanTime(item.checked_at), 'asset-scan-checked');
+    body.appendChild(row);
+  });
+  $('#asset-scan-empty').style.display = visible.length ? 'none' : 'block';
+  $('#asset-scan-result-count').textContent = `${items.length} 条`;
+  $('#asset-scan-page').textContent = `${assetScanPage} / ${pages}`;
+  $('#btn-scan-prev').disabled = assetScanPage <= 1;
+  $('#btn-scan-next').disabled = assetScanPage >= pages;
+}
+
+function renderAssetScan(data){
+  assetScanData = data;
+  const statuses = data.summary?.statuses || {};
+  Object.keys(ASSET_SCAN_STATUS_LABELS).forEach(status=>{
+    $(`#asset-status-${status}`).textContent = statuses[status] || 0;
+  });
+  const scan = data.scan || {};
+  const progress = scan.progress || {};
+  const completed = progress.completed || 0;
+  const total = progress.total || 0;
+  const bar = $('#asset-scan-progress-bar');
+  bar.max = Math.max(1, total);
+  bar.value = Math.min(completed, Math.max(1, total));
+  $('#btn-scan-all').disabled = !!scan.running;
+  $('#btn-scan-current').disabled = !!scan.running;
+  $('#asset-scan-concurrency').disabled = !!scan.running;
+  if(scan.running){
+    const current = progress.current ? ` · ${progress.current}` : '';
+    $('#asset-scan-progress-text').textContent = `扫描中 ${completed}/${total}${current}`;
+    $('#btn-scan-all').textContent = '扫描中…';
+  }else if(scan.error){
+    $('#asset-scan-progress-text').textContent = `扫描失败：${scan.error}`;
+  }else if(data.last_scan_at){
+    $('#asset-scan-progress-text').textContent = `扫描完成 ${statuses.normal || 0}/${data.summary?.total || 0} 正常`;
+  }else{
+    $('#asset-scan-progress-text').textContent = '尚未扫描';
+  }
+  if(!scan.running) $('#btn-scan-all').textContent = '一键扫描全部';
+  $('#asset-scan-time').textContent = data.last_scan_at ? `更新于 ${formatAssetScanTime(data.last_scan_at)}` : '';
+  renderAssetScanTable();
+}
+
+async function loadAssetScan(){
+  if(assetScanTimer){ clearTimeout(assetScanTimer); assetScanTimer = null; }
+  try{
+    const response = await fetch('/api/assets/scan', {headers:assetHeaders()});
+    const data = await readAssetResponse(response);
+    renderAssetScan(data);
+    if(data.scan?.running) assetScanTimer = setTimeout(loadAssetScan, 1000);
+  }catch(error){
+    setAssetMessage('#asset-scan-msg', error.message || String(error), false);
+  }
+}
+
+async function startAssetScan(all=false){
+  const platform = $('#asset-scan-platform').value;
+  const platforms = all || platform === 'all' ? ['outlook','chatgpt','claude','grok'] : [platform];
+  setAssetMessage('#asset-scan-msg', '正在启动扫描…');
+  try{
+    const response = await fetch('/api/assets/scan', {method:'POST', headers:assetHeaders(true), body:JSON.stringify({
+      platforms,
+      concurrency:parseInt($('#asset-scan-concurrency').value || '4', 10),
+      timeout:15,
+    })});
+    await readAssetResponse(response);
+    setAssetMessage('#asset-scan-msg', `已开始扫描 ${platforms.length === 4 ? '全部号池' : ASSET_SCAN_PLATFORM_LABELS[platforms[0]]}`, true);
+    await loadAssetScan();
+  }catch(error){
+    setAssetMessage('#asset-scan-msg', error.message || String(error), false);
+  }
+}
+
 async function refreshAssetSummary(quiet=false){
   if(!quiet) setAssetMessage('#asset-call-msg', '正在读取资产统计…');
   try{
@@ -306,7 +434,7 @@ async function loadAssetPanel(){
     setAssetMessage('#asset-key-msg', '读取配置失败', false);
   }
   updateAssetFormats();
-  await refreshAssetSummary();
+  await Promise.all([refreshAssetSummary(), loadAssetScan()]);
 }
 
 async function saveAssetKey(){
@@ -319,7 +447,7 @@ async function saveAssetKey(){
     const data = await readAssetResponse(response);
     setAssetMessage('#asset-key-msg', data.ok ? '已保存并立即生效' : '保存失败', !!data.ok);
     updateAssetRequestPreview();
-    await refreshAssetSummary();
+    await Promise.all([refreshAssetSummary(), loadAssetScan()]);
   }catch(error){ setAssetMessage('#asset-key-msg', error.message || String(error), false); }
   finally{ button.disabled = false; }
 }
@@ -363,12 +491,23 @@ $('#asset-format').onchange = updateAssetRequestPreview;
 $('#asset-index').oninput = updateAssetRequestPreview;
 $('#asset-api-key').oninput = updateAssetRequestPreview;
 $$('[data-asset-pick]').forEach(button=>button.onclick=()=>setAssetPickMode(button.dataset.assetPick));
-$('#btn-refresh-assets').onclick = refreshAssetSummary;
+$('#btn-refresh-assets').onclick = ()=>Promise.all([refreshAssetSummary(), loadAssetScan()]);
 $('#btn-save-asset-key').onclick = saveAssetKey;
 $('#btn-call-asset').onclick = callAssetApi;
 $('#btn-reset-asset').onclick = resetAssetCursor;
 $('#btn-copy-url').onclick = ()=>copyText($('#asset-request-url').textContent, $('#btn-copy-url'));
 $('#btn-copy-curl').onclick = ()=>copyText($('#asset-curl-example').textContent, $('#btn-copy-curl'));
+$('#btn-scan-all').onclick = ()=>startAssetScan(true);
+$('#btn-scan-current').onclick = ()=>startAssetScan(false);
+$('#asset-scan-platform').onchange = ()=>{ assetScanPage = 1; renderAssetScanTable(); };
+$('#asset-scan-status').onchange = ()=>{ assetScanPage = 1; renderAssetScanTable(); };
+$$('[data-scan-status]').forEach(button=>button.onclick=()=>{
+  $('#asset-scan-status').value = button.dataset.scanStatus;
+  assetScanPage = 1;
+  renderAssetScanTable();
+});
+$('#btn-scan-prev').onclick = ()=>{ assetScanPage -= 1; renderAssetScanTable(); };
+$('#btn-scan-next').onclick = ()=>{ assetScanPage += 1; renderAssetScanTable(); };
 
 // ---------------------------------------------------------------- Codex K12 集成通道
 function renderK12Status(status){

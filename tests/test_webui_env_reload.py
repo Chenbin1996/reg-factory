@@ -8,6 +8,16 @@ from unittest.mock import patch
 from webui import server
 
 
+class FakeJSONRequest:
+    def __init__(self, data=None):
+        self._data = data or {}
+        self.headers = {}
+        self.client = SimpleNamespace(host="127.0.0.1")
+
+    async def json(self):
+        return self._data
+
+
 class WebUIEnvReloadTests(unittest.TestCase):
     def _env_file(self, value):
         tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
@@ -106,6 +116,52 @@ class WebUIRunStreamTests(unittest.IsolatedAsyncioTestCase):
             json.loads(payload),
             {"returncode": 7, "stopped": False},
         )
+
+
+class WebUIAssetScanTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        server.ASSET_SCAN_TASK = None
+        server.ASSET_SCAN_STATE.update({
+            "running": False,
+            "started_at": "",
+            "finished_at": "",
+            "error": "",
+            "progress": {"completed": 0, "total": 0, "current": ""},
+        })
+
+    async def test_asset_scan_runs_in_background_and_exposes_progress(self):
+        from common import asset_scanner
+
+        report = {
+            "schema_version": 1,
+            "finished_at": "2026-07-28T09:00:00Z",
+            "last_scan_at": "2026-07-28T09:00:00Z",
+            "items": [{"id": "one", "platform": "outlook", "status": "normal"}],
+            "summary": {"total": 1, "statuses": {"normal": 1}, "platforms": {}},
+        }
+
+        def scan_pool(**kwargs):
+            kwargs["progress"]({"completed": 1, "total": 1, "current": "mail@example.com"})
+            return report
+
+        with patch.object(asset_scanner, "get_report", return_value=report):
+            with patch.object(asset_scanner, "scan_pool", side_effect=scan_pool):
+                started = await server.api_asset_scan_start(
+                    FakeJSONRequest({"platforms": ["outlook"], "concurrency": 2})
+                )
+                task = server.ASSET_SCAN_TASK
+                self.assertTrue(started["ok"])
+                self.assertTrue(started["scan"]["running"])
+                await task
+                current = server.api_asset_scan_get(FakeJSONRequest())
+
+        self.assertFalse(current["scan"]["running"])
+        self.assertEqual(current["scan"]["progress"]["completed"], 1)
+        self.assertEqual(current["summary"]["statuses"]["normal"], 1)
+
+    async def test_asset_scan_rejects_unknown_platform(self):
+        response = await server.api_asset_scan_start(FakeJSONRequest({"platforms": ["unknown"]}))
+        self.assertEqual(response.status_code, 400)
 
 
 
