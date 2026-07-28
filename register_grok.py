@@ -79,9 +79,11 @@ GROK_URL = "https://grok.com/"
 GROK_SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com&return_to=%2F"
 CLASH_PROXY_HOST = "127.0.0.1"
 CLASH_PROXY_PORT = "7897"
-GROK_BROWSER_CORE_VERSION = os.environ.get(
-    "GROK_BROWSER_CORE_VERSION", os.environ.get("BB_CORE_VERSION", "146")
-)
+GROK_BROWSER_CORE_VERSION = (
+    os.environ.get("GROK_BROWSER_CORE_VERSION")
+    or os.environ.get("BB_CORE_VERSION")
+    or "146"
+).strip()
 # 登录态关键 cookie（运行时确认，先放候选）
 KEY_COOKIES = ["sso", "sso-rw", "__Secure-next-auth.session-token", "auth_token"]
 REGISTER_TIMEOUT = 600

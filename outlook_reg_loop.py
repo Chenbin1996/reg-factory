@@ -340,7 +340,10 @@ def clash_proxy_from_env():
 
 BB_API = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
 # Match bs_register_step1 — user's BitBrowser has Chromium 146 not 130.
-BB_CORE_VERSION = os.environ.get("BB_CORE_VERSION", "146")
+BB_CORE_VERSION = (os.environ.get("BB_CORE_VERSION") or "146").strip()
+OUTLOOK_BROWSER_FALLBACK_CORE_VERSION = os.environ.get(
+    "OUTLOOK_BROWSER_FALLBACK_CORE_VERSION", "130"
+).strip()
 
 
 def _fingerprint_provider():
@@ -423,6 +426,39 @@ def bb_create_for_outlook_reg(name, proxy_str=None):
     if not pid:
         raise RuntimeError(f"/browser/update returned no id: {data}")
     return pid
+
+
+def bb_open_for_outlook_reg(bb, profile_id):
+    """Open with the preferred core, falling back only on install failure."""
+    try:
+        return bb.open_browser(profile_id)
+    except Exception as exc:
+        message = str(exc).lower()
+        core_update_failed = any(marker in message for marker in (
+            "内核更新失败", "kernel update failed", "core update failed",
+        ))
+        fallback = OUTLOOK_BROWSER_FALLBACK_CORE_VERSION
+        if not core_update_failed or not fallback:
+            raise
+
+        log(
+            f"BitBrowser core {BB_CORE_VERSION} unavailable; "
+            f"falling back to {fallback}",
+            "WARN",
+        )
+        try:
+            bb._post(
+                "/browser/update/partial",
+                {
+                    "ids": [profile_id],
+                    "browserFingerPrint": {"coreVersion": fallback},
+                },
+            )
+            return bb.open_browser(profile_id)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "BitBrowser 内核回退后仍无法打开；请修复或更新 BitBrowser 内核"
+            ) from fallback_error
 
 
 def count_pool():
@@ -695,7 +731,7 @@ async def one_attempt(mod, proxy_str, idx):
                 await asyncio.sleep(3 + _r)
         if not profile_id:
             return None, None, [], None
-        info = bb.open_browser(profile_id)
+        info = bb_open_for_outlook_reg(bb, profile_id)
         ws = info.get("ws", "")
         if not ws:
             return None, None, [], None

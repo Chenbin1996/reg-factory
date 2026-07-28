@@ -78,6 +78,19 @@ class DirectProxyTests(unittest.TestCase):
         self.assertEqual(payload["proxyUserName"], "user")
         self.assertEqual(payload["proxyPassword"], "pass")
 
+    def test_bitbrowser_partially_updates_fingerprint(self):
+        browser = BitBrowser(api_base="http://127.0.0.1:54345")
+        with patch.object(browser, "_post", return_value={"success": True}) as post:
+            browser.update_browser_fingerprint("profile-1", coreVersion="130")
+
+        post.assert_called_once_with(
+            "/browser/update/partial",
+            {
+                "ids": ["profile-1"],
+                "browserFingerPrint": {"coreVersion": "130"},
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,16 @@ class BitBrowser:
         result = self._post("/browser/open", {"id": profile_id})
         return result["data"]
 
+    def update_browser_fingerprint(self, profile_id, **fingerprint):
+        """Partially update fingerprint fields without resetting the profile."""
+        return self._post(
+            "/browser/update/partial",
+            {
+                "ids": [profile_id],
+                "browserFingerPrint": fingerprint,
+            },
+        )
+
     def close_browser(self, profile_id):
         """关闭浏览器窗口"""
         return self._post("/browser/close", {"id": profile_id})

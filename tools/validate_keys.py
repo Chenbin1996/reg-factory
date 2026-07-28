@@ -27,10 +27,11 @@ OUTPUT_INVALID = INPUT_FILE.replace(".txt", "_invalid.txt")
 def validation_browser_options():
     options = {
         "browserFingerPrint": {
-            "coreVersion": os.environ.get(
-                "CLAUDE_BROWSER_CORE_VERSION",
-                os.environ.get("BB_CORE_VERSION", "146"),
-            ),
+            "coreVersion": (
+                os.environ.get("CLAUDE_BROWSER_CORE_VERSION")
+                or os.environ.get("BB_CORE_VERSION")
+                or "146"
+            ).strip(),
             "isIpCreateTimeZone": True,
             "isIpCreateLanguage": True,
             "isIpCreateDisplayLanguage": True,

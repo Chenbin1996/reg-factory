@@ -42,9 +42,11 @@ from bitbrowser import BitBrowser
 import config as _config  # noqa: F401  # load the project .env
 from common import proxy_switch
 
-CLAUDE_BROWSER_CORE_VERSION = os.environ.get(
-    "CLAUDE_BROWSER_CORE_VERSION", os.environ.get("BB_CORE_VERSION", "146")
-)
+CLAUDE_BROWSER_CORE_VERSION = (
+    os.environ.get("CLAUDE_BROWSER_CORE_VERSION")
+    or os.environ.get("BB_CORE_VERSION")
+    or "146"
+).strip()
 UPGRADE_TIMEOUT = 300
 
 # Cassia Response Mock — 拦截 checkout_capabilities API 使其返回 cassia flow

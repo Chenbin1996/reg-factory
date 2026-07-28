@@ -9,6 +9,24 @@ from webui import scripts as webui_scripts
 
 
 class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_outlook_open_falls_back_when_preferred_core_cannot_install(self):
+        browser = MagicMock()
+        browser.open_browser.side_effect = [
+            Exception("内核更新失败，请重新启动客户端再打开"),
+            {"ws": "ws://fallback-ready"},
+        ]
+
+        result = outlook_reg_loop.bb_open_for_outlook_reg(browser, "profile")
+
+        self.assertEqual(result["ws"], "ws://fallback-ready")
+        browser._post.assert_called_once_with(
+            "/browser/update/partial",
+            {
+                "ids": ["profile"],
+                "browserFingerPrint": {"coreVersion": "130"},
+            },
+        )
+
     def test_outlook_max_press_defaults_to_five_everywhere(self):
         self.assertEqual(outlook_reg_loop.DEFAULT_MAX_PRESS, "5")
         outlook_entry = next(

@@ -75,9 +75,14 @@ CLAUDE_PROXY_NODE = None
 CLAUDE_PROXY_AUTO = False
 CLAUDE_PROXY_HOST = "127.0.0.1"
 CLAUDE_PROXY_PORT = "7897"
-CLAUDE_BROWSER_CORE_VERSION = os.environ.get(
-    "CLAUDE_BROWSER_CORE_VERSION", os.environ.get("BB_CORE_VERSION", "146")
-)
+CLAUDE_BROWSER_CORE_VERSION = (
+    os.environ.get("CLAUDE_BROWSER_CORE_VERSION")
+    or os.environ.get("BB_CORE_VERSION")
+    or "146"
+).strip()
+CLAUDE_BROWSER_FALLBACK_CORE_VERSION = os.environ.get(
+    "CLAUDE_BROWSER_FALLBACK_CORE_VERSION", "130"
+).strip()
 CLAUDE_EMAIL_SELECTOR = 'input[type="email"], input[name="email"], input[id="email"]'
 CLAUDE_COOKIE_REJECT_LABELS = (
     "Reject All Cookies", "Reject all", "Reject non-essential cookies",
@@ -4923,14 +4928,40 @@ async def _get_and_verify_phone(page, max_attempts=2):
     return False
 
 
-async def _open_bitbrowser_with_retry(bb, profile_id, attempts=8):
+async def _open_bitbrowser_with_retry(
+    bb, profile_id, attempts=8, fallback_core_version=None,
+):
     last_error = None
+    fallback_applied = False
     for attempt in range(attempts):
         try:
             return bb.open_browser(profile_id)
         except Exception as e:
             last_error = e
             message = str(e).lower()
+            core_update_failed = any(marker in message for marker in (
+                "内核更新失败", "kernel update failed", "core update failed",
+            ))
+            if core_update_failed and fallback_core_version and not fallback_applied:
+                print(
+                    "  BitBrowser 首选内核不可用；"
+                    f"自动回退到内核 {fallback_core_version}"
+                )
+                try:
+                    bb.update_browser_fingerprint(
+                        profile_id, coreVersion=str(fallback_core_version)
+                    )
+                except Exception as update_error:
+                    raise RuntimeError(
+                        "BitBrowser 内核自动回退失败；请重启 BitBrowser 客户端后重试"
+                    ) from update_error
+                fallback_applied = True
+                await asyncio.sleep(2)
+                continue
+            if core_update_failed and fallback_applied:
+                raise RuntimeError(
+                    "BitBrowser 内核回退后仍无法打开；请重启 BitBrowser 客户端后重试"
+                ) from e
             retryable = any(marker in message for marker in (
                 "正在打开", "opening", "启动中", "starting", "busy",
                 "tls", "socket", "disconnected", "connection", "timed out", "timeout",
@@ -4960,7 +4991,11 @@ async def register(
             raise TimeoutError(f"registration timeout ({REGISTER_TIMEOUT}s)")
 
     print(f"\n[1/6] open BitBrowser...")
-    browser_data = await _open_bitbrowser_with_retry(bb, profile_id)
+    browser_data = await _open_bitbrowser_with_retry(
+        bb,
+        profile_id,
+        fallback_core_version=CLAUDE_BROWSER_FALLBACK_CORE_VERSION,
+    )
     ws_url = browser_data["ws"]
     print(f"  ws: {ws_url}")
 

@@ -676,6 +676,54 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["ws"], "ws://ready")
         self.assertEqual(browser.open_browser.call_count, 2)
 
+    async def test_bitbrowser_open_falls_back_when_core_update_fails(self):
+        browser = MagicMock()
+        browser.open_browser.side_effect = [
+            Exception("内核更新失败，请重新启动客户端再打开"),
+            {"ws": "ws://fallback-ready"},
+        ]
+        with patch.object(register.asyncio, "sleep", AsyncMock()):
+            result = await register._open_bitbrowser_with_retry(
+                browser, "profile", fallback_core_version="130"
+            )
+
+        self.assertEqual(result["ws"], "ws://fallback-ready")
+        browser.update_browser_fingerprint.assert_called_once_with(
+            "profile", coreVersion="130"
+        )
+        self.assertEqual(browser.open_browser.call_count, 2)
+
+    async def test_bitbrowser_open_reports_restart_when_partial_update_fails(self):
+        browser = MagicMock()
+        browser.open_browser.side_effect = Exception(
+            "内核更新失败，请重新启动客户端再打开"
+        )
+        browser.update_browser_fingerprint.side_effect = Exception(
+            "unsupported endpoint"
+        )
+        with self.assertRaisesRegex(RuntimeError, "重启 BitBrowser"):
+            await register._open_bitbrowser_with_retry(
+                browser, "profile", fallback_core_version="130"
+            )
+        self.assertEqual(browser.open_browser.call_count, 1)
+
+    async def test_bitbrowser_open_reports_restart_after_fallback_failure(self):
+        browser = MagicMock()
+        browser.open_browser.side_effect = Exception(
+            "内核更新失败，请重新启动客户端再打开"
+        )
+        with (
+            patch.object(register.asyncio, "sleep", AsyncMock()),
+            self.assertRaisesRegex(RuntimeError, "重启 BitBrowser"),
+        ):
+            await register._open_bitbrowser_with_retry(
+                browser, "profile", fallback_core_version="130"
+            )
+
+        browser.update_browser_fingerprint.assert_called_once_with(
+            "profile", coreVersion="130"
+        )
+
     async def test_managed_challenge_never_uses_blind_coordinate_clicks(self):
         frame = MagicMock()
         frame.url = "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/"
