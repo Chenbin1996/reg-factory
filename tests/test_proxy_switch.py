@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from common import proxy_switch
+import outlook_reg_loop
 import run_full_flow
 
 
@@ -51,6 +52,28 @@ class ProxySwitchTests(unittest.TestCase):
             "proxyUserName": "home-user",
             "proxyPassword": "home-pass",
         })
+
+    def test_outlook_loop_writes_residential_proxy_to_bitbrowser_profile(self):
+        response = {"success": True, "data": {"id": "profile-1"}}
+        with patch.object(outlook_reg_loop, "_bb_call", return_value=response) as request:
+            profile_id = outlook_reg_loop.bb_create_for_outlook_reg(
+                "outlook-test",
+                "http://resident:secret@home.test:9000",
+            )
+
+        self.assertEqual(profile_id, "profile-1")
+        payload = request.call_args.args[1]
+        self.assertEqual(payload["proxyType"], "http")
+        self.assertEqual(payload["host"], "home.test")
+        self.assertEqual(payload["port"], "9000")
+        self.assertEqual(payload["proxyUserName"], "resident")
+        self.assertEqual(payload["proxyPassword"], "secret")
+
+    def test_outlook_loop_keeps_noproxy_profile_for_clash_tun(self):
+        self.assertEqual(
+            outlook_reg_loop._bitbrowser_proxy_fields(),
+            {"proxyMethod": 2, "proxyType": "noproxy"},
+        )
 
     def test_bitbrowser_fields_follow_residential_pool_rotation(self):
         with tempfile.TemporaryDirectory() as directory:

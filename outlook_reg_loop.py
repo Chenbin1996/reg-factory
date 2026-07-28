@@ -361,11 +361,42 @@ def _bb_call(path, body):
         return json.loads(r.read())
 
 
-def bb_create_for_outlook_reg(name):
-    """Mirror bs_register_step1.bb_create_ephemeral so we share the working
-    fingerprint config (proxyType=noproxy + IP-derived locale; routes through
-    Clash via TUN). Standalone's hardcoded coreVersion=130 returns 502 on
-    BitBrowser builds that only have Chromium 146 installed."""
+def _bitbrowser_proxy_fields(proxy_str=None):
+    if not proxy_str:
+        return {"proxyMethod": 2, "proxyType": "noproxy"}
+    from common.direct_proxy import parse_proxy
+
+    proxy = parse_proxy(proxy_str)
+    if proxy is None:
+        return {"proxyMethod": 2, "proxyType": "noproxy"}
+    if proxy.scheme == "socks4":
+        raise ValueError("BitBrowser does not support SOCKS4 profiles")
+    fields = {
+        "proxyMethod": 2,
+        "proxyType": "socks5" if proxy.scheme == "socks5" else "http",
+        "host": proxy.host,
+        "port": str(proxy.port),
+    }
+    if proxy.username:
+        fields["proxyUserName"] = proxy.username
+    if proxy.password:
+        fields["proxyPassword"] = proxy.password
+    return fields
+
+
+def bb_create_for_outlook_reg(name, proxy_str=None):
+    """Create an Outlook profile with the selected residential proxy when set."""
+    proxy_fields = _bitbrowser_proxy_fields(proxy_str)
+    fingerprint = {
+        "ostype": "PC",
+        "os": "Win32",
+        "coreVersion": BB_CORE_VERSION,
+        "isIpCreateTimeZone": True,
+        "isIpCreateLanguage": True,
+        "isIpCreateDisplayLanguage": True,
+        "isIpCreatePosition": True,
+        "isIpCountry": True,
+    }
     if _fingerprint_provider() in {"adspower", "ads_power", "ads"}:
         from bitbrowser import BitBrowser
         return BitBrowser().create_browser(
@@ -373,36 +404,16 @@ def bb_create_for_outlook_reg(name):
             remark="outlook reg loop auto-deleted after use",
             platform="https://outlook.live.com",
             platformIcon="outlook.live.com",
-            proxyMethod=2,
-            proxyType="noproxy",
-            browserFingerPrint={
-                "ostype": "PC",
-                "os": "Win32",
-                "coreVersion": BB_CORE_VERSION,
-                "isIpCreateTimeZone": True,
-                "isIpCreateLanguage": True,
-                "isIpCreateDisplayLanguage": True,
-                "isIpCreatePosition": True,
-                "isIpCountry": True,
-            },
+            **proxy_fields,
+            browserFingerPrint=fingerprint,
         )
     body = {
         "name": name,
         "remark": "outlook reg loop — auto-deleted after use",
         "platform": "https://outlook.live.com",
         "platformIcon": "outlook.live.com",
-        "proxyMethod": 2,
-        "proxyType": "noproxy",
-        "browserFingerPrint": {
-            "ostype": "PC",
-            "os": "Win32",
-            "coreVersion": BB_CORE_VERSION,
-            "isIpCreateTimeZone": True,
-            "isIpCreateLanguage": True,
-            "isIpCreateDisplayLanguage": True,
-            "isIpCreatePosition": True,
-            "isIpCountry": True,
-        },
+        **proxy_fields,
+        "browserFingerPrint": fingerprint,
     }
     r = _bb_call("/browser/update", body)
     if not r.get("success"):
@@ -663,7 +674,12 @@ async def one_attempt(mod, proxy_str, idx):
                 # Use our own create that picks coreVersion=146 (matches the
                 # BitBrowser install on this machine). Standalone's hardcoded
                 # 130 makes BB return 502.
-                profile_id = bb_create_for_outlook_reg(f"outlook_loop_{ts}_{idx}")
+                from common import proxy_switch
+                browser_proxy = proxy_str if proxy_switch.proxy_mode() == "residential" else None
+                profile_id = bb_create_for_outlook_reg(
+                    f"outlook_loop_{ts}_{idx}",
+                    proxy_str=browser_proxy,
+                )
                 break
             except Exception as e:
                 m = str(e)
@@ -752,16 +768,16 @@ def main():
 
     mod = load_standalone()
     injected_proxy = ensure_clash_proxy_env()
+    from common import direct_proxy, proxy_switch
+    proxy_mode = proxy_switch.proxy_mode()
     if injected_proxy:
-        log(f"proxy env ready: {injected_proxy}")
+        log(f"{proxy_mode} proxy env ready: {direct_proxy.redact_proxy(injected_proxy)}")
     proxy = clash_proxy_from_env()
     if not proxy:
         log("HTTP_PROXY not set — running without proxy (signup will likely fail)", "WARN")
     else:
-        log(f"using clash proxy: {proxy}")
+        log(f"using {proxy_mode} proxy: {direct_proxy.redact_proxy(proxy)}")
 
-    from common import proxy_switch
-    proxy_mode = proxy_switch.proxy_mode()
     if proxy_mode == "clash_fixed":
         proxy_switch.ensure_proxy_mode()
 
