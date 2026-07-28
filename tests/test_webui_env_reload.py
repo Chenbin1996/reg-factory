@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import config
 from webui import server
 
 
@@ -34,6 +35,14 @@ class WebUIEnvReloadTests(unittest.TestCase):
                 with patch.dict(os.environ, {"DYNAMIC_TEST_KEY": "stale-value"}):
                     child = server._child_env()
         self.assertEqual(child["DYNAMIC_TEST_KEY"], "new-value")
+
+    def test_global_config_honors_explicit_env_file(self):
+        path = self._env_file("portable-value")
+        with patch.dict(os.environ, {"REG_FACTORY_ENV_FILE": path}, clear=False):
+            os.environ.pop("DYNAMIC_TEST_KEY", None)
+            config._load_dotenv()
+            self.assertEqual(os.environ.get("DYNAMIC_TEST_KEY"), "portable-value")
+            os.environ.pop("DYNAMIC_TEST_KEY", None)
 
     def test_explicit_startup_environment_keeps_precedence(self):
         path = self._env_file("dotenv-value")

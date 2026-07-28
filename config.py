@@ -15,7 +15,9 @@ def _load_dotenv(path=None):
     """零依赖 .env 读取器：解析 KEY=VALUE，忽略空行与 # 注释。
     只在 os.environ 里尚未设置该 KEY 时填入（真实环境变量优先）。"""
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        path = os.environ.get("REG_FACTORY_ENV_FILE") or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), ".env"
+        )
     if not os.path.isfile(path):
         return
     try:
