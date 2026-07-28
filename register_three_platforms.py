@@ -73,15 +73,21 @@ def build_command(platform, args, account):
         return cmd
 
     if platform == "grok":
-        # HTTP 协议版(register_grok_http.py)：不开浏览器，curl_cffi 直连 accounts.x.ai，
-        # 验证码走 gRPC 字符串直传，绕开浏览器验证码掩码输入框。它自建临时邮箱收码
-        # （x.ai 必须把码发到它能控制的邮箱），故不复用这里的 Outlook email/password；
-        # grok 的 sso token 本就是独立的，不受影响。
         cmd = [
-            sys.executable, "-u", "register_grok_http.py",
+            sys.executable, "-u", "register_grok.py",
             "--count", "1",
+            "--concurrency", "1",
+            "--timeout", timeout,
             "--node", args.node,
+            "--email", email,
+            "--password", password or "",
         ]
+        if token:
+            cmd += ["--refresh-token", token]
+        if client_id:
+            cmd += ["--client-id", client_id]
+        if getattr(args, "keep_on_fail", False):
+            cmd.append("--keep-on-fail")
         if getattr(args, "grok_sub2api", False):
             cmd.append("--sub2api")
             if getattr(args, "grok_sub2api_group", None):
@@ -97,10 +103,15 @@ async def run_platform(platform, cmd, run_id, child_env=None):
     print(f"\n[{platform}] start")
     print(f"[{platform}] log: {log_path}")
 
+    from common import proxy_switch
+
+    platform_env = proxy_switch.platform_environment(child_env or os.environ, platform)
+    mode = proxy_switch.proxy_mode(platform_env)
+    print(f"[{platform}] proxy mode: {mode}")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=DATA_ROOT,
-        env=child_env,
+        env=platform_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )

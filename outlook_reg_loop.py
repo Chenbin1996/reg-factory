@@ -397,7 +397,7 @@ def bb_create_for_outlook_reg(name, proxy_str=None):
         "isIpCreatePosition": True,
         "isIpCountry": True,
     }
-    if _fingerprint_provider() in {"adspower", "ads_power", "ads"}:
+    if _fingerprint_provider() not in {"bitbrowser", "bit"}:
         from bitbrowser import BitBrowser
         return BitBrowser().create_browser(
             name=name,
@@ -874,4 +874,7 @@ def main():
 
 
 if __name__ == "__main__":
+    from common import proxy_switch
+
+    proxy_switch.apply_platform_environment("outlook")
     main()

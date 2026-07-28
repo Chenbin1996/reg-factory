@@ -10,10 +10,12 @@
     python tools/export_accounts.py claude chatgpt # 只导出指定平台
 """
 
+import argparse
 import glob
 import json
 import os
 import sys
+from pathlib import Path
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -149,8 +151,54 @@ def load_platform(name, cfg):
     return results
 
 
+def _output_path(value, default):
+    path = Path(value or default)
+    if not path.is_absolute():
+        data_root = Path(os.environ.get("REG_FACTORY_DATA_DIR") or Path.cwd())
+        path = data_root / path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def main():
-    targets = sys.argv[1:] or list(PLATFORMS.keys())
+    parser = argparse.ArgumentParser(description="Export registered platform cookies")
+    parser.add_argument("platforms", nargs="*", choices=sorted(PLATFORMS), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--platform", choices=("all", *PLATFORMS), default="all",
+        help="Platform to export",
+    )
+    parser.add_argument(
+        "--format", choices=("accounts", "cookies"), default="accounts",
+        help="accounts=extension account bundle; cookies=standard browser cookie array",
+    )
+    parser.add_argument(
+        "--index", type=int, default=-1,
+        help="Account index; -1 exports all account bundles or the first cookie record",
+    )
+    parser.add_argument("--out", default="", help="Output JSON path")
+    args = parser.parse_args()
+
+    if args.format == "cookies":
+        if args.platform == "all" or args.platforms:
+            parser.error("--format cookies requires one --platform")
+        from common import asset_store
+
+        selected = max(0, args.index)
+        result = asset_store.get_platform_asset(args.platform, "cookies", index=selected)
+        path = _output_path(
+            args.out,
+            f"cookie_exports/{args.platform}_cookies_{selected}.json",
+        )
+        path.write_text(json.dumps(result["data"], indent=2, ensure_ascii=False), encoding="utf-8")
+        print(
+            f"  exported {len(result['data'])} standard cookies "
+            f"for {args.platform}[{selected}] -> {path}"
+        )
+        return 0
+
+    targets = args.platforms or (
+        list(PLATFORMS.keys()) if args.platform == "all" else [args.platform]
+    )
     all_accounts = []
     for name in targets:
         if name not in PLATFORMS:
@@ -158,13 +206,15 @@ def main():
             continue
         accs = load_platform(name, PLATFORMS[name])
         print(f"  {name}: {len(accs)} accounts")
+        if args.index >= 0:
+            accs = accs[args.index:args.index + 1]
         all_accounts.extend(accs)
 
-    os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
-    with open(OUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(all_accounts, f, indent=2, ensure_ascii=False)
-    print(f"\n  exported {len(all_accounts)} accounts -> {OUT_FILE}")
+    path = _output_path(args.out, OUT_FILE)
+    path.write_text(json.dumps(all_accounts, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\n  exported {len(all_accounts)} accounts -> {path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

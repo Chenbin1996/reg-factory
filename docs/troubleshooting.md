@@ -6,7 +6,7 @@
 
 ## 指纹浏览器显示离线
 
-确认客户端已启动并开启本地 API，再检查 `.env` 中的 `FINGERPRINT_BROWSER` 与对应 API 地址。AdsPower 开启鉴权时还要填写 `ADSPOWER_API_KEY`。
+确认客户端已启动并开启本地 API，再检查 `.env` 中的 `FINGERPRINT_BROWSER` 与对应 API 地址。`custom` 模式填写 `CUSTOM_BROWSER_PATH`；`custom_api` 仅适用于兼容 BitBrowser `/browser/*` 接口的指纹浏览器。AdsPower 开启鉴权时还要填写 `ADSPOWER_API_KEY`。
 
 ## Clash 控制器连接失败
 
@@ -31,7 +31,7 @@ python -m common.proxy_switch list
 
 ## Grok 返回 Cloudflare 403
 
-更换干净节点。`register_grok_http.py` 会探测 Clash 节点，但节点质量仍会直接影响结果。
+更换干净节点或为 Grok 单独选择住宅出口。`register_grok.py --node auto` 在 Clash 模式下会探测节点，住宅模式下会直接使用写入浏览器 profile 的代理。
 
 ## Outlook 并发取码冲突
 

@@ -53,6 +53,26 @@ class ProxySwitchTests(unittest.TestCase):
             "proxyPassword": "home-pass",
         })
 
+    def test_platform_modes_can_split_outlook_and_other_registrations(self):
+        env = {
+            "PROXY_MODE": "clash_auto",
+            "CLASH_PROXY": "http://127.0.0.1:7897",
+            "OUTLOOK_PROXY_MODE": "clash_auto",
+            "CLAUDE_PROXY_MODE": "residential",
+            "CHATGPT_PROXY_MODE": "residential",
+            "GROK_PROXY_MODE": "residential",
+            "REG_FACTORY_PROXY": "http://resident:secret@home.test:9000",
+        }
+
+        outlook = proxy_switch.platform_environment(env, "outlook")
+        claude = proxy_switch.platform_environment(env, "claude")
+
+        self.assertEqual(proxy_switch.proxy_mode(outlook), "clash_auto")
+        self.assertEqual(outlook["HTTPS_PROXY"], "http://127.0.0.1:7897")
+        self.assertEqual(proxy_switch.proxy_mode(claude), "residential")
+        self.assertEqual(claude["HTTPS_PROXY"], "http://resident:secret@home.test:9000")
+        self.assertEqual(proxy_switch.browser_proxy_fields(claude)["host"], "home.test")
+
     def test_outlook_loop_writes_residential_proxy_to_bitbrowser_profile(self):
         response = {"success": True, "data": {"id": "profile-1"}}
         with patch.object(outlook_reg_loop, "_bb_call", return_value=response) as request:
@@ -105,12 +125,12 @@ class ProxySwitchTests(unittest.TestCase):
         with patch.dict(os.environ, {"PROXY_MODE": "clash_auto"}, clear=True):
             with patch.object(proxy_switch, "concrete_nodes", return_value=["a", "b", "c"]):
                 with patch.object(proxy_switch, "current_node", return_value="a"):
-                    with patch.object(proxy_switch, "node_delay", side_effect=lambda node: None if node == "b" else 42):
+                    with patch.object(proxy_switch, "node_delay", side_effect=lambda node, **_kwargs: None if node == "b" else 42):
                         with patch.object(proxy_switch, "set_node") as set_node:
                             result = proxy_switch.rotate_proxy()
         self.assertTrue(result["ok"])
         self.assertEqual(result["node"], "c")
-        set_node.assert_called_once_with("c", None, force=True)
+        set_node.assert_called_once_with("c", None, force=True, environ=None)
 
     def test_full_flow_does_not_relabel_clash_port_as_residential(self):
         args = SimpleNamespace(

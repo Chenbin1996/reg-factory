@@ -429,15 +429,23 @@ def _fingerprint_provider():
 def _test_bitbrowser():
     """Test selected fingerprint browser local API."""
     provider = _fingerprint_provider()
-    if provider in {"bundled", "embedded", "local"}:
-        browser = _read_config_val("REG_FACTORY_BROWSER_PATH", "")
-        if os.path.isfile(browser):
-            return True, "Bundled Chromium browser ready"
-        return False, "Bundled Chromium path is not configured"
+    if provider in {"bundled", "embedded", "local", "custom", "chrome", "chromium"}:
+        from common.bundled_browser import find_browser_path
+
+        browser = find_browser_path()
+        if browser:
+            return True, f"Chrome/Chromium ready: {os.path.basename(browser)}"
+        return False, "未找到 Chrome/Chromium，请配置 CUSTOM_BROWSER_PATH"
     if provider in {"adspower", "ads_power", "ads"}:
         api = _read_config_val("ADSPOWER_API", "http://127.0.0.1:50325").rstrip("/")
         name = "AdsPower"
         paths = ("/status", "/")
+    elif provider in {"custom_api", "api"}:
+        api = _read_config_val("CUSTOM_BROWSER_API", "").rstrip("/")
+        if not api:
+            return False, "CUSTOM_BROWSER_API 未配置"
+        name = "Custom Browser"
+        paths = ("/health", "/")
     else:
         api = _read_config_val("BITBROWSER_API", "http://127.0.0.1:54345").rstrip("/")
         name = "BitBrowser"
@@ -937,12 +945,17 @@ def index():
 @app.get("/api/status")
 def api_status():
     provider = _fingerprint_provider()
-    if provider in {"bundled", "embedded", "local"}:
-        bb = _read_config_val("REG_FACTORY_BROWSER_PATH", "")
-        provider_label = "bundled"
+    if provider in {"bundled", "embedded", "local", "custom", "chrome", "chromium"}:
+        from common.bundled_browser import find_browser_path
+
+        bb = find_browser_path()
+        provider_label = "custom" if provider in {"custom", "chrome", "chromium"} else "bundled"
     elif provider in {"adspower", "ads_power", "ads"}:
         bb = _read_config_val("ADSPOWER_API", "http://127.0.0.1:50325")
         provider_label = "adspower"
+    elif provider in {"custom_api", "api"}:
+        bb = _read_config_val("CUSTOM_BROWSER_API", "")
+        provider_label = "custom_api"
     else:
         bb = _read_config_val("BITBROWSER_API", "http://127.0.0.1:54345")
         provider_label = "bitbrowser"
@@ -963,7 +976,7 @@ def api_status():
         "version": WEBUI_VERSION,
         "root": ROOT,
         "data_root": os.environ.get("REG_FACTORY_DATA_DIR") or ROOT,
-        "bitbrowser": os.path.isfile(bb) if provider_label == "bundled" else _http_alive(bb),
+        "bitbrowser": os.path.isfile(bb) if provider_label in {"bundled", "custom"} else _http_alive(bb),
         "browser_provider": provider_label,
         "clash": network,
         "network": network,
@@ -977,6 +990,10 @@ def api_status():
 
 _PROXY_ENV_KEYS = (
     "PROXY_MODE",
+    "OUTLOOK_PROXY_MODE",
+    "CLAUDE_PROXY_MODE",
+    "CHATGPT_PROXY_MODE",
+    "GROK_PROXY_MODE",
     "CLASH_API",
     "CLASH_SECRET",
     "CLASH_PROXY",
@@ -995,6 +1012,8 @@ def _proxy_panel_data(include_nodes=False):
 
     config = {key: _read_config_val(key, "") for key in _PROXY_ENV_KEYS}
     config["PROXY_MODE"] = ps.proxy_mode()
+    for platform in ("OUTLOOK", "CLAUDE", "CHATGPT", "GROK"):
+        config[f"{platform}_PROXY_MODE"] = config[f"{platform}_PROXY_MODE"] or "inherit"
     config["CLASH_API"] = config["CLASH_API"] or "http://127.0.0.1:9097"
     config["CLASH_PROXY"] = config["CLASH_PROXY"] or "http://127.0.0.1:7897"
     config["CLASH_GROUP"] = config["CLASH_GROUP"] or "GLOBAL"
@@ -1016,6 +1035,10 @@ def _proxy_panel_data(include_nodes=False):
         "nodes": nodes,
         "current": current,
         "effective_proxy": ps.effective_proxy_url(),
+        "routes": {
+            platform: ps.proxy_mode(ps.platform_environment(os.environ, platform))
+            for platform in ("outlook", "claude", "chatgpt", "grok")
+        },
     }
 
 
@@ -1035,6 +1058,16 @@ async def api_proxy_set(request: Request):
     if mode not in {"clash_auto", "clash_fixed", "residential"}:
         return JSONResponse({"ok": False, "error": "不支持的代理模式"}, status_code=400)
     updates["PROXY_MODE"] = mode
+    platform_modes = {
+        platform: updates[f"{platform.upper()}_PROXY_MODE"] or "inherit"
+        for platform in ("outlook", "claude", "chatgpt", "grok")
+    }
+    for platform, platform_mode in platform_modes.items():
+        if platform_mode not in {"inherit", "clash_auto", "clash_fixed", "residential"}:
+            return JSONResponse(
+                {"ok": False, "error": f"{platform} 的代理模式无效"}, status_code=400
+            )
+        updates[f"{platform.upper()}_PROXY_MODE"] = platform_mode
     pool_values = [
         item.strip()
         for item in updates["REG_FACTORY_PROXY_POOL"].replace("\r", "").replace(",", "\n").replace(";", "\n").split("\n")
@@ -1047,9 +1080,10 @@ async def api_proxy_set(request: Request):
             direct_proxy.parse_proxy(value)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": f"住宅代理格式错误: {exc}"}, status_code=400)
-    if mode == "clash_fixed" and not updates["CLASH_FIXED_NODE"]:
+    all_modes = {mode, *platform_modes.values()}
+    if "clash_fixed" in all_modes and not updates["CLASH_FIXED_NODE"]:
         return JSONResponse({"ok": False, "error": "固定节点模式必须选择 CLASH_FIXED_NODE"}, status_code=400)
-    if mode == "residential" and not (updates["REG_FACTORY_PROXY"] or pool_values):
+    if "residential" in all_modes and not (updates["REG_FACTORY_PROXY"] or pool_values):
         return JSONResponse({"ok": False, "error": "动态住宅 IP 模式至少需要一个代理地址"}, status_code=400)
     method = updates["REG_FACTORY_PROXY_ROTATE_METHOD"] or "GET"
     if method.upper() not in {"GET", "POST"}:
@@ -1078,28 +1112,39 @@ async def api_proxy_set(request: Request):
         }
 
 
+def _proxy_target_env(platform: str = "") -> dict:
+    normalized = str(platform or "").strip().lower()
+    if normalized and normalized not in {"outlook", "claude", "chatgpt", "grok"}:
+        raise ValueError("测试平台仅支持 outlook、claude、chatgpt、grok")
+    return _child_env(normalized)
+
+
 @app.post("/api/proxy/rotate")
-async def api_proxy_rotate():
+async def api_proxy_rotate(platform: str = ""):
     try:
         from common import proxy_switch as ps
-        result = await asyncio.to_thread(ps.rotate_proxy)
+        target_env = _proxy_target_env(platform)
+        result = await asyncio.to_thread(ps.rotate_proxy, None, target_env)
+        result["platform"] = platform or "global"
         return result
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)[:180]}, status_code=400)
 
 
 @app.post("/api/proxy/test")
-async def api_proxy_test():
+async def api_proxy_test(platform: str = ""):
+    target_env = _proxy_target_env(platform)
+
     def _test():
         from common import direct_proxy
         from common import proxy_switch as ps
 
-        proxy = ps.effective_proxy_url()
+        proxy = ps.effective_proxy_url(target_env)
         if not proxy:
             raise RuntimeError("当前模式没有配置有效代理")
         from curl_cffi import requests as creq
 
-        attempts = 3 if ps.proxy_mode() == "residential" else 1
+        attempts = 3 if ps.proxy_mode(target_env) == "residential" else 1
         last_error = ""
         for attempt in range(1, attempts + 1):
             try:
@@ -1128,8 +1173,9 @@ async def api_proxy_test():
             "ok": True,
             "ip": ip,
             "attempts": attempts,
-            "mode": ps.proxy_mode(),
-            "node": ps.current_node(),
+            "platform": platform or "global",
+            "mode": ps.proxy_mode(target_env),
+            "node": ps.current_node(environ=target_env),
         }
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)[:180]}, status_code=400)
@@ -1208,7 +1254,7 @@ def _build_cmd(script, args):
     return cmd
 
 
-def _child_env():
+def _child_env(platform: str = ""):
     """构造新任务环境；保存后的 .env 无需重启 WebUI 即可生效。"""
     env = dict(os.environ)
     for key, value in _parse_env_file(ENV_PATH).items():
@@ -1218,6 +1264,9 @@ def _child_env():
     env["PYTHONIOENCODING"] = "utf-8"
     try:
         from common import proxy_switch
+        if not platform:
+            env.pop("REG_FACTORY_PLATFORM", None)
+        env = proxy_switch.platform_environment(env, platform)
         proxy = proxy_switch.effective_proxy_url(env)
     except Exception:
         proxy = ""
@@ -1352,9 +1401,10 @@ async def api_run(request: Request):
     script = schema.script_by_id(sid)
     if not script:
         return JSONResponse({"error": f"未知脚本: {sid}"}, status_code=400)
+    task_env = _child_env(script.get("platform", ""))
     try:
         from common import proxy_switch
-        await asyncio.to_thread(proxy_switch.ensure_proxy_mode)
+        await asyncio.to_thread(proxy_switch.ensure_proxy_mode, task_env)
     except Exception as exc:
         return JSONResponse({"error": f"网络出口配置未应用: {str(exc)[:160]}"}, status_code=400)
     cmd = _build_cmd(script, args)
@@ -1366,7 +1416,7 @@ async def api_run(request: Request):
         else {"start_new_session": True}
     )
     proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=task_cwd, env=_child_env(),
+        *cmd, cwd=task_cwd, env=task_env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         **process_options,
     )

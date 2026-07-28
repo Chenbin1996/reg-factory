@@ -68,6 +68,23 @@ class WebUIEnvReloadTests(unittest.TestCase):
             child = server._child_env()
         self.assertEqual(child["HTTPS_PROXY"], "http://home.test:9000")
 
+    def test_child_env_applies_platform_proxy_override(self):
+        path = self._env_file("unused")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(
+                "PROXY_MODE=clash_auto\n"
+                "CLASH_PROXY=http://127.0.0.1:7897\n"
+                "OUTLOOK_PROXY_MODE=clash_auto\n"
+                "CLAUDE_PROXY_MODE=residential\n"
+                "REG_FACTORY_PROXY=http://home.test:9000\n"
+            )
+        with patch.object(server, "ENV_PATH", path), patch.object(server, "BOOT_ENV", {}):
+            outlook = server._child_env("outlook")
+            claude = server._child_env("claude")
+        self.assertEqual(outlook["HTTPS_PROXY"], "http://127.0.0.1:7897")
+        self.assertEqual(claude["HTTPS_PROXY"], "http://home.test:9000")
+        self.assertEqual(claude["REG_FACTORY_PLATFORM"], "claude")
+
     def test_status_exposes_loaded_version_and_process_id(self):
         with patch.object(server, "_fingerprint_provider", return_value="bitbrowser"):
             with patch.object(server, "_read_config_val", side_effect=lambda _key, default="": default):

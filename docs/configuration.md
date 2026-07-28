@@ -4,13 +4,15 @@
 
 ### 指纹浏览器
 
-三选一；外部客户端模式需要保持客户端运行：
+支持以下浏览器类型；外部客户端模式需要保持客户端运行：
 
 - 内置 Chromium：`FINGERPRINT_BROWSER=bundled`，安装程序会配置浏览器路径。
+- 普通 Chrome/Chromium：`FINGERPRINT_BROWSER=custom`，通过 `CUSTOM_BROWSER_PATH` 指定可执行文件；留空时会尝试查找系统 Chrome。
 - [BitBrowser 官方下载页](https://www.bitbrowser.cn/download)：默认 API 为 `http://127.0.0.1:54345`。
 - AdsPower：默认 API 为 `http://127.0.0.1:50325`，启用鉴权时还需 API Key。
+- 其他指纹浏览器：`FINGERPRINT_BROWSER=custom_api` 并设置 `CUSTOM_BROWSER_API`；当前要求兼容 BitBrowser 的 `/browser/update|open|close|delete|list` 协议。
 
-在 `.env` 中用 `FINGERPRINT_BROWSER=bundled|bitbrowser|adspower` 切换。
+在 `.env` 中用 `FINGERPRINT_BROWSER=bundled|custom|bitbrowser|adspower|custom_api` 切换。
 
 ### 网络出口
 
@@ -22,9 +24,20 @@ WebUI 左侧“网络出口”页提供三种互斥模式：
 | 固定节点 | `clash_fixed` | 始终强制使用 `CLASH_FIXED_NODE`，脚本传入其他节点也不会覆盖 |
 | 动态住宅 IP | `residential` | 使用单个住宅代理或持久轮换代理池，可调用供应商换 IP 接口 |
 
-Clash 模式先安装 [Clash Verge 2.5.2 Windows x64](https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe)，再开启 External Controller，记录控制器地址、secret 和 mixed port：
+四个平台可覆盖全局模式：`OUTLOOK_PROXY_MODE`、`CLAUDE_PROXY_MODE`、`CHATGPT_PROXY_MODE`、`GROK_PROXY_MODE`。值为 `inherit`、`clash_auto`、`clash_fixed` 或 `residential`。例如：
 
-开启 External Controller，记录控制器地址、secret 和 mixed port。默认值：
+```env
+PROXY_MODE=clash_auto
+OUTLOOK_PROXY_MODE=clash_auto
+CLAUDE_PROXY_MODE=residential
+CHATGPT_PROXY_MODE=residential
+GROK_PROXY_MODE=residential
+REG_FACTORY_PROXY=http://user:pass@host:port
+```
+
+编排器会为每个平台创建独立子进程环境；住宅代理认证直接写入该平台新建的浏览器 profile。网络页的“轮换/测试目标”可逐个平台验证出口 IP。
+
+Clash 模式先安装 [Clash Verge 2.5.2 Windows x64](https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe)，再开启 External Controller，记录控制器地址、secret 和 mixed port。默认值：
 
 ```env
 CLASH_API=http://127.0.0.1:9097
@@ -52,7 +65,7 @@ REG_FACTORY_PROXY_ROTATE_METHOD=GET
 
 `REG_FACTORY_PROXY_ROTATE_URL` 可留空。点击“立即轮换”时，程序会推进代理池索引，并在配置后调用供应商接口。当前池索引保存在 `runtime/state/residential_proxy_index.txt`。
 
-BitBrowser 创建新窗口时会写入当前住宅代理的地址、端口、用户名和密码。代理池轮换后，下一个新建窗口使用新的代理；已经打开的注册窗口不会被强制改 IP，以免破坏当前登录会话。
+新建浏览器 profile 时会写入当前住宅代理的地址、端口、用户名和密码。代理池轮换后，下一个新建窗口使用新的代理；已经打开的注册窗口不会被强制改 IP，以免破坏当前登录会话。
 
 旧变量 `RESIDENTIAL_PROXY`、`DIRECT_PROXY` 和 `RESIDENTIAL_PROXY_POOL` 仍兼容；新配置应使用 `REG_FACTORY_*`。
 
@@ -86,7 +99,7 @@ cp .env.example .env
 
 | 分组 | 常用变量 | 使用场景 |
 |---|---|---|
-| 指纹浏览器 | `FINGERPRINT_BROWSER`、`BITBROWSER_API`、`ADSPOWER_*` | 浏览器注册流程 |
+| 浏览器 | `FINGERPRINT_BROWSER`、`CUSTOM_BROWSER_*`、`BITBROWSER_API`、`ADSPOWER_*` | 浏览器注册流程 |
 | 网络出口 | `PROXY_MODE`、`CLASH_*`、`REG_FACTORY_PROXY*` | Clash 节点或住宅代理 |
 | Claude 验证 | `CLAUDE_VISION_*`、`CLAUDE_HCAPTCHA_*` | Claude 图形验证 |
 | 通用视觉 | `VISION_*`、`VOTE_*`、`IMAGE_EDIT_*` | 多模型视觉投票 |

@@ -33,6 +33,7 @@ from common.browser import open_and_connect, teardown
 from common.uploaders import _origin, upload_cpa
 from common.session_export import build_cpa_codex_json_from_oauth
 from common import oauth_codex as ox
+from common import proxy_switch
 
 
 def _sanitize(cookies):
@@ -195,4 +196,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    proxy_switch.apply_platform_environment("chatgpt")
     sys.exit(asyncio.run(main()))

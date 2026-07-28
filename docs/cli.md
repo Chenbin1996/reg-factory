@@ -35,11 +35,9 @@ python mailbox_broker.py --port 8765
 # ChatGPT
 python register_chatgpt.py --count 1 --node auto
 
-# Grok，默认推荐纯 HTTP 流程
-python register_grok_http.py --count 1
-python register_grok_http.py --count 1 --sub2api --sub2api-group grok
-
-# Grok 指纹浏览器对照流程
+# Grok 指纹浏览器流程
+python register_grok.py --count 1
+python register_grok.py --count 1 --sub2api --sub2api-group grok
 python register_grok.py --count 1 --node auto --latest-rt
 
 # Claude 使用最新 Outlook refresh token
@@ -105,6 +103,9 @@ python tools/upload_tokens.py grok
 # 导出浏览器扩展可用的账号 Cookie
 python tools/export_accounts.py
 python tools/export_accounts.py claude chatgpt
+
+# 导出指定平台、指定账号的标准浏览器 Cookie JSON
+python tools/export_accounts.py --platform claude --format cookies --index 0
 
 # 导出或上传普通 ChatGPT 网页号
 python tools/export_chatgpt2api.py

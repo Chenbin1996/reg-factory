@@ -12,6 +12,11 @@ import oauth_codex
 
 
 class ChatGPTFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.proxy_env = patch.dict(os.environ, {"PROXY_MODE": "clash_auto"})
+        self.proxy_env.start()
+        self.addCleanup(self.proxy_env.stop)
+
     def test_visible_email_form_means_submission_did_not_advance(self):
         page = MagicMock()
         email_input = MagicMock()

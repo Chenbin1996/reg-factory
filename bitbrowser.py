@@ -35,7 +35,9 @@ class BitBrowser:
     provider_name = "bitbrowser"
 
     def __new__(cls, api_base=None):
-        if cls is BitBrowser and _selected_provider() in {"bundled", "embedded", "local"}:
+        if cls is BitBrowser and _selected_provider() in {
+            "bundled", "embedded", "local", "custom", "chrome", "chromium",
+        }:
             from common.bundled_browser import BundledBrowser
             return BundledBrowser(api_base=api_base)
         if cls is BitBrowser and _use_adspower():
@@ -44,7 +46,8 @@ class BitBrowser:
         return super().__new__(cls)
 
     def __init__(self, api_base=None):
-        self.api_base = api_base or BITBROWSER_API
+        custom_api = os.environ.get("CUSTOM_BROWSER_API", "").strip()
+        self.api_base = api_base or (custom_api if _selected_provider() in {"custom_api", "api"} else BITBROWSER_API)
 
     def _post(self, path, data=None, _retries=5):
         url = f"{self.api_base}{path}"

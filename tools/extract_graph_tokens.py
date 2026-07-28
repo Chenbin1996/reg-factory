@@ -27,8 +27,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stdin.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
 
 import requests
 
@@ -338,12 +340,80 @@ def get_graph_token(email, password, idx=0):
         return None
 
 
+def load_auto_accounts(statuses=("expired", "unknown")):
+    """Merge scan-selected emails.txt candidates with legacy unlocked results."""
+    accounts = []
+    seen_emails = set()
+
+    token_emails = set()
+    if os.path.isdir(OUTPUT_DIR):
+        for name in sorted(os.listdir(OUTPUT_DIR)):
+            if not (name.startswith("graph_tokens_") and name.endswith(".txt")):
+                continue
+            with open(os.path.join(OUTPUT_DIR, name), "r", encoding="utf-8") as handle:
+                for line in handle:
+                    parts = line.strip().split("----")
+                    if parts and parts[0]:
+                        token_emails.add(parts[0].lower())
+
+    try:
+        from common.outlook_recovery import candidate_counts, load_scan_candidates
+
+        candidates = load_scan_candidates(statuses)
+    except Exception as exc:
+        print(f"  Asset recovery candidates unavailable: {str(exc)[:120]}")
+        candidates = []
+    for item in candidates:
+        identity = item["email"].lower()
+        if identity in seen_emails:
+            continue
+        accounts.append((item["email"], item["password"]))
+        seen_emails.add(identity)
+    if candidates:
+        counts = candidate_counts(candidates)
+        rendered = ", ".join(f"{name}={count}" for name, count in counts.items())
+        print(f"  Auto-loaded {len(candidates)} recovery candidates from emails.txt ({rendered})")
+
+    unlock_dir = "unlock_results"
+    legacy_added = 0
+    if os.path.isdir(unlock_dir):
+        for name in sorted(os.listdir(unlock_dir)):
+            if not (name.startswith("unlocked_clean_") and name.endswith(".txt")):
+                continue
+            with open(os.path.join(unlock_dir, name), "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split("----")
+                    if len(parts) < 2:
+                        continue
+                    identity = parts[0].lower()
+                    if identity in seen_emails or identity in token_emails:
+                        continue
+                    accounts.append((parts[0], parts[1]))
+                    seen_emails.add(identity)
+                    legacy_added += 1
+
+    if token_emails:
+        print(f"  Legacy token history contains {len(token_emails)} accounts; expired scan results override it")
+    print(f"  Auto-loaded {len(accounts)} total accounts ({legacy_added} from {unlock_dir}/)")
+    return accounts
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract Graph API tokens")
     parser.add_argument("accounts_file", nargs="?")
     parser.add_argument("--email", "-e", type=str)
     parser.add_argument("--password", "-p", type=str)
     parser.add_argument("--concurrency", "-c", type=int, default=5)
+    parser.add_argument(
+        "--statuses", nargs="+", choices=("expired", "unknown", "unlock", "banned"),
+        default=("expired", "unknown"),
+        help="Asset scan statuses included by auto mode",
+    )
+    parser.add_argument("--no-update-pool", action="store_true",
+                        help="Do not write recovered refresh tokens back to emails.txt")
     args = parser.parse_args()
 
     accounts = []
@@ -358,44 +428,11 @@ def main():
                     if len(parts) >= 2:
                         accounts.append((parts[0], parts[1]))
     else:
-        # Auto-scan: load all unlocked accounts from unlock_results/, skip already extracted
-        unlock_dir = "unlock_results"
-
-        # Collect emails that already have tokens
-        token_emails = set()
-        if os.path.isdir(OUTPUT_DIR):
-            for tf in sorted(os.listdir(OUTPUT_DIR)):
-                if tf.startswith("graph_tokens_") and tf.endswith(".txt"):
-                    with open(os.path.join(OUTPUT_DIR, tf), "r", encoding="utf-8") as tf_f:
-                        for line in tf_f:
-                            parts = line.strip().split("----")
-                            if parts and parts[0]:
-                                token_emails.add(parts[0].lower())
-
-        # Collect all unlocked accounts, deduplicate by email
-        seen_emails: set = set()
-        if os.path.isdir(unlock_dir):
-            for uf in sorted(os.listdir(unlock_dir)):
-                if uf.startswith("unlocked_clean_") and uf.endswith(".txt"):
-                    with open(os.path.join(unlock_dir, uf), "r", encoding="utf-8") as uf_f:
-                        for line in uf_f:
-                            line = line.strip()
-                            if not line or line.startswith("#"):
-                                continue
-                            parts = line.split("----")
-                            if len(parts) >= 2:
-                                email_lc = parts[0].lower()
-                                if email_lc not in seen_emails and email_lc not in token_emails:
-                                    accounts.append((parts[0], parts[1]))
-                                    seen_emails.add(email_lc)
-
-        if token_emails:
-            print(f"  Skipping {len(token_emails)} already-extracted accounts")
-        print(f"  Auto-loaded {len(accounts)} new accounts from {unlock_dir}/")
+        accounts = load_auto_accounts(args.statuses)
 
     if not accounts:
         print("  No accounts to process.")
-        return
+        return 0
 
     print("=" * 60)
     print(f"  Graph API Token Extraction (pure HTTP)")
@@ -427,10 +464,24 @@ def main():
 
         for r in results:
             rt = r.get("refresh_token", "")
-            print(f"  [OK] {r['email']}  rt={rt[:50]}...")
+            print(f"  [OK] {r['email']}  refresh_token=yes len={len(rt)}")
+
+        if not args.no_update_pool:
+            from common.outlook_recovery import upsert_refresh_tokens
+
+            update = upsert_refresh_tokens(results)
+            print(
+                "  Main pool updated: "
+                f"updated={update['updated']} appended={update['appended']} "
+                f"error_entries_cleared={update['errors_cleared']}"
+            )
 
     print("=" * 60)
+    return 0 if len(results) == len(accounts) else 1
 
 
 if __name__ == "__main__":
-    main()
+    from common import proxy_switch
+
+    proxy_switch.apply_platform_environment("outlook")
+    raise SystemExit(main())

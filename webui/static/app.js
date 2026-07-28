@@ -36,7 +36,8 @@ async function pollStatus(){
   try{
     const s = await (await fetch('/api/status')).json();
     $('#dot-bb').classList.toggle('on', s.bitbrowser);
-    const label = s.browser_provider === 'adspower' ? 'AdsPower' : (s.browser_provider === 'bundled' ? '内置浏览器' : 'BitBrowser');
+    const browserLabels = {adspower:'AdsPower', bundled:'内置浏览器', custom:'自定义 Chrome', custom_api:'自定义指纹浏览器'};
+    const label = browserLabels[s.browser_provider] || 'BitBrowser';
     $('#browser-label').textContent = label;
     const networkOnline = s.network ?? s.clash;
     $('#dot-clash').classList.toggle('on', !!networkOnline);
@@ -83,11 +84,18 @@ $$('.navbtn').forEach(b=> b.onclick = ()=> showView(b.dataset.view));
 function setProxyMode(mode){
   proxyMode = mode;
   $$('[data-proxy-mode]').forEach(button=>button.classList.toggle('active', button.dataset.proxyMode===mode));
-  const clash = mode === 'clash_auto' || mode === 'clash_fixed';
-  $('#network-clash-fields').style.display = clash ? 'block' : 'none';
-  $('#network-fixed-field').style.display = mode === 'clash_fixed' ? 'flex' : 'none';
-  $('#network-residential-fields').style.display = mode === 'residential' ? 'block' : 'none';
-  $('#btn-rotate-proxy').textContent = mode === 'clash_fixed' ? '重新应用节点' : '立即轮换';
+  updateProxyFieldVisibility();
+}
+
+function updateProxyFieldVisibility(){
+  const platformModes = $$('[data-platform-proxy]').map(select=>select.value);
+  const needsClash = ['clash_auto','clash_fixed'].includes(proxyMode)
+    || platformModes.some(mode=>['clash_auto','clash_fixed'].includes(mode));
+  const needsFixed = proxyMode === 'clash_fixed' || platformModes.includes('clash_fixed');
+  const needsResidential = proxyMode === 'residential' || platformModes.includes('residential');
+  $('#network-clash-fields').style.display = needsClash ? 'block' : 'none';
+  $('#network-fixed-field').style.display = needsFixed ? 'flex' : 'none';
+  $('#network-residential-fields').style.display = needsResidential ? 'block' : 'none';
 }
 
 function setProxyMessage(text, ok=null){
@@ -130,6 +138,11 @@ async function loadProxyPanel(includeNodes=false){
     $('#proxy-rotate-url').value = config.REG_FACTORY_PROXY_ROTATE_URL || '';
     $('#proxy-rotate-method').value = config.REG_FACTORY_PROXY_ROTATE_METHOD || 'GET';
     $('#proxy-chatgpt-retries').value = config.CHATGPT_RESIDENTIAL_ROTATE_RETRIES || '3';
+    $('#proxy-mode-outlook').value = config.OUTLOOK_PROXY_MODE || 'inherit';
+    $('#proxy-mode-claude').value = config.CLAUDE_PROXY_MODE || 'inherit';
+    $('#proxy-mode-chatgpt').value = config.CHATGPT_PROXY_MODE || 'inherit';
+    $('#proxy-mode-grok').value = config.GROK_PROXY_MODE || 'inherit';
+    updateProxyFieldVisibility();
     renderProxyNodes(data.nodes, config.CLASH_FIXED_NODE || data.current);
     $('#network-current').textContent = `${data.current || '未连接'} · ${config.PROXY_MODE || 'clash_auto'}`;
     $('#network-current-dot').classList.remove('pending');
@@ -143,6 +156,10 @@ async function loadProxyPanel(includeNodes=false){
 function collectProxyConfig(){
   return {
     PROXY_MODE: proxyMode,
+    OUTLOOK_PROXY_MODE: $('#proxy-mode-outlook').value,
+    CLAUDE_PROXY_MODE: $('#proxy-mode-claude').value,
+    CHATGPT_PROXY_MODE: $('#proxy-mode-chatgpt').value,
+    GROK_PROXY_MODE: $('#proxy-mode-grok').value,
     CLASH_API: $('#proxy-clash-api').value.trim(),
     CLASH_SECRET: $('#proxy-clash-secret').value.trim(),
     CLASH_PROXY: $('#proxy-clash-proxy').value.trim(),
@@ -186,12 +203,14 @@ async function rotateProxy(){
   const button = $('#btn-rotate-proxy');
   button.disabled = true; setProxyMessage('正在切换出口…');
   try{
-    const response = await fetch('/api/proxy/rotate', {method:'POST'});
+    const target = $('#proxy-platform-target').value;
+    const params = target ? `?platform=${encodeURIComponent(target)}` : '';
+    const response = await fetch(`/api/proxy/rotate${params}`, {method:'POST'});
     const data = await response.json();
     if(!data.ok) throw new Error(data.error || '轮换失败');
     const delay = data.latency_ms ? `，延迟 ${data.latency_ms} ms` : '';
     const applies = data.mode === 'residential' ? '，新建 BitBrowser 窗口生效' : '';
-    setProxyMessage(`当前出口：${data.node || '--'}${delay}${applies}`, true);
+    setProxyMessage(`${data.platform || 'global'} 当前出口：${data.node || '--'}${delay}${applies}`, true);
     $('#network-current').textContent = `${data.node || '--'} · ${data.mode || proxyMode}`;
     await pollStatus();
   }catch(error){ setProxyMessage(error.message || String(error), false); }
@@ -205,10 +224,12 @@ async function testProxy(){
   setProxyMessage('正在应用当前配置并检测公网出口…');
   try{
     const applied = await applyProxyConfig();
-    const response = await fetch('/api/proxy/test', {method:'POST'});
+    const target = $('#proxy-platform-target').value;
+    const params = target ? `?platform=${encodeURIComponent(target)}` : '';
+    const response = await fetch(`/api/proxy/test${params}`, {method:'POST'});
     const data = await response.json();
     if(!data.ok) throw new Error(data.error || '检测失败');
-    setProxyMessage(`出口 IP：${data.ip} · ${data.node || data.mode}`, true);
+    setProxyMessage(`${data.platform || 'global'} 出口 IP：${data.ip} · ${data.node || data.mode}`, true);
     $('#network-current').textContent = `${applied.current || data.node || '--'} · ${data.mode || proxyMode}`;
     await pollStatus();
   }catch(error){ setProxyMessage(error.message || String(error), false); }
@@ -216,6 +237,7 @@ async function testProxy(){
 }
 
 $$('[data-proxy-mode]').forEach(button=>button.onclick=()=>setProxyMode(button.dataset.proxyMode));
+$$('[data-platform-proxy]').forEach(select=>select.onchange=updateProxyFieldVisibility);
 $('#btn-save-proxy').onclick = saveProxy;
 $('#btn-rotate-proxy').onclick = rotateProxy;
 $('#btn-test-proxy').onclick = testProxy;
@@ -224,9 +246,9 @@ $('#btn-refresh-nodes').onclick = ()=>loadProxyPanel(true);
 // ---------------------------------------------------------------- 本地资产 API
 const ASSET_FORMATS = {
   emails: ['json', 'line'],
-  chatgpt: ['raw', 'header', 'session', 'sub2api', 'cpa', 'chatgpt2api'],
-  claude: ['raw', 'header'],
-  grok: ['raw', 'header', 'session', 'sub2api'],
+  chatgpt: ['cookies', 'raw', 'header', 'session', 'sub2api', 'cpa', 'chatgpt2api'],
+  claude: ['cookies', 'raw', 'header'],
+  grok: ['cookies', 'raw', 'header', 'session', 'sub2api'],
 };
 const ASSET_SCAN_STATUS_LABELS = {
   normal:'正常', unlock:'待解锁', banned:'封禁', expired:'过期', restricted:'受限',
@@ -660,7 +682,7 @@ function renderArgField(a){
       <label for="f_${label}"><span>${label}</span>${a.help?`<small>${a.help}</small>`:''}</label>`;
   }else if(a.type==='choice'){
     f.innerHTML = `<label for="f_${label}">${label}</label>
-      <select id="f_${label}">${a.choices.map(c=>`<option ${c==a.default?'selected':''}>${c}</option>`).join('')}</select>
+      <select id="f_${label}">${a.choices.map(c=>`<option value="${c}" ${c==a.default?'selected':''}>${(a.labels&&a.labels[c])||c}</option>`).join('')}</select>
       ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
   }else if(a.type==='multi'){
     const def = a.default||[];

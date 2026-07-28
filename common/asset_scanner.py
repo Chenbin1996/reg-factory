@@ -228,13 +228,50 @@ def get_report() -> dict:
     }
 
 
-def _web_session() -> requests.Session:
+def update_cached_outlook_statuses(outcomes: dict[str, dict]) -> int:
+    """Update cached Outlook outcomes after unlock or RT recovery without storing secrets."""
+    normalized = {
+        str(email or "").strip().lower(): outcome
+        for email, outcome in (outcomes or {}).items()
+        if str(email or "").strip() and isinstance(outcome, dict)
+    }
+    if not normalized:
+        return 0
+    cache = _read_cache()
+    items = cache.get("items")
+    if not isinstance(items, list):
+        return 0
+    updated = 0
+    for item in items:
+        if not isinstance(item, dict) or item.get("platform") != "outlook":
+            continue
+        outcome = normalized.get(str(item.get("email") or "").strip().lower())
+        if not outcome:
+            continue
+        status = str(outcome.get("status") or "unknown").strip().lower()
+        item.update({
+            "status": status if status in STATUSES else "unknown",
+            "detail": str(outcome.get("detail") or "恢复任务已更新账号状态"),
+            "evidence": str(outcome.get("evidence") or "recovery:updated"),
+            "checked_at": _now_iso(),
+            "latency_ms": 0,
+        })
+        updated += 1
+    if updated:
+        cache["summary"] = _status_summary(items)
+        cache["finished_at"] = _now_iso()
+        _write_cache(cache)
+    return updated
+
+
+def _web_session(platform: str = "") -> requests.Session:
     session = requests.Session()
     session.trust_env = False
     try:
         from common import proxy_switch
 
-        proxy = proxy_switch.effective_proxy_url()
+        target_env = proxy_switch.platform_environment(os.environ, platform) if platform else os.environ
+        proxy = proxy_switch.effective_proxy_url(target_env)
     except Exception:
         proxy = ""
     if proxy:
@@ -269,8 +306,7 @@ def _platform_preflight(platform: str, timeout: int) -> dict | None:
     """Short-circuit a whole pool when its service is unreachable from this exit."""
     try:
         if platform == "outlook":
-            with requests.Session() as session:
-                session.trust_env = False
+            with _web_session("outlook") as session:
                 response = session.post(
                     "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
                     data={
@@ -287,7 +323,7 @@ def _platform_preflight(platform: str, timeout: int) -> dict | None:
                 "claude": "https://claude.ai/api/account",
                 "grok": "https://accounts.x.ai/",
             }
-            with _web_session() as session:
+            with _web_session(platform) as session:
                 response = session.get(urls[platform], timeout=timeout, allow_redirects=True)
         if response.status_code >= 500:
             return {
@@ -316,8 +352,7 @@ def _scan_outlook(record: dict, timeout: int) -> dict:
             return dict(history)
         return {"status": "unknown", "detail": "缺少 Graph refresh token，无法在线确认", "evidence": "local:missing_refresh_token"}
 
-    with requests.Session() as session:
-        session.trust_env = False
+    with _web_session("outlook") as session:
         response = session.post(
             "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
             data={
@@ -378,7 +413,7 @@ def _scan_outlook(record: dict, timeout: int) -> dict:
 def _scan_chatgpt(record: dict, timeout: int) -> dict:
     cookies = record.get("_cookies") or []
     if cookies:
-        with _web_session() as session:
+        with _web_session("chatgpt") as session:
             response = session.get(
                 "https://chatgpt.com/api/auth/session",
                 headers={"Cookie": asset_store._cookie_header(cookies), "Cache-Control": "no-cache"},
@@ -401,7 +436,7 @@ def _scan_chatgpt(record: dict, timeout: int) -> dict:
     access_token = str(token.get("accessToken") or token.get("access_token") or "").strip()
     if not access_token:
         return {"status": "invalid", "detail": "缺少 ChatGPT session Cookie 或 accessToken", "evidence": "local:missing_credential"}
-    with _web_session() as session:
+    with _web_session("chatgpt") as session:
         response = session.get(
             "https://chatgpt.com/backend-api/me",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -424,7 +459,7 @@ def _scan_claude(record: dict, timeout: int) -> dict:
         session_key = str((key_cookie or {}).get("value") or "").strip()
     if not session_key:
         return {"status": "invalid", "detail": "缺少 Claude sessionKey", "evidence": "local:missing_session_key"}
-    with _web_session() as session:
+    with _web_session("claude") as session:
         response = session.get(
             "https://claude.ai/api/account",
             headers={"Cookie": f"sessionKey={session_key}"},
@@ -463,7 +498,7 @@ def _scan_grok(record: dict, timeout: int) -> dict:
         sso = str((key_cookie or {}).get("value") or "").strip()
     if not sso:
         return {"status": "invalid", "detail": "缺少 Grok SSO", "evidence": "local:missing_sso"}
-    with _web_session() as session:
+    with _web_session("grok") as session:
         session.cookies.set("sso", sso, domain=".x.ai", path="/")
         session.cookies.set("sso-rw", sso, domain=".x.ai", path="/")
         response = session.get("https://accounts.x.ai/", timeout=timeout, allow_redirects=True)

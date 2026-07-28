@@ -36,6 +36,9 @@ curl "http://127.0.0.1:8799/api/assets/emails?format=line"
 # Claude 有效 Cookie 数组
 curl "http://127.0.0.1:8799/api/assets/cookies/claude?format=raw"
 
+# 指定 Claude 第 1 个账号，输出浏览器扩展标准 Cookie JSON
+curl "http://127.0.0.1:8799/api/assets/cookies/claude?format=cookies&index=0"
+
 # 浏览器 Cookie 请求头
 curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=header&index=0"
 
@@ -56,9 +59,11 @@ curl "http://127.0.0.1:8799/api/assets/cookies/grok?format=sub2api"
 
 | 平台 | 格式 |
 |---|---|
-| Claude | `raw`、`header` |
-| ChatGPT | `raw`、`header`、`session`、`sub2api`、`cpa`、`chatgpt2api` |
-| Grok | `raw`、`header`、`session`、`sub2api` |
+| Claude | `cookies`、`raw`、`header` |
+| ChatGPT | `cookies`、`raw`、`header`、`session`、`sub2api`、`cpa`、`chatgpt2api` |
+| Grok | `cookies`、`raw`、`header`、`session`、`sub2api` |
+
+`cookies` 是浏览器扩展通用导入数组，包含 `domain`、`hostOnly`、`httpOnly`、`name`、`path`、`sameSite`、`secure`、`session`、`storeId`、`value`，持久 Cookie 额外包含 `expirationDate`。`raw` 保留注册脚本保存的原始字段，供旧调用兼容。
 
 响应中的 `index` 是本次下标，`total` 是当前总数，`next_index` 是下一下标。省略 `index` 会推进对应的独立游标；指定 `index` 只读取该条，不改变游标。
 

@@ -86,7 +86,7 @@ class ReleaseLauncherTests(unittest.TestCase):
     def test_proxy_test_applies_current_form_before_request(self):
         source = (ROOT / "webui" / "static" / "app.js").read_text(encoding="utf-8")
         function = source.split("async function testProxy(){", 1)[1].split("\n}", 1)[0]
-        self.assertLess(function.index("applyProxyConfig()"), function.index("'/api/proxy/test'"))
+        self.assertLess(function.index("applyProxyConfig()"), function.index("/api/proxy/test"))
 
     def test_task_exit_code_does_not_trigger_desktop_startup_pause(self):
         with patch.object(launcher, "main", side_effect=SystemExit(2)):

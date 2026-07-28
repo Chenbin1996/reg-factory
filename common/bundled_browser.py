@@ -15,6 +15,29 @@ from pathlib import Path
 from common.direct_proxy import ProxySpec, parse_proxy
 
 
+def find_browser_path() -> str:
+    """Find the configured or installed Chrome/Chromium executable."""
+    candidates = [
+        os.environ.get("CUSTOM_BROWSER_PATH", ""),
+        os.environ.get("REG_FACTORY_BROWSER_PATH", ""),
+        os.environ.get("BUNDLED_BROWSER_PATH", ""),
+        shutil.which("chrome") or "",
+        shutil.which("chrome.exe") or "",
+        shutil.which("chromium") or "",
+        shutil.which("chromium.exe") or "",
+    ]
+    if os.name == "nt":
+        for root_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            root = os.environ.get(root_name, "")
+            if root:
+                candidates.append(str(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"))
+                candidates.append(str(Path(root) / "Chromium" / "Application" / "chrome.exe"))
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate).resolve())
+    return ""
+
+
 class BundledBrowser:
     provider_name = "bundled"
 
@@ -41,14 +64,12 @@ class BundledBrowser:
         temp.replace(self.state_path)
 
     def _browser_path(self) -> str:
-        candidates = [
-            os.environ.get("REG_FACTORY_BROWSER_PATH", ""),
-            os.environ.get("BUNDLED_BROWSER_PATH", ""),
-        ]
-        for candidate in candidates:
-            if candidate and Path(candidate).is_file():
-                return str(Path(candidate).resolve())
-        raise RuntimeError("bundled Chromium is unavailable; configure REG_FACTORY_BROWSER_PATH")
+        path = find_browser_path()
+        if path:
+            return path
+        raise RuntimeError(
+            "Chrome/Chromium is unavailable; configure CUSTOM_BROWSER_PATH or REG_FACTORY_BROWSER_PATH"
+        )
 
     @staticmethod
     def _proxy_from_fields(fields: dict) -> ProxySpec | None:
@@ -170,9 +191,13 @@ class BundledBrowser:
 
     def _post(self, path, data=None, _retries=1):
         del _retries
+        payload = dict(data or {})
         if path == "/browser/update":
-            payload = dict(data or {})
             profile_id = str(payload.get("id") or "")
+            if not profile_id:
+                name = str(payload.pop("name", "") or "reg_factory")
+                profile_id = self.create_browser(name=name, **payload)
+                return {"success": True, "data": self._profile(profile_id)}
             profile = self._profile(profile_id)
             proxy = self._proxy_from_fields(payload)
             if proxy is not None or str(payload.get("proxyType") or "").lower() == "noproxy":
@@ -183,4 +208,15 @@ class BundledBrowser:
             profiles[profile_id] = profile
             self._save(profiles)
             return {"success": True, "data": profile}
+        if path == "/browser/list":
+            return self.list_browsers(
+                page=int(payload.get("page") or 0),
+                page_size=int(payload.get("pageSize") or 100),
+            )
+        if path == "/browser/open":
+            return {"success": True, "data": self.open_browser(payload.get("id"))}
+        if path == "/browser/close":
+            return self.close_browser(payload.get("id"))
+        if path == "/browser/delete":
+            return self.delete_browser(payload.get("id"))
         raise RuntimeError(f"unsupported bundled browser API path: {path}")

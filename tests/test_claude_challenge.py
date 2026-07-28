@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +11,11 @@ from common import proxy_switch
 
 
 class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.proxy_env = patch.dict(os.environ, {"PROXY_MODE": "clash_auto"})
+        self.proxy_env.start()
+        self.addCleanup(self.proxy_env.stop)
+
     def test_explicit_temp_provider_overrides_outlook_source(self):
         self.assertEqual(
             register._resolve_temp_email_provider(

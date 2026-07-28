@@ -31,6 +31,7 @@ from common.browser import open_and_connect, teardown, human_type, react_fill
 from common.mailbox import get_code_by_token, get_code_outlook_pw, prelogin_outlook
 from common.cookies import save_platform_cookies
 from common import emails as email_pool
+from common import proxy_switch
 
 try:
     from config import CHATGPT2API_URL, CHATGPT2API_KEY
@@ -1755,4 +1756,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    proxy_switch.apply_platform_environment("chatgpt")
     sys.exit(asyncio.run(main()))

@@ -5938,4 +5938,6 @@ async def main():
 
 
 if __name__ == "__main__":
+    if proxy_switch:
+        proxy_switch.apply_platform_environment("claude")
     raise SystemExit(asyncio.run(main()))

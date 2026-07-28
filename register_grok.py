@@ -902,6 +902,8 @@ async def register_one(index, total, p, node):
         email, email_pw, refresh_token, client_id = (
             FIXED_EMAIL, FIXED_PASSWORD, FIXED_REFRESH_TOKEN or "", FIXED_CLIENT_ID or ""
         )
+        if refresh_token.strip().lower() == "fresh":
+            refresh_token = ""
     elif GROK_USE_TEMP_EMAIL:
         try:
             temp_mb = create_mailbox(provider=TEMP_EMAIL_PROVIDER)
@@ -1456,4 +1458,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    proxy_switch.apply_platform_environment("grok")
     raise SystemExit(0 if asyncio.run(main()) else 1)

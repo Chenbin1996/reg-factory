@@ -1,5 +1,16 @@
 ﻿# 更新日志
 
+## 2026-07-29 — 1.2.4
+
+**资产恢复、Cookie 导出与平台出口**
+- Outlook 解锁和 Graph RT 提取改为读取号池扫描状态；默认处理待解锁/过期资产，成功后回写 `emails.txt`、清除对应 RT 错误并刷新号池状态。
+- 资产 API 新增 `format=cookies`，支持 Claude、ChatGPT、Grok 按顺序或指定 `index` 输出标准浏览器 Cookie JSON；导出工具也支持指定平台和账号。
+- 网络出口支持 Outlook、Claude、ChatGPT、Grok 独立覆盖全局模式，可实现 Outlook 走 Clash、其他平台走动态住宅 IP，并按平台轮换和测试公网出口。
+- 浏览器新增自定义 Chrome/Chromium 和 BitBrowser 兼容 API 模式，保留内置 Chromium、BitBrowser 与 AdsPower。
+- Claude 临时邮箱来源提升到任务首屏；Grok 注册 UI 和三平台编排只保留浏览器流程。
+
+---
+
 ## 2026-07-28 — 1.2.3
 
 **任务停止与 Claude 邮箱池修复**

@@ -245,6 +245,46 @@ def _cookie_header(cookies: list[dict]) -> str:
     )
 
 
+def _standard_cookie(cookie: dict) -> dict:
+    """Convert a stored Playwright cookie to a browser-extension import record."""
+    same_site = {
+        "none": "no_restriction",
+        "no_restriction": "no_restriction",
+        "lax": "lax",
+        "strict": "strict",
+        "unspecified": "unspecified",
+    }.get(str(cookie.get("sameSite") or "").strip().lower(), "unspecified")
+    secure = bool(cookie.get("secure", False))
+    if same_site == "no_restriction":
+        secure = True
+
+    expiration = cookie.get("expirationDate", cookie.get("expires"))
+    try:
+        expiration = float(expiration)
+        if expiration <= 0:
+            expiration = None
+    except (TypeError, ValueError):
+        expiration = None
+
+    domain = str(cookie.get("domain") or "")
+    result = {
+        "domain": domain,
+        "hostOnly": bool(cookie.get("hostOnly", not domain.startswith("."))),
+        "httpOnly": bool(cookie.get("httpOnly", False)),
+        "name": str(cookie.get("name") or ""),
+        "path": str(cookie.get("path") or "/"),
+        "sameSite": same_site,
+        "secure": secure,
+        "session": bool(cookie.get("session", expiration is None)),
+        "storeId": str(cookie.get("storeId", "0")),
+        "value": str(cookie.get("value") or ""),
+    }
+    if expiration is not None:
+        result["expirationDate"] = expiration
+        result["session"] = False
+    return result
+
+
 def _email_from_session(session: dict, fallback: str = "") -> str:
     user = session.get("user") if isinstance(session.get("user"), dict) else {}
     return str(user.get("email") or session.get("email") or fallback).strip()
@@ -257,20 +297,25 @@ def get_platform_asset(platform: str, output_format: str = "raw", index: int | N
         raise AssetError("platform 仅支持 claude、chatgpt、grok")
 
     token_formats = {"session", "sub2api", "cpa", "chatgpt2api"}
-    if output_format in {"raw", "header"}:
+    if output_format in {"raw", "cookies", "header"}:
         records = _cookie_records(platform)
         cursor_key = f"cookie:{platform}:{output_format}"
         selected, next_index, advanced = _select_index(len(records), cursor_key, index)
         record = records[selected]
-        data = record["cookies"] if output_format == "raw" else _cookie_header(record["cookies"])
+        if output_format == "raw":
+            data = record["cookies"]
+        elif output_format == "cookies":
+            data = [_standard_cookie(cookie) for cookie in record["cookies"]]
+        else:
+            data = _cookie_header(record["cookies"])
         email = record["email"]
         source = record["path"].name
         extra = {}
     elif output_format in token_formats:
         if platform == "claude":
-            raise AssetError("Claude 不支持 session、sub2api、cpa 或 chatgpt2api 格式，请使用 raw/header")
+            raise AssetError("Claude 不支持 session、sub2api、cpa 或 chatgpt2api 格式，请使用 cookies/raw/header")
         if platform == "grok" and output_format not in {"session", "sub2api"}:
-            raise AssetError("Grok 仅支持 raw、header、session、sub2api 格式")
+            raise AssetError("Grok 仅支持 cookies、raw、header、session、sub2api 格式")
         records = _token_records(platform)
         cursor_key = f"cookie:{platform}:{output_format}"
         selected, next_index, advanced = _select_index(len(records), cursor_key, index)
@@ -295,7 +340,7 @@ def get_platform_asset(platform: str, output_format: str = "raw", index: int | N
         else:
             data = build_chatgpt2api_account(session, email=email)
     else:
-        raise AssetError("format 仅支持 raw、header、session、sub2api、cpa、chatgpt2api")
+        raise AssetError("format 仅支持 raw、cookies、header、session、sub2api、cpa、chatgpt2api")
 
     return {
         "kind": "platform_cookie",

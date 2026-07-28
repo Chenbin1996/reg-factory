@@ -20,6 +20,9 @@ class GrokSub2ApiFlowTests(unittest.TestCase):
         )
 
         self.assertIn("--sub2api", command)
+        self.assertIn("register_grok.py", command)
+        self.assertNotIn("register_grok_http.py", command)
+        self.assertIn("mail@example.com", command)
         self.assertEqual(command[-2:], ["--sub2api-group", "grok-prod"])
 
 

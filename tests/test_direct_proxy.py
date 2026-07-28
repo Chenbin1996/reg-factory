@@ -4,11 +4,36 @@ import unittest
 from unittest.mock import patch
 
 from bitbrowser import BitBrowser
+from common.bundled_browser import BundledBrowser
 from common import direct_proxy
 from common import proxy_switch
+import register_outlook_standalone
 
 
 class DirectProxyTests(unittest.TestCase):
+    def test_custom_chrome_uses_local_browser_adapter(self):
+        with patch.dict(os.environ, {"FINGERPRINT_BROWSER": "custom"}, clear=False):
+            browser = BitBrowser()
+        self.assertIsInstance(browser, BundledBrowser)
+
+    def test_custom_chrome_adapter_supports_legacy_outlook_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = {
+                "FINGERPRINT_BROWSER": "custom",
+                "REG_FACTORY_DATA_DIR": directory,
+            }
+            with patch.dict(os.environ, env, clear=False):
+                browser = register_outlook_standalone.BitBrowserClient()
+                created = browser._post("/browser/update", {"name": "outlook-custom"})
+                profile_id = created["data"]["id"]
+                listed = browser._post("/browser/list", {"page": 0, "pageSize": 10})
+                browser._post("/browser/update", {"id": profile_id, "name": "updated"})
+                deleted = browser._post("/browser/delete", {"id": profile_id})
+
+        self.assertIsInstance(browser, BundledBrowser)
+        self.assertEqual(listed["data"]["list"][0]["id"], profile_id)
+        self.assertTrue(deleted["success"])
+
     def test_parse_proxy_preserves_authenticated_url(self):
         proxy = direct_proxy.parse_proxy("socks5://user:pass@proxy.test:1080")
         self.assertEqual(proxy.server, "socks5://proxy.test:1080")

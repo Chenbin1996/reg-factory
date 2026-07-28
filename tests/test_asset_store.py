@@ -57,6 +57,10 @@ class AssetStoreTests(unittest.TestCase):
                     "value": cookie_value,
                     "domain": ".chatgpt.com",
                     "path": "/",
+                    "expires": 1893456000,
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "None",
                 },
                 {"name": "noise", "value": "ignored", "domain": ".example.com", "path": "/"},
             ]),
@@ -78,6 +82,7 @@ class AssetStoreTests(unittest.TestCase):
         self._write_chatgpt_assets()
 
         raw = asset_store.get_platform_asset("chatgpt", "raw", index=0)
+        cookies = asset_store.get_platform_asset("chatgpt", "cookies", index=0)
         header = asset_store.get_platform_asset("chatgpt", "header", index=0)
         sub2api = asset_store.get_platform_asset("chatgpt", "sub2api", index=0)
         cpa = asset_store.get_platform_asset("chatgpt", "cpa", index=0)
@@ -85,6 +90,12 @@ class AssetStoreTests(unittest.TestCase):
 
         self.assertEqual(raw["email"], "user@example.com")
         self.assertEqual(len(raw["data"]), 1)
+        self.assertEqual(cookies["format"], "cookies")
+        self.assertEqual(cookies["data"][0]["sameSite"], "no_restriction")
+        self.assertEqual(cookies["data"][0]["expirationDate"], 1893456000.0)
+        self.assertFalse(cookies["data"][0]["hostOnly"])
+        self.assertFalse(cookies["data"][0]["session"])
+        self.assertEqual(cookies["data"][0]["storeId"], "0")
         self.assertIn("__Secure-next-auth.session-token=cookie-secret", header["data"])
         self.assertEqual(json.loads(sub2api["data"]["content"])["accessToken"], "access-token")
         self.assertEqual(cpa["data"]["type"], "codex")

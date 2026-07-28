@@ -102,7 +102,7 @@ def _fingerprint_provider():
 
 def _bb_post(path, data=None):
     global _BROWSER_CLIENT
-    if _fingerprint_provider() in {"adspower", "ads_power", "ads"}:
+    if _fingerprint_provider() not in {"bitbrowser", "bit"}:
         if _BROWSER_CLIENT is None:
             from bitbrowser import BitBrowser
             _BROWSER_CLIENT = BitBrowser()
@@ -695,8 +695,8 @@ def load_accounts(path):
                 print(f"[warn] skip: {line[:60]}")
     return accounts
 
-def scan_all_accounts():
-    """Scan outlook_accounts/ for all registered accounts, skip those already unlocked."""
+def scan_all_accounts(statuses=("unlock", "expired")):
+    """Load recovery candidates from the asset pool, then merge legacy account files."""
     reg_dir = "outlook_accounts"
     unlock_dir = "unlock_results"
 
@@ -711,9 +711,29 @@ def scan_all_accounts():
                         if parts and parts[0]:
                             unlocked_emails.add(parts[0].lower())
 
-    # Collect all registered accounts, deduplicate by email, skip unlocked
+    # Asset scan is authoritative: emails.txt is the primary Outlook pool.
     seen = set()
     accounts = []
+    try:
+        from common.outlook_recovery import candidate_counts, load_scan_candidates
+
+        candidates = load_scan_candidates(statuses)
+    except Exception as exc:
+        print(f"[auto] asset recovery candidates unavailable: {str(exc)[:120]}")
+        candidates = []
+    for item in candidates:
+        identity = item["email"].lower()
+        if identity in seen:
+            continue
+        accounts.append((item["email"], item["password"], item["line"]))
+        seen.add(identity)
+    if candidates:
+        counts = candidate_counts(candidates)
+        rendered = ", ".join(f"{name}={count}" for name, count in counts.items())
+        print(f"[auto] {len(candidates)} recovery candidates from emails.txt ({rendered})")
+
+    # Keep legacy outlook_accounts support for unscanned projects.
+    legacy_added = 0
     if os.path.isdir(reg_dir):
         for af in sorted(os.listdir(reg_dir)):
             if af.startswith("accounts_") and af.endswith(".txt"):
@@ -727,10 +747,11 @@ def scan_all_accounts():
                             if email_lc not in seen and email_lc not in unlocked_emails:
                                 accounts.append((parts[0].strip(), parts[1].strip(), line))
                                 seen.add(email_lc)
+                                legacy_added += 1
 
     if unlocked_emails:
         print(f"[auto] Skipping {len(unlocked_emails)} already-unlocked accounts")
-    print(f"[auto] {len(accounts)} new accounts to unlock from {reg_dir}/")
+    print(f"[auto] {len(accounts)} accounts queued ({legacy_added} from legacy {reg_dir}/)")
     return accounts
 
 def _clash_browser_proxy():
@@ -809,6 +830,28 @@ def save_results(results, ts):
     if unlocked:
         print(f"\n  Clean unlocked list: {ok_path}")
 
+    try:
+        from common import asset_scanner
+
+        status_map = {
+            "unlocked": ("normal", "Outlook 解锁成功"),
+            "already_ok": ("normal", "Outlook 登录正常"),
+            "needs_phone": ("unlock", "需要手机验证解锁"),
+            "dead_account": ("banned", "Outlook 账号不可用"),
+            "abuse_locked": ("banned", "Outlook Abuse 锁定"),
+        }
+        outcomes = {}
+        for email, _password, _raw, outcome in results:
+            status, detail = status_map.get(outcome, ("unknown", f"解锁结果：{outcome}"))
+            outcomes[email.lower()] = {
+                "status": status,
+                "detail": detail,
+                "evidence": f"recovery:unlock:{outcome}",
+            }
+        asset_scanner.update_cached_outlook_statuses(outcomes)
+    except Exception as exc:
+        print(f"  [asset] status update skipped: {str(exc)[:100]}")
+
 
 # ── Main ──────────────────────────────────────────────────────────────
 def find_latest_input():
@@ -874,6 +917,11 @@ Examples:
         help="Proxy list file (one per line)")
     parser.add_argument("--concurrency", "-c", type=int, default=1,
         help="Parallel workers (default: 1)")
+    parser.add_argument(
+        "--statuses", nargs="+", choices=("unlock", "expired", "banned"),
+        default=("unlock", "expired"),
+        help="Asset scan statuses included by auto mode (default: unlock expired)",
+    )
     args = parser.parse_args()
 
     if args.input:
@@ -883,7 +931,7 @@ Examples:
         accounts_or_file = args.input
     else:
         # Auto-scan all accounts, skip already unlocked
-        accounts_or_file = scan_all_accounts()
+        accounts_or_file = scan_all_accounts(args.statuses)
         if not accounts_or_file:
             print("[info] No new accounts to unlock.")
             sys.exit(0)
@@ -897,4 +945,7 @@ Examples:
     asyncio.run(run(accounts_or_file, proxies, args.concurrency))
 
 if __name__ == "__main__":
+    from common import proxy_switch
+
+    proxy_switch.apply_platform_environment("outlook")
     main()

@@ -52,7 +52,7 @@
 
 ### Windows 便携安装包
 
-从 [Releases](https://github.com/tiantianGPU/reg-factory/releases/latest) 下载 `reg-factory-windows-x64-<版本>.zip`，完整解压后双击 `reg-factory.exe`，程序会自动打开控制台页面。便携包无需安装 Python；BitBrowser 和 Clash Verge 仍按下面的前置条件安装。不要直接在 ZIP 压缩包预览窗口中运行 EXE。
+从 [Releases](https://github.com/tiantianGPU/reg-factory/releases/latest) 下载 `reg-factory-windows-x64-<版本>.zip`，完整解压后双击 `reg-factory.exe`，程序会自动打开控制台页面。便携包无需安装 Python；浏览器与网络出口按下面的前置条件选择配置。不要直接在 ZIP 压缩包预览窗口中运行 EXE。
 
 默认端口是 `8799`。程序只复用相同版本的现有服务；旧版本占用端口时，新版会自动选择后续空闲端口并打开新版页面。再次双击同一新版会复用已经运行的新版服务。启动失败时错误窗口会保留，便于截图排查。
 
@@ -65,7 +65,7 @@
 运行前需要：
 
 - Python 3.10+
-- 内置 Chromium、[BitBrowser](https://www.bitbrowser.cn/download) 或 AdsPower
+- 内置 Chromium、自定义 Chrome/Chromium、[BitBrowser](https://www.bitbrowser.cn/download)、AdsPower，或 BitBrowser 兼容的其他指纹浏览器 API
 - [Clash Verge 2.5.2 Windows x64](https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe)（自动/固定节点模式），或一个住宅代理服务
 - Node.js 20+（仅 Codex K12 控制台需要）
 
@@ -102,11 +102,11 @@ macOS / Linux：
 
 控制台只监听本机。Codex K12 的独立说明见 [codex_k12/README.md](codex_k12/README.md)。
 
-动态住宅 IP 会在创建 BitBrowser 新窗口时写入完整代理认证；轮换后的代理从下一个新窗口开始使用。“应用并测试 IP”会先应用页面当前配置，再检测真实出口。
+动态住宅 IP 会在创建新浏览器窗口时写入完整代理认证；轮换后的代理从下一个新窗口开始使用。网络页可分别设置 Outlook、Claude、ChatGPT 和 Grok 的出口，例如 Outlook 使用 Clash、其他平台使用住宅代理，并可按平台测试真实公网 IP。
 
 ## 本地资产 API
 
-本地接口支持按顺序或指定 `index` 读取邮箱、Claude/ChatGPT/Grok Cookie，并可把 ChatGPT 会话转换为 SUB2API、CPA 或 chatgpt2api 格式。控制台左侧打开“资产 API”即可配置、生成调用命令、在线测试，并一键扫描各类号池状态。默认仅允许本机访问，可配置 `REG_FACTORY_ASSET_API_KEY`。
+本地接口支持按顺序或指定 `index` 读取邮箱、Claude/ChatGPT/Grok Cookie；`format=cookies` 输出浏览器扩展可导入的标准 JSON，并可把 ChatGPT 会话转换为 SUB2API、CPA 或 chatgpt2api 格式。控制台左侧打开“资产 API”即可配置、生成调用命令、在线测试，并一键扫描各类号池状态。默认仅允许本机访问，可配置 `REG_FACTORY_ASSET_API_KEY`。
 
 ```bash
 # 按顺序取下一个邮箱
@@ -114,6 +114,9 @@ curl "http://127.0.0.1:8799/api/assets/emails?format=json"
 
 # 指定第 3 个 ChatGPT 凭据，输出 SUB2API 格式，不推进顺序游标
 curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=sub2api&index=2"
+
+# 指定第 1 个 Claude 账号，输出标准浏览器 Cookie JSON
+curl "http://127.0.0.1:8799/api/assets/cookies/claude?format=cookies&index=0"
 
 # 配置 API Key 后增加鉴权请求头
 curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=cpa" \
@@ -140,8 +143,8 @@ python register.py --count 1 --node auto --latest-rt
 # Claude 使用 YYDS 临时邮箱
 python register.py --count 1 --node auto --provider yyds
 
-# Grok 注册并导入 SUB2API
-python register_grok_http.py --count 1 --sub2api
+# Grok 浏览器注册并导入 SUB2API
+python register_grok.py --count 1 --sub2api
 
 # Codex OAuth -> SUB2API / CPA
 python oauth_codex.py --keep

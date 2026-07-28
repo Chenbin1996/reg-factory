@@ -48,14 +48,16 @@ class RegistrationSchemaTests(unittest.TestCase):
         self.assertEqual(fields["proxyUserName"], "resident")
         self.assertEqual(fields["proxyPassword"], "secret")
 
-    def test_both_grok_tasks_expose_sub2api_import(self):
-        for script_id in ("register_grok", "register_grok_browser"):
-            flags = {item["flag"] for item in _script(script_id)["args"]}
-            self.assertIn("--sub2api", flags)
-            self.assertIn("--sub2api-group", flags)
+    def test_only_browser_grok_task_is_exposed(self):
+        grok_tasks = [item for item in SCRIPTS if item["id"].startswith("register_grok")]
+        self.assertEqual(len(grok_tasks), 1)
+        self.assertEqual(grok_tasks[0]["file"], "register_grok.py")
+        flags = {item["flag"] for item in grok_tasks[0]["args"]}
+        self.assertIn("--sub2api", flags)
+        self.assertIn("--sub2api-group", flags)
 
     def test_grok_browser_exposes_mailbox_rotation(self):
-        args = {item["flag"]: item for item in _script("register_grok_browser")["args"]}
+        args = {item["flag"]: item for item in _script("register_grok")["args"]}
         self.assertEqual(args["--mailbox-attempts"]["default"], 6)
 
     def test_chatgpt_exposes_fixed_node(self):
@@ -69,6 +71,11 @@ class RegistrationSchemaTests(unittest.TestCase):
         self.assertTrue(args["--latest-rt"]["default"])
         self.assertIn("--client-id", args)
         self.assertIn("yyds", args["--provider"]["choices"])
+        self.assertLess(
+            next(i for i, item in enumerate(_script("register_claude")["args"]) if item["flag"] == "--provider"),
+            6,
+        )
+        self.assertEqual(args["--provider"]["labels"][""], "Outlook 资产池")
         self.assertEqual(args["--node"]["default"], "auto")
         self.assertEqual(args["--challenge-node-retries"]["default"], 3)
         self.assertEqual(args["--captcha-manual-timeout"]["default"], 0)

@@ -63,7 +63,7 @@ $forbidden = Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Where-Obje
     $_.Name -eq "emails.txt" -or
     $_.Name -match '^emails_(used|error)' -or
     $_.Extension -eq ".log" -or
-    $relative -match '^(_internal/)?(cookies|tokens|runtime|outlook_accounts|unlock_results)/'
+    $relative -match '^(_internal/)?(cookies|tokens|runtime|outlook_accounts|unlock_results|codex_k12)/'
 }
 if ($forbidden) {
     $names = ($forbidden | Select-Object -ExpandProperty FullName) -join [Environment]::NewLine

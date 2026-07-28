@@ -138,8 +138,10 @@ def stage_email(args, env):
     if args.dry_run:
         return ("dry-run@outlook.com", "DryRunPass1!", "", "")
 
+    outlook_env = proxy_switch.platform_environment(env, "outlook")
+    log(f"Stage A proxy mode: {proxy_switch.proxy_mode(outlook_env)}", "A")
     proc = subprocess.Popen(
-        cmd, cwd=DATA_ROOT, env=env,
+        cmd, cwd=DATA_ROOT, env=outlook_env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
     )

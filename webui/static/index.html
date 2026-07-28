@@ -340,6 +340,17 @@
           </div>
         </div>
 
+        <div class="network-fields">
+          <div class="network-section-title">平台出口覆盖</div>
+          <div class="network-grid">
+            <label class="network-field"><span>Outlook</span><select id="proxy-mode-outlook" data-platform-proxy><option value="inherit">继承全局</option><option value="clash_auto">Clash 自动</option><option value="clash_fixed">Clash 固定</option><option value="residential">动态住宅 IP</option></select></label>
+            <label class="network-field"><span>Claude</span><select id="proxy-mode-claude" data-platform-proxy><option value="inherit">继承全局</option><option value="clash_auto">Clash 自动</option><option value="clash_fixed">Clash 固定</option><option value="residential">动态住宅 IP</option></select></label>
+            <label class="network-field"><span>ChatGPT</span><select id="proxy-mode-chatgpt" data-platform-proxy><option value="inherit">继承全局</option><option value="clash_auto">Clash 自动</option><option value="clash_fixed">Clash 固定</option><option value="residential">动态住宅 IP</option></select></label>
+            <label class="network-field"><span>Grok</span><select id="proxy-mode-grok" data-platform-proxy><option value="inherit">继承全局</option><option value="clash_auto">Clash 自动</option><option value="clash_fixed">Clash 固定</option><option value="residential">动态住宅 IP</option></select></label>
+            <label class="network-field"><span>轮换/测试目标</span><select id="proxy-platform-target"><option value="">全局出口</option><option value="outlook">Outlook</option><option value="claude">Claude</option><option value="chatgpt">ChatGPT</option><option value="grok">Grok</option></select></label>
+          </div>
+        </div>
+
         <div class="network-actions">
           <button id="btn-save-proxy" class="btn-run" type="button">保存并应用</button>
           <button id="btn-rotate-proxy" class="btn-secondary" type="button">立即轮换</button>
@@ -370,6 +381,6 @@
   <a href="https://t.me/TIANTIANAIPRO" target="_blank" rel="noopener">@TIANTIANAIPRO</a>
 </dialog>
 
-<script src="/static/app.js?v=20260728-stop-all-1"></script>
+<script src="/static/app.js?v=20260729-assets-1"></script>
 </body>
 </html>
