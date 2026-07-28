@@ -92,6 +92,37 @@ def _existing_reg_factory(port: int) -> dict | None:
     return None
 
 
+def _running_data_root(requested: int = 8799) -> Path | None:
+    """Find a data-bearing root exposed by an already running local instance."""
+    for port in range(requested, requested + 21):
+        existing = _existing_reg_factory(port)
+        if not existing:
+            continue
+        candidates = (existing.get("data_root"), existing.get("root"))
+        for value in candidates:
+            if not value:
+                continue
+            candidate = Path(str(value)).expanduser()
+            if candidate.is_dir() and any(
+                (candidate / marker).exists() for marker in ("emails.txt", "cookies", "tokens")
+            ):
+                return candidate.resolve()
+    return None
+
+
+def _adopt_running_data_root() -> None:
+    if not getattr(sys, "frozen", False) or "REG_FACTORY_DATA_DIR" in os.environ:
+        return
+    candidate = _running_data_root()
+    if candidate is None:
+        return
+    os.environ["REG_FACTORY_DATA_DIR"] = str(candidate)
+    env_path = candidate / ".env"
+    if env_path.is_file() and "REG_FACTORY_ENV_FILE" not in os.environ:
+        os.environ["REG_FACTORY_ENV_FILE"] = str(env_path)
+    print(f"[reg-factory] 已沿用现有资产目录：{candidate}", flush=True)
+
+
 def _open_when_ready(port: int) -> None:
     url = f"http://127.0.0.1:{port}/"
     for _ in range(80):
@@ -144,6 +175,7 @@ def _pause_after_error() -> None:
 
 
 def main() -> None:
+    _adopt_running_data_root()
     _configure_frozen_runtime()
     raw_args = list(sys.argv[1:])
     if raw_args[:1] == ["-u"]:

@@ -961,6 +961,7 @@ def api_status():
         "pid": os.getpid(),
         "version": WEBUI_VERSION,
         "root": ROOT,
+        "data_root": os.environ.get("REG_FACTORY_DATA_DIR") or ROOT,
         "bitbrowser": os.path.isfile(bb) if provider_label == "bundled" else _http_alive(bb),
         "browser_provider": provider_label,
         "clash": network,
