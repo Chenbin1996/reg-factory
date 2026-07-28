@@ -26,6 +26,10 @@
   <a href="https://t.me/TIANTIANAIPRO">
     <img src="https://img.shields.io/badge/Telegram-@TIANTIANAIPRO-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram @TIANTIANAIPRO" />
   </a>
+  &nbsp;
+  <a href="https://linux.do">
+    <img src="https://img.shields.io/badge/Linux.do-Community-F5C400?style=for-the-badge&logo=linux&logoColor=black" alt="Linux.do Community" />
+  </a>
 </p>
 
 <p>
@@ -194,3 +198,7 @@ node --check webui/static/app.js
 
 - QQ 群：`1048143135`
 - Telegram：[@TIANTIANAIPRO](https://t.me/TIANTIANAIPRO)
+
+## 🔗 Friend Links
+
+- 🐧 [**LinuxDO**](https://linux.do) — A community for tech enthusiasts
