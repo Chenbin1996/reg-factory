@@ -156,13 +156,25 @@ function collectProxyConfig(){
   };
 }
 
+async function applyProxyConfig(){
+  const response = await fetch('/api/proxy', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({config:collectProxyConfig()}),
+  });
+  const data = await response.json();
+  if(!data.ok) throw new Error(data.error || '保存失败');
+  if(data.config?.PROXY_MODE && data.config.PROXY_MODE !== proxyMode){
+    throw new Error(`代理模式未生效：后端仍为 ${data.config.PROXY_MODE}`);
+  }
+  return data;
+}
+
 async function saveProxy(){
   const button = $('#btn-save-proxy');
   button.disabled = true; setProxyMessage('正在保存并应用…');
   try{
-    const response = await fetch('/api/proxy', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({config:collectProxyConfig()})});
-    const data = await response.json();
-    if(!data.ok) throw new Error(data.error || '保存失败');
+    const data = await applyProxyConfig();
     setProxyMessage(`已应用，当前出口：${data.current || data.applied?.node || '--'}`, true);
     await pollStatus();
   }catch(error){
@@ -188,14 +200,19 @@ async function rotateProxy(){
 
 async function testProxy(){
   const button = $('#btn-test-proxy');
-  button.disabled = true; setProxyMessage('正在检测公网出口…');
+  const saveButton = $('#btn-save-proxy');
+  button.disabled = true; saveButton.disabled = true;
+  setProxyMessage('正在应用当前配置并检测公网出口…');
   try{
+    const applied = await applyProxyConfig();
     const response = await fetch('/api/proxy/test', {method:'POST'});
     const data = await response.json();
     if(!data.ok) throw new Error(data.error || '检测失败');
     setProxyMessage(`出口 IP：${data.ip} · ${data.node || data.mode}`, true);
+    $('#network-current').textContent = `${applied.current || data.node || '--'} · ${data.mode || proxyMode}`;
+    await pollStatus();
   }catch(error){ setProxyMessage(error.message || String(error), false); }
-  finally{ button.disabled = false; }
+  finally{ button.disabled = false; saveButton.disabled = false; }
 }
 
 $$('[data-proxy-mode]').forEach(button=>button.onclick=()=>setProxyMode(button.dataset.proxyMode));

@@ -54,7 +54,7 @@
 
 从 [Releases](https://github.com/tiantianGPU/reg-factory/releases/latest) 下载 `reg-factory-windows-x64-<版本>.zip`，完整解压后双击 `reg-factory.exe`，程序会自动打开控制台页面。便携包无需安装 Python；BitBrowser 和 Clash Verge 仍按下面的前置条件安装。不要直接在 ZIP 压缩包预览窗口中运行 EXE。
 
-默认端口是 `8799`。如果已有 Reg Factory 正在运行，程序会直接打开现有页面；如果端口被其他程序占用，则自动选择后续空闲端口。启动失败时错误窗口会保留，便于截图排查。
+默认端口是 `8799`。程序只复用相同版本的现有服务；旧版本占用端口时，新版会自动选择后续空闲端口并打开新版页面。再次双击同一新版会复用已经运行的新版服务。启动失败时错误窗口会保留，便于截图排查。
 
 配置和运行数据保存在 `%LOCALAPPDATA%\RegFactory`，升级时直接替换程序目录即可。
 
@@ -102,7 +102,7 @@ macOS / Linux：
 
 控制台只监听本机。Codex K12 的独立说明见 [codex_k12/README.md](codex_k12/README.md)。
 
-动态住宅 IP 会在创建 BitBrowser 新窗口时写入完整代理认证；轮换后的代理从下一个新窗口开始使用。
+动态住宅 IP 会在创建 BitBrowser 新窗口时写入完整代理认证；轮换后的代理从下一个新窗口开始使用。“应用并测试 IP”会先应用页面当前配置，再检测真实出口。
 
 ## 本地资产 API
 

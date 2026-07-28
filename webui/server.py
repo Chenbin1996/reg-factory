@@ -1089,25 +1089,46 @@ async def api_proxy_rotate():
 @app.post("/api/proxy/test")
 async def api_proxy_test():
     def _test():
+        from common import direct_proxy
         from common import proxy_switch as ps
 
         proxy = ps.effective_proxy_url()
         if not proxy:
             raise RuntimeError("当前模式没有配置有效代理")
         from curl_cffi import requests as creq
-        response = creq.get(
-            "https://api.ipify.org?format=json",
-            impersonate="chrome131",
-            proxies={"http": proxy, "https": proxy},
-            timeout=20,
-        )
-        response.raise_for_status()
-        return response.json().get("ip") or response.text.strip()
+
+        attempts = 3 if ps.proxy_mode() == "residential" else 1
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                response = creq.get(
+                    "https://api.ipify.org?format=json",
+                    impersonate="chrome131",
+                    proxies={"http": proxy, "https": proxy},
+                    timeout=20,
+                )
+                response.raise_for_status()
+                ip = response.json().get("ip") or response.text.strip()
+                return ip, attempt
+            except Exception as exc:
+                last_error = str(exc).replace(proxy, direct_proxy.redact_proxy(proxy))
+                spec = direct_proxy.parse_proxy(proxy)
+                for secret in (spec.username, spec.password):
+                    if secret:
+                        last_error = last_error.replace(secret, "***")
+                last_error = last_error[:180]
+        raise RuntimeError(last_error or "住宅代理出口检测失败")
 
     try:
         from common import proxy_switch as ps
-        ip = await asyncio.to_thread(_test)
-        return {"ok": True, "ip": ip, "mode": ps.proxy_mode(), "node": ps.current_node()}
+        ip, attempts = await asyncio.to_thread(_test)
+        return {
+            "ok": True,
+            "ip": ip,
+            "attempts": attempts,
+            "mode": ps.proxy_mode(),
+            "node": ps.current_node(),
+        }
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)[:180]}, status_code=400)
 

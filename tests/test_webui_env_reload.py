@@ -1,9 +1,10 @@
+import asyncio
 import json
 import os
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from webui import server
 
@@ -68,6 +69,42 @@ class WebUIEnvReloadTests(unittest.TestCase):
         self.assertEqual(status["pid"], os.getpid())
         self.assertEqual(status["version"], server.WEBUI_VERSION)
         self.assertEqual(status["root"], server.ROOT)
+
+    def test_residential_proxy_test_retries_with_fresh_connections(self):
+        response = MagicMock()
+        response.json.return_value = {"ip": "203.0.113.9"}
+        response.text = ""
+        failures = [RuntimeError("first exit timeout"), RuntimeError("second exit timeout"), response]
+
+        async def run_test():
+            with patch("common.proxy_switch.effective_proxy_url", return_value="http://user:pass@home.test:9000"):
+                with patch("common.proxy_switch.proxy_mode", return_value="residential"):
+                    with patch("common.proxy_switch.current_node", return_value="http://home.test:9000"):
+                        with patch("curl_cffi.requests.get", side_effect=failures) as request:
+                            result = await server.api_proxy_test()
+            return result, request
+
+        result, request = asyncio.run(run_test())
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ip"], "203.0.113.9")
+        self.assertEqual(result["attempts"], 3)
+        self.assertEqual(request.call_count, 3)
+
+    def test_residential_proxy_test_redacts_credentials_from_errors(self):
+        async def run_test():
+            with patch("common.proxy_switch.effective_proxy_url", return_value="http://user:pass@home.test:9000"):
+                with patch("common.proxy_switch.proxy_mode", return_value="residential"):
+                    with patch(
+                        "curl_cffi.requests.get",
+                        side_effect=RuntimeError("proxy user:pass rejected at http://user:pass@home.test:9000"),
+                    ):
+                        return await server.api_proxy_test()
+
+        response = asyncio.run(run_test())
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("user", payload["error"])
+        self.assertNotIn("pass", payload["error"])
 
     def test_asset_api_without_key_is_loopback_only(self):
         local = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))

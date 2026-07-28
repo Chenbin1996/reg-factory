@@ -8,6 +8,7 @@ import os
 import runpy
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -49,13 +50,46 @@ def _port_available(host: str, port: int) -> bool:
         return False
 
 
-def _existing_reg_factory(port: int) -> bool:
+def _runtime_version() -> str:
+    root = Path(__file__).resolve().parents[1]
+    if not getattr(sys, "frozen", False):
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--short=12", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    roots = [
+        Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)),
+        Path(sys.executable).resolve().parent,
+        root,
+    ]
+    for candidate in roots:
+        try:
+            version = (candidate / "VERSION").read_text(encoding="utf-8").strip()
+            if version:
+                return version
+        except OSError:
+            pass
+    return "archive"
+
+
+def _existing_reg_factory(port: int) -> dict | None:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=1) as response:
             payload = json.load(response)
-        return isinstance(payload, dict) and "browser_provider" in payload and "running" in payload
+        if isinstance(payload, dict) and "browser_provider" in payload and "running" in payload:
+            return payload
     except Exception:
-        return False
+        pass
+    return None
 
 
 def _open_when_ready(port: int) -> None:
@@ -70,15 +104,33 @@ def _open_when_ready(port: int) -> None:
             time.sleep(0.25)
 
 
-def _select_port(host: str, requested: int) -> tuple[int, bool]:
-    if _port_available(host, requested):
-        return requested, False
-    if _existing_reg_factory(requested):
-        return requested, True
-    for candidate in range(requested + 1, requested + 21):
+def _select_port(host: str, requested: int, expected_version: str | None = None) -> tuple[int, bool]:
+    expected_version = expected_version or _runtime_version()
+    first_available = None
+    older_versions = []
+    for candidate in range(requested, requested + 21):
         if _port_available(host, candidate):
-            print(f"[reg-factory] 端口 {requested} 已占用，自动改用 {candidate}", flush=True)
-            return candidate, False
+            if first_available is None:
+                first_available = candidate
+            continue
+        existing = _existing_reg_factory(candidate)
+        if not existing:
+            continue
+        running_version = str(existing.get("version") or "unknown")
+        if running_version == expected_version:
+            return candidate, True
+        older_versions.append((candidate, running_version))
+    if first_available is not None:
+        if older_versions:
+            occupied = ", ".join(f"{port}({version})" for port, version in older_versions)
+            print(
+                f"[reg-factory] 检测到其他版本 {occupied}；当前版本 {expected_version} "
+                f"自动使用端口 {first_available}",
+                flush=True,
+            )
+        elif first_available != requested:
+            print(f"[reg-factory] 端口 {requested} 已占用，自动改用 {first_available}", flush=True)
+        return first_available, False
     raise RuntimeError(f"端口 {requested}-{requested + 20} 均不可用")
 
 
@@ -111,10 +163,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8799)
     args = parser.parse_args()
-    port, already_running = _select_port(args.host, args.port)
+    version = _runtime_version()
+    port, already_running = _select_port(args.host, args.port, version)
     url = f"http://127.0.0.1:{port}/"
     if already_running:
-        print(f"[reg-factory] 服务已在运行：{url}", flush=True)
+        print(f"[reg-factory] 当前版本 {version} 已在运行：{url}", flush=True)
         webbrowser.open(url)
         time.sleep(1)
         return
