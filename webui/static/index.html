@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=">
 <title>reg-factory 控制面板</title>
-<link rel="stylesheet" href="/static/style.css?v=20260728-network-1">
+<link rel="stylesheet" href="/static/style.css?v=20260728-assets-1">
 </head>
 <body>
 <header class="topbar">
@@ -33,6 +33,7 @@
     <div class="sidebar-tools">
       <div class="sidebar-label">工具</div>
       <button class="navbtn" data-view="mailpool"><span class="nav-icon" aria-hidden="true">@</span><span>邮箱池</span></button>
+      <button class="navbtn" data-view="assets"><span class="nav-icon" aria-hidden="true">API</span><span>资产 API</span></button>
       <button class="navbtn" data-view="network"><span class="nav-icon" aria-hidden="true">IP</span><span>网络出口</span></button>
       <button class="navbtn" data-view="env"><span class="nav-icon" aria-hidden="true">⚙</span><span>环境配置</span></button>
       <button class="navbtn navbtn-k12" data-view="k12"><span class="nav-icon" aria-hidden="true">K</span><span>Codex K12</span><span id="k12-nav-state" class="nav-state">检测中</span></button>
@@ -138,6 +139,89 @@
       </div>
     </section>
 
+    <!-- 本地资产 API -->
+    <section id="view-assets" style="display:none">
+      <div class="panel asset-panel">
+        <div class="asset-head">
+          <div>
+            <h2>资产 API</h2>
+            <p>按顺序或指定下标读取邮箱与已注册平台凭据，并转换为下游需要的格式。</p>
+          </div>
+          <button id="btn-refresh-assets" class="icon-button" type="button" title="刷新资产统计" aria-label="刷新资产统计">↻</button>
+        </div>
+
+        <div id="asset-summary" class="asset-summary" aria-live="polite">
+          <div><span>邮箱</span><strong id="asset-count-emails">--</strong></div>
+          <div><span>ChatGPT</span><strong id="asset-count-chatgpt">--</strong></div>
+          <div><span>Claude</span><strong id="asset-count-claude">--</strong></div>
+          <div><span>Grok</span><strong id="asset-count-grok">--</strong></div>
+        </div>
+
+        <section class="asset-section" aria-labelledby="asset-access-title">
+          <div class="asset-section-head">
+            <div><h3 id="asset-access-title">访问配置</h3><p>留空仅允许本机调用；设置后支持 <code>X-API-Key</code> 或 Bearer Token。</p></div>
+            <span id="asset-key-msg" class="asset-message" role="status"></span>
+          </div>
+          <div class="asset-config-grid">
+            <label class="asset-field"><span>API 地址</span><input id="asset-api-base" type="text" readonly></label>
+            <label class="asset-field"><span>API Key</span><input id="asset-api-key" type="password" autocomplete="off" placeholder="留空时仅限本机"></label>
+          </div>
+          <button id="btn-save-asset-key" class="btn-secondary" type="button">保存 API Key</button>
+        </section>
+
+        <section class="asset-section" aria-labelledby="asset-call-title">
+          <div class="asset-section-head">
+            <div><h3 id="asset-call-title">调用与输出</h3><p>默认顺序取下一条；指定 index 时不会推进游标，下标从 0 开始。</p></div>
+          </div>
+          <div class="asset-builder-grid">
+            <label class="asset-field"><span>资产</span>
+              <select id="asset-resource">
+                <option value="emails">邮箱</option>
+                <option value="chatgpt">ChatGPT</option>
+                <option value="claude">Claude</option>
+                <option value="grok">Grok</option>
+              </select>
+            </label>
+            <label class="asset-field"><span>输出格式</span><select id="asset-format"></select></label>
+            <div class="asset-field asset-pick-field"><span>取用方式</span>
+              <div class="asset-mode-switch" role="group" aria-label="资产取用方式">
+                <button type="button" data-asset-pick="sequence" class="active">顺序取用</button>
+                <button type="button" data-asset-pick="index">指定 index</button>
+              </div>
+            </div>
+            <label class="asset-field"><span>Index</span><input id="asset-index" type="number" min="0" step="1" value="0" disabled></label>
+          </div>
+
+          <div class="asset-request">
+            <div class="asset-request-head"><span>请求地址</span><button id="btn-copy-url" class="btn-inline" type="button">复制地址</button></div>
+            <code id="asset-request-url"></code>
+          </div>
+          <div class="asset-request">
+            <div class="asset-request-head"><span>curl 调用示例</span><button id="btn-copy-curl" class="btn-inline" type="button">复制命令</button></div>
+            <pre id="asset-curl-example"></pre>
+          </div>
+
+          <div class="asset-actions">
+            <button id="btn-call-asset" class="btn-run" type="button">调用 API</button>
+            <select id="asset-reset-scope" aria-label="游标重置范围"><option value="current">重置当前游标</option><option value="all">重置全部游标</option></select>
+            <button id="btn-reset-asset" class="btn-secondary" type="button">重置</button>
+            <span id="asset-call-msg" class="asset-message" role="status" aria-live="polite"></span>
+          </div>
+          <pre id="asset-response" class="asset-response" data-empty="调用结果将在这里显示"></pre>
+        </section>
+
+        <section class="asset-section asset-reference" aria-labelledby="asset-reference-title">
+          <div class="asset-section-head"><div><h3 id="asset-reference-title">接口速查</h3></div></div>
+          <div class="asset-endpoints">
+            <code>GET /api/assets/emails</code><span><code>json</code>、<code>line</code></span>
+            <code>GET /api/assets/cookies/chatgpt</code><span><code>raw</code>、<code>header</code>、<code>session</code>、<code>sub2api</code>、<code>cpa</code>、<code>chatgpt2api</code></span>
+            <code>GET /api/assets/cookies/claude</code><span><code>raw</code>、<code>header</code></span>
+            <code>GET /api/assets/cookies/grok</code><span><code>raw</code>、<code>header</code>、<code>session</code>、<code>sub2api</code></span>
+          </div>
+        </section>
+      </div>
+    </section>
+
     <!-- 网络出口视图 -->
     <section id="view-network" style="display:none">
       <div class="panel network-panel">
@@ -213,6 +297,6 @@
   <a href="https://t.me/TIANTIANAIPRO" target="_blank" rel="noopener">@TIANTIANAIPRO</a>
 </dialog>
 
-<script src="/static/app.js?v=20260728-network-2"></script>
+<script src="/static/app.js?v=20260728-assets-1"></script>
 </body>
 </html>

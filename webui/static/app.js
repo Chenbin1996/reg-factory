@@ -8,6 +8,7 @@ let smsTimer = null;   // 接码助手倒计时刷新
 let k12Url = 'http://127.0.0.1:8806/';
 let k12Starting = false;
 let proxyMode = 'clash_auto';
+let assetPickMode = 'sequence';
 
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -60,6 +61,7 @@ function showView(v){
   document.body.classList.toggle('k12-active', v==='k12');
   $('#view-run').style.display  = v==='run' ? '' : 'none';
   $('#view-env').style.display  = v==='env' ? 'block' : 'none';
+  $('#view-assets').style.display = v==='assets' ? 'block' : 'none';
   $('#view-network').style.display = v==='network' ? 'block' : 'none';
   $('#view-embed').style.display = v==='embed' ? 'block' : 'none';
   $('#view-mailpool').style.display = v==='mailpool' ? 'block' : 'none';
@@ -67,6 +69,7 @@ function showView(v){
   $$('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view===v));
   if(v!=='run' && v!=='embed') $$('.scriptbtn').forEach(b=>b.classList.remove('active'));
   if(v==='env') loadEnv();
+  if(v==='assets') loadAssetPanel();
   if(v==='network') loadProxyPanel();
   if(v==='mailpool') loadMailpool();
   if(v==='k12') openK12Channel();
@@ -197,6 +200,175 @@ $('#btn-save-proxy').onclick = saveProxy;
 $('#btn-rotate-proxy').onclick = rotateProxy;
 $('#btn-test-proxy').onclick = testProxy;
 $('#btn-refresh-nodes').onclick = ()=>loadProxyPanel(true);
+
+// ---------------------------------------------------------------- 本地资产 API
+const ASSET_FORMATS = {
+  emails: ['json', 'line'],
+  chatgpt: ['raw', 'header', 'session', 'sub2api', 'cpa', 'chatgpt2api'],
+  claude: ['raw', 'header'],
+  grok: ['raw', 'header', 'session', 'sub2api'],
+};
+
+function assetHeaders(json=false){
+  const headers = {};
+  const key = $('#asset-api-key').value.trim();
+  if(key) headers['X-API-Key'] = key;
+  if(json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
+function setAssetMessage(target, text, ok=null){
+  const message = $(target);
+  message.textContent = text || '';
+  message.classList.toggle('ok', ok===true);
+  message.classList.toggle('bad', ok===false);
+}
+
+function updateAssetFormats(){
+  const resource = $('#asset-resource').value;
+  const select = $('#asset-format');
+  const previous = select.value;
+  select.innerHTML = '';
+  ASSET_FORMATS[resource].forEach(format=>{
+    const option = document.createElement('option');
+    option.value = format;
+    option.textContent = format;
+    option.selected = format === previous;
+    select.appendChild(option);
+  });
+  updateAssetRequestPreview();
+}
+
+function buildAssetRequest(){
+  const resource = $('#asset-resource').value;
+  const format = $('#asset-format').value || ASSET_FORMATS[resource][0];
+  const path = resource === 'emails' ? '/api/assets/emails' : `/api/assets/cookies/${resource}`;
+  const params = new URLSearchParams({format});
+  if(assetPickMode === 'index'){
+    const index = Math.max(0, parseInt($('#asset-index').value || '0', 10));
+    params.set('index', String(index));
+  }
+  const relative = `${path}?${params}`;
+  return {resource, format, relative, absolute:`${window.location.origin}${relative}`};
+}
+
+function updateAssetRequestPreview(){
+  const request = buildAssetRequest();
+  $('#asset-api-base').value = window.location.origin;
+  $('#asset-request-url').textContent = request.absolute;
+  const auth = $('#asset-api-key').value.trim() ? " -H \"X-API-Key: your-key\"" : '';
+  $('#asset-curl-example').textContent = `curl \"${request.absolute}\"${auth}`;
+}
+
+function setAssetPickMode(mode){
+  assetPickMode = mode;
+  $$('[data-asset-pick]').forEach(button=>button.classList.toggle('active', button.dataset.assetPick===mode));
+  $('#asset-index').disabled = mode !== 'index';
+  updateAssetRequestPreview();
+}
+
+async function readAssetResponse(response){
+  const text = await response.text();
+  let data;
+  try{ data = text ? JSON.parse(text) : {}; }
+  catch(error){ data = {error:text || `HTTP ${response.status}`}; }
+  if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function renderAssetSummary(data){
+  $('#asset-count-emails').textContent = data.emails ?? 0;
+  ['chatgpt', 'claude', 'grok'].forEach(platform=>{
+    const item = data.platforms?.[platform] || {};
+    const total = Math.max(item.cookies || 0, item.sessions || 0);
+    $(`#asset-count-${platform}`).textContent = total;
+  });
+}
+
+async function refreshAssetSummary(quiet=false){
+  if(!quiet) setAssetMessage('#asset-call-msg', '正在读取资产统计…');
+  try{
+    const response = await fetch('/api/assets/summary', {headers:assetHeaders()});
+    renderAssetSummary(await readAssetResponse(response));
+    if(!quiet) setAssetMessage('#asset-call-msg', '资产统计已更新', true);
+  }catch(error){
+    setAssetMessage('#asset-call-msg', error.message || String(error), false);
+  }
+}
+
+async function loadAssetPanel(){
+  $('#asset-api-base').value = window.location.origin;
+  try{
+    const data = await (await fetch('/api/env')).json();
+    const item = (data.groups || []).flatMap(group=>group.items || []).find(entry=>entry.key === 'REG_FACTORY_ASSET_API_KEY');
+    $('#asset-api-key').value = item?.value || '';
+  }catch(error){
+    setAssetMessage('#asset-key-msg', '读取配置失败', false);
+  }
+  updateAssetFormats();
+  await refreshAssetSummary();
+}
+
+async function saveAssetKey(){
+  const button = $('#btn-save-asset-key');
+  button.disabled = true;
+  setAssetMessage('#asset-key-msg', '保存中…');
+  try{
+    const response = await fetch('/api/env', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({env:{REG_FACTORY_ASSET_API_KEY:$('#asset-api-key').value.trim()}})});
+    const data = await readAssetResponse(response);
+    setAssetMessage('#asset-key-msg', data.ok ? '已保存并立即生效' : '保存失败', !!data.ok);
+    updateAssetRequestPreview();
+    await refreshAssetSummary();
+  }catch(error){ setAssetMessage('#asset-key-msg', error.message || String(error), false); }
+  finally{ button.disabled = false; }
+}
+
+async function callAssetApi(){
+  const button = $('#btn-call-asset');
+  button.disabled = true;
+  setAssetMessage('#asset-call-msg', '调用中…');
+  try{
+    const request = buildAssetRequest();
+    const response = await fetch(request.relative, {headers:assetHeaders()});
+    const data = await readAssetResponse(response);
+    $('#asset-response').textContent = JSON.stringify(data, null, 2);
+    const progress = data.total === undefined ? '' : `，index ${data.index}/${Math.max(0, data.total-1)}`;
+    setAssetMessage('#asset-call-msg', `调用成功${progress}`, true);
+    await refreshAssetSummary(true);
+  }catch(error){
+    $('#asset-response').textContent = JSON.stringify({error:error.message || String(error)}, null, 2);
+    setAssetMessage('#asset-call-msg', error.message || String(error), false);
+  }finally{ button.disabled = false; }
+}
+
+async function resetAssetCursor(){
+  const button = $('#btn-reset-asset');
+  button.disabled = true;
+  const request = buildAssetRequest();
+  const scope = $('#asset-reset-scope').value === 'all'
+    ? 'all'
+    : (request.resource === 'emails' ? 'email' : `cookie:${request.resource}:${request.format}`);
+  try{
+    const response = await fetch('/api/assets/cursors/reset', {method:'POST', headers:assetHeaders(true), body:JSON.stringify({scope})});
+    const data = await readAssetResponse(response);
+    $('#asset-response').textContent = JSON.stringify(data, null, 2);
+    setAssetMessage('#asset-call-msg', scope === 'all' ? '全部游标已重置' : '当前游标已重置', true);
+  }catch(error){ setAssetMessage('#asset-call-msg', error.message || String(error), false); }
+  finally{ button.disabled = false; }
+}
+
+$('#asset-resource').onchange = updateAssetFormats;
+$('#asset-format').onchange = updateAssetRequestPreview;
+$('#asset-index').oninput = updateAssetRequestPreview;
+$('#asset-api-key').oninput = updateAssetRequestPreview;
+$$('[data-asset-pick]').forEach(button=>button.onclick=()=>setAssetPickMode(button.dataset.assetPick));
+$('#btn-refresh-assets').onclick = refreshAssetSummary;
+$('#btn-save-asset-key').onclick = saveAssetKey;
+$('#btn-call-asset').onclick = callAssetApi;
+$('#btn-reset-asset').onclick = resetAssetCursor;
+$('#btn-copy-url').onclick = ()=>copyText($('#asset-request-url').textContent, $('#btn-copy-url'));
+$('#btn-copy-curl').onclick = ()=>copyText($('#asset-curl-example').textContent, $('#btn-copy-curl'));
 
 // ---------------------------------------------------------------- Codex K12 集成通道
 function renderK12Status(status){
