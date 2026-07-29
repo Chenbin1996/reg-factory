@@ -106,6 +106,14 @@ class ReleaseLauncherTests(unittest.TestCase):
         stdout.reconfigure.assert_called_once_with(line_buffering=True, write_through=True)
         stderr.reconfigure.assert_called_once_with(line_buffering=True, write_through=True)
 
+    def test_frozen_task_failure_never_waits_for_console_input(self):
+        with patch.object(launcher.sys, "frozen", True, create=True):
+            with patch.object(launcher, "_TASK_DISPATCH", True):
+                with patch("builtins.input") as prompt:
+                    launcher._pause_after_error()
+
+        prompt.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

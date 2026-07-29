@@ -20,6 +20,8 @@ import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+_TASK_DISPATCH = False
+
 
 def _configure_live_output() -> None:
     """Make frozen task output visible to the WebUI as each line is written."""
@@ -179,7 +181,7 @@ def _select_port(host: str, requested: int, expected_version: str | None = None)
 
 
 def _pause_after_error() -> None:
-    if not getattr(sys, "frozen", False):
+    if not getattr(sys, "frozen", False) or _TASK_DISPATCH:
         return
     try:
         input("\n启动失败，请截图保存上面的错误。按回车键退出...")
@@ -188,12 +190,14 @@ def _pause_after_error() -> None:
 
 
 def main() -> None:
+    global _TASK_DISPATCH
     _adopt_running_data_root()
     _configure_frozen_runtime()
     raw_args = list(sys.argv[1:])
     if raw_args[:1] == ["-u"]:
         raw_args = raw_args[1:]
     if raw_args and (raw_args[0] == "--task" or raw_args[0].lower().endswith(".py")):
+        _TASK_DISPATCH = True
         _configure_live_output()
         target = raw_args[1] if raw_args[0] == "--task" and len(raw_args) > 1 else raw_args[0]
         root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))

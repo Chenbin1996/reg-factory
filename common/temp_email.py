@@ -290,16 +290,24 @@ def _yyds_pick_domain(key, base, sess, exclude=()):
             name = d.get("domain") or d.get("name")
             if not name:
                 continue
-            if d.get("public") is False or d.get("ready") is False:
+            dns = d.get("dnsRecords") if isinstance(d.get("dnsRecords"), dict) else {}
+            if d.get("public") is False or d.get("isPublic") is False:
                 continue
-            ok.append((name, bool(d.get("wildcardMxValid"))))
+            if d.get("ready") is False or d.get("isVerified") is False:
+                continue
+            if d.get("isMxValid") is False or dns.get("receivingReady") is False:
+                continue
+            wildcard = dns.get("wildcardMxValid", d.get("wildcardMxValid"))
+            ok.append((name, bool(wildcard)))
         if not ok:
             return None
         excluded = {str(x).lower().strip().rstrip(".") for x in exclude}
         available = [(n, w) for n, w in ok if str(n).lower().strip().rstrip(".") not in excluded]
         if not available:
             return None
-        pref = [n for n, w in available if w] or [n for n, _ in available]
+        # Accounts use local@domain, so wildcard MX is unnecessary. Prefer the
+        # smaller exact-domain pool, which tends to have lower abuse reputation.
+        pref = [n for n, wildcard in available if not wildcard] or [n for n, _ in available]
         return random.choice(pref)
     except Exception:
         return None
@@ -771,7 +779,7 @@ def _hit(msg, sender_hint, subject_hint):
 
 
 def _scan_once(mailbox_id, provider, email, token, api_key, base_url,
-               sender_hint, subject_hint, code_regex):
+               sender_hint, subject_hint, code_regex, exclude_codes=()):
     """同步扫一轮，命中目标邮件就返回 code，否则 None。给 poll 用 executor 调。"""
     try:
         msgs = fetch_messages(mailbox_id, provider, email=email, token=token,
@@ -780,6 +788,7 @@ def _scan_once(mailbox_id, provider, email, token, api_key, base_url,
         print(f"  [temp-email] fetch error: {str(e)[:80]}")
         return None
     pat = re.compile(code_regex) if code_regex else None
+    excluded = {str(code) for code in (exclude_codes or ()) if code}
     for m in msgs:
         if not _hit(m, sender_hint, subject_hint):
             continue
@@ -788,29 +797,33 @@ def _scan_once(mailbox_id, provider, email, token, api_key, base_url,
             for text in (str(m.get("subject") or ""),
                          _strip_html(str(m.get("html") or m.get("htmlBody") or "")),
                          str(m.get("text") or m.get("textBody") or m.get("content") or "")):
-                mm = pat.search(text)
-                if mm:
-                    return next((g for g in mm.groups() if g), mm.group(0))
+                for mm in pat.finditer(text):
+                    code = next((g for g in mm.groups() if g), mm.group(0))
+                    if str(code) not in excluded:
+                        return code
         codes = m.get("extracted", {}).get("codes") or []
-        if codes:
-            return codes[0]
+        code = next((code for code in codes if str(code) not in excluded), None)
+        if code:
+            return code
     return None
 
 
 async def poll_verification_code(mailbox_id, provider, email=None, token=None,
                                  api_key=None, base_url=None,
                                  max_wait=120, poll_interval=5,
-                                 sender_hint=(), subject_hint=(), code_regex=None):
+                                 sender_hint=(), subject_hint=(), code_regex=None,
+                                 exclude_codes=()):
     """轮询临时邮箱直到拿到验证码或超时。返回 code 字符串或 None。
     - sender_hint/subject_hint：筛选目标邮件（宽松匹配）。
     - code_regex：给定则用它提码（如 grok 的 XXX-XXX），否则用默认 6-8 位数字。
+    - exclude_codes：忽略已经尝试过的旧码，适用于 resend 后旧邮件仍在收件箱的场景。
     HTTP 调用走线程池（requests 同步），不阻塞事件循环。"""
     loop = asyncio.get_event_loop()
     start = time.time()
     while time.time() - start < max_wait:
         code = await loop.run_in_executor(
             None, _scan_once, mailbox_id, provider, email, token, api_key, base_url,
-            tuple(sender_hint), tuple(subject_hint), code_regex)
+            tuple(sender_hint), tuple(subject_hint), code_regex, tuple(exclude_codes))
         if code:
             print(f"  [temp-email] code found: {code}")
             return code

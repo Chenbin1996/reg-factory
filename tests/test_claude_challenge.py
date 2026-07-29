@@ -70,6 +70,63 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fingerprint["isIpCreateLanguage"])
         self.assertTrue(fingerprint["isIpCreatePosition"])
 
+    def test_residential_continuity_accepts_one_exit_ip(self):
+        responses = []
+        for address in ("203.0.113.10", "203.0.113.10"):
+            response = MagicMock(text=address)
+            response.raise_for_status.return_value = None
+            responses.append(response)
+
+        with (
+            patch.object(register.proxy_switch, "proxy_mode", return_value="residential"),
+            patch.object(
+                register.proxy_switch,
+                "effective_proxy_url",
+                return_value="http://proxy.test:8000",
+            ),
+        ):
+            stable = register.probe_claude_residential_continuity(
+                request_get=MagicMock(side_effect=responses)
+            )
+
+        self.assertTrue(stable)
+
+    def test_residential_continuity_rejects_per_connection_rotation(self):
+        responses = []
+        for address in ("203.0.113.10", "203.0.113.11"):
+            response = MagicMock(text=address)
+            response.raise_for_status.return_value = None
+            responses.append(response)
+
+        with (
+            patch.object(register.proxy_switch, "proxy_mode", return_value="residential"),
+            patch.object(
+                register.proxy_switch,
+                "effective_proxy_url",
+                return_value="http://proxy.test:8000",
+            ),
+        ):
+            stable = register.probe_claude_residential_continuity(
+                request_get=MagicMock(side_effect=responses)
+            )
+
+        self.assertFalse(stable)
+
+    def test_residential_continuity_is_inconclusive_when_proxy_is_unreachable(self):
+        with (
+            patch.object(register.proxy_switch, "proxy_mode", return_value="residential"),
+            patch.object(
+                register.proxy_switch,
+                "effective_proxy_url",
+                return_value="http://proxy.test:8000",
+            ),
+        ):
+            stable = register.probe_claude_residential_continuity(
+                request_get=MagicMock(side_effect=OSError("proxy unavailable"))
+            )
+
+        self.assertIsNone(stable)
+
     def test_grid_pick_parser_accepts_colon_and_answer_fallback(self):
         from vision_solver import vision
 
@@ -331,6 +388,30 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(params["website_url"], "https://claude.ai/magic-link")
 
+    def test_http_magic_replay_preserves_arkose_and_replaces_attestation(self):
+        template = {
+            "post_data": json.dumps({
+                "arkose_session_token": "native-arkose",
+                "client_attestation": {"hcaptcha_token": "old-hcaptcha"},
+                "locale": "ja-JP",
+                "source": "claude",
+            })
+        }
+
+        payload = register._build_claude_magic_verify_payload(
+            template, "nonce", "encoded-email", "new-hcaptcha"
+        )
+
+        self.assertEqual(payload["arkose_session_token"], "native-arkose")
+        self.assertEqual(
+            payload["client_attestation"]["hcaptcha_token"], "new-hcaptcha"
+        )
+        self.assertEqual(payload["credentials"], {
+            "method": "nonce",
+            "nonce": "nonce",
+            "encoded_email_address": "encoded-email",
+        })
+
     async def test_loading_magic_link_falls_back_to_http_nonce_verification(self):
         page = MagicMock()
         with (
@@ -455,6 +536,108 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
             page, "https://claude.ai/magic-link#nonce:email"
         )
         http_verify.assert_not_awaited()
+
+    async def test_visible_email_session_still_uses_browser_token_replay(self):
+        page = MagicMock()
+        page._rf_visible_email_submitted = True
+        with (
+            patch.object(
+                register,
+                "prepare_claude_post_magic",
+                AsyncMock(
+                    side_effect=register.ClaudeChallengeError(
+                        "Claude magic-link page stayed in loading state"
+                    )
+                ),
+            ),
+            patch.object(
+                register,
+                "verify_claude_magic_link_with_browser_token",
+                AsyncMock(return_value=True),
+            ) as browser_verify,
+            patch.object(
+                register,
+                "verify_claude_magic_link_http",
+                AsyncMock(return_value=True),
+            ) as raw_http_verify,
+        ):
+            prepared = await register.prepare_claude_post_magic_with_http_fallback(
+                page, "https://claude.ai/magic-link#nonce:email"
+            )
+
+        self.assertTrue(prepared)
+        browser_verify.assert_awaited_once()
+        raw_http_verify.assert_not_awaited()
+
+    async def test_cf_reload_timeout_continues_to_browser_token_replay(self):
+        page = MagicMock()
+        page._rf_magic_verify_status = 403
+        page._rf_magic_verify_response_body = "blocked"
+        page._rf_magic_verify_response_headers = {"cf-mitigated": "challenge"}
+        magic_link = "https://claude.ai/magic-link#nonce:email"
+        with (
+            patch.object(
+                register,
+                "prepare_claude_post_magic",
+                AsyncMock(side_effect=[
+                    register.ClaudeChallengeError(
+                        "Claude native magic-link verification rejected HTTP 403"
+                    ),
+                    register.ClaudeChallengeError(
+                        "Claude magic-link page stayed in loading state"
+                    ),
+                ]),
+            ),
+            patch.object(register, "open_claude_magic_link", AsyncMock()),
+            patch.object(
+                register,
+                "verify_claude_magic_link_with_browser_token",
+                AsyncMock(return_value=True),
+            ) as browser_verify,
+        ):
+            prepared = await register.prepare_claude_post_magic_with_http_fallback(
+                page, magic_link, max_wait=25
+            )
+
+        self.assertTrue(prepared)
+        browser_verify.assert_awaited_once_with(page, magic_link)
+
+    async def test_browser_token_replay_accepts_modern_client_attestation(self):
+        page = MagicMock()
+        page._rf_magic_verify_template = {
+            "url": "https://claude.ai/api/auth/verify_magic_link",
+            "post_data": '{"client_attestation":{"hcaptcha_token":"old"}}',
+        }
+        params = {
+            "sitekey": "site-key",
+            "callback_count": 0,
+            "rqdata": "",
+        }
+        solution = {"token": "new-token", "resp_key": ""}
+        with (
+            patch.object(
+                register, "_extract_claude_hcaptcha_params", AsyncMock(return_value=params)
+            ),
+            patch.object(
+                register, "_solve_claude_hcaptcha_yescaptcha", return_value=solution
+            ),
+            patch.object(
+                register,
+                "_inject_claude_hcaptcha_solution_with_retry",
+                AsyncMock(return_value=False),
+            ),
+            patch.object(
+                register,
+                "_verify_claude_magic_link_browser_api",
+                AsyncMock(return_value=True),
+            ) as replay,
+        ):
+            verified = await register.verify_claude_magic_link_with_browser_token(
+                page, "https://claude.ai/magic-link#nonce:email"
+            )
+
+        self.assertTrue(verified)
+        replay.assert_awaited_once_with(page, solution, magic_link="https://claude.ai/magic-link#nonce:email")
 
     async def test_cleared_hcaptcha_still_requires_magic_link_progress(self):
         page = MagicMock()
@@ -743,6 +926,47 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
         frame.click.assert_not_awaited()
         page.mouse.click.assert_not_awaited()
 
+    def test_turnstile_checkbox_is_found_from_image_edges(self):
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (800, 500), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((120, 210, 143, 233), outline="black", width=2)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+
+        point = register._find_turnstile_checkbox_center(buffer.getvalue())
+
+        self.assertIsNotNone(point)
+        self.assertAlmostEqual(point[0], 131.5, delta=1)
+        self.assertAlmostEqual(point[1], 221.5, delta=1)
+
+    async def test_managed_challenge_clicks_only_detected_checkbox(self):
+        page = MagicMock()
+        page.frames = []
+        page.mouse.click = AsyncMock()
+        page.screenshot = AsyncMock(return_value=b"png")
+        page.evaluate = AsyncMock(side_effect=[True, []])
+
+        with (
+            patch.object(
+                register, "_claude_managed_challenge_present", AsyncMock(return_value=True)
+            ),
+            patch.object(
+                register,
+                "_claude_email_form_ready",
+                AsyncMock(side_effect=[False, True]),
+            ),
+            patch.object(
+                register, "_find_turnstile_checkbox_center", return_value=(131.5, 221.5)
+            ),
+            patch.object(register.asyncio, "sleep", AsyncMock()),
+        ):
+            solved = await register.solve_turnstile(page, max_wait=5)
+
+        self.assertTrue(solved)
+        page.mouse.click.assert_awaited_once_with(131.5, 221.5)
+
     async def test_korean_challenge_redirect_is_managed_challenge(self):
         page = MagicMock()
         page.url = "https://claude.ai/api/challenge_redirect?to=%2Flogin"
@@ -767,6 +991,46 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(present)
 
+    async def test_japanese_security_verification_heading_is_managed_challenge(self):
+        page = MagicMock()
+        page.url = "https://claude.ai/login"
+        page.title = AsyncMock(return_value="Claude")
+        page.locator.return_value.inner_text = AsyncMock(
+            return_value="セキュリティ検証の実行"
+        )
+
+        present = await register._claude_managed_challenge_present(page)
+
+        self.assertTrue(present)
+
+    async def test_birthday_number_inputs_are_filled(self):
+        fields = {}
+        for name in ("month", "day", "year"):
+            locator = MagicMock()
+            locator.first = locator
+            locator.count = AsyncMock(return_value=1)
+            locator.is_visible = AsyncMock(return_value=True)
+            locator.fill = AsyncMock()
+            expected = {"month": "6", "day": "14", "year": "2000"}[name]
+            locator.input_value = AsyncMock(return_value=expected)
+            fields[name] = locator
+
+        page = MagicMock()
+        page.evaluate = AsyncMock(side_effect=[
+            "when is your birthday?",
+            [],
+        ])
+        page.locator.side_effect = lambda selector: next(
+            locator for name, locator in fields.items() if f'name="{name}"' in selector
+        )
+
+        found = await register.handle_birthday_page(page, 2000, 6, 14)
+
+        self.assertTrue(found)
+        fields["month"].fill.assert_awaited_once_with("6")
+        fields["day"].fill.assert_awaited_once_with("14")
+        fields["year"].fill.assert_awaited_once_with("2000")
+
     async def test_login_form_rotates_failed_auto_node(self):
         page = MagicMock()
         page.goto = AsyncMock()
@@ -784,6 +1048,7 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(register, "solve_turnstile", AsyncMock(return_value=False)),
             patch.object(register, "_pick_claude_node", return_value="node-2") as pick,
             patch.object(register, "_record_claude_node") as record,
+            patch.object(register.proxy_switch, "proxy_mode", return_value="clash_auto"),
             patch.object(register.asyncio, "sleep", AsyncMock()),
         ):
             ready = await register.ensure_claude_login_form(
@@ -797,6 +1062,29 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
         record.assert_called_once_with("node-2")
         page.context.clear_cookies.assert_awaited_once()
         page.goto.assert_awaited_once_with(register.CLAUDE_LOGIN_URL, timeout=60000)
+
+    async def test_login_form_leaves_residential_rotation_to_new_profile(self):
+        page = MagicMock()
+        page.screenshot = AsyncMock()
+        page.context.clear_cookies = AsyncMock()
+
+        with (
+            patch.object(register, "CLAUDE_PROXY_AUTO", True),
+            patch.object(register, "CLAUDE_PROXY_NODE", "residential"),
+            patch.object(
+                register, "_claude_email_form_ready", AsyncMock(return_value=False)
+            ),
+            patch.object(register, "solve_turnstile", AsyncMock(return_value=False)),
+            patch.object(register.proxy_switch, "proxy_mode", return_value="residential"),
+            patch.object(register, "_pick_claude_node") as pick,
+        ):
+            ready = await register.ensure_claude_login_form(
+                page, challenge_wait=0, node_retries=3, manual_timeout=0
+            )
+
+        self.assertFalse(ready)
+        pick.assert_not_called()
+        page.context.clear_cookies.assert_not_awaited()
 
     async def test_manual_handoff_resumes_when_login_form_appears(self):
         page = MagicMock()

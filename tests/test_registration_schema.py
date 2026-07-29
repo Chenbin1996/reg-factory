@@ -71,6 +71,7 @@ class RegistrationSchemaTests(unittest.TestCase):
         self.assertTrue(args["--latest-rt"]["default"])
         self.assertIn("--client-id", args)
         self.assertIn("yyds", args["--provider"]["choices"])
+        self.assertIn("--domain", args)
         self.assertLess(
             next(i for i, item in enumerate(_script("register_claude")["args"]) if item["flag"] == "--provider"),
             6,
@@ -92,6 +93,8 @@ class RegistrationSchemaTests(unittest.TestCase):
         self.assertTrue(
             {
                 "CLAUDE_HCAPTCHA_SOLVE_RETRIES",
+                "CLAUDE_RESIDENTIAL_PROFILE_RETRIES",
+                "CLAUDE_ALLOW_ROTATING_PROXY",
                 "CLAUDE_VISION_API_BASE",
                 "CLAUDE_VISION_API_KEY",
                 "CLAUDE_VISION_MODEL",

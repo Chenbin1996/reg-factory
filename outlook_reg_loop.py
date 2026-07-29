@@ -341,8 +341,8 @@ def clash_proxy_from_env():
 BB_API = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
 # Match bs_register_step1 — user's BitBrowser has Chromium 146 not 130.
 BB_CORE_VERSION = (os.environ.get("BB_CORE_VERSION") or "146").strip()
-OUTLOOK_BROWSER_FALLBACK_CORE_VERSION = os.environ.get(
-    "OUTLOOK_BROWSER_FALLBACK_CORE_VERSION", "130"
+OUTLOOK_BROWSER_FALLBACK_CORE_VERSION = (
+    os.environ.get("OUTLOOK_BROWSER_FALLBACK_CORE_VERSION") or "130"
 ).strip()
 
 

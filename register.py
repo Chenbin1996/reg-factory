@@ -8,6 +8,7 @@ Usage: python register.py [--count N]
 
 import argparse
 import asyncio
+import io
 import json
 import os
 import random
@@ -28,8 +29,9 @@ from playwright.async_api import async_playwright
 
 from bitbrowser import BitBrowser
 try:
-    from common import proxy_switch
+    from common import direct_proxy, proxy_switch
 except Exception:
+    direct_proxy = None
     proxy_switch = None
 from common import human_mouse as _hm
 try:
@@ -334,6 +336,42 @@ def _pick_claude_node(exclude=None):
 
 class ClaudeChallengeError(RuntimeError):
     """Claude login is still behind a Cloudflare Managed Challenge."""
+
+
+class ClaudeEgressRejected(ClaudeChallengeError):
+    """The residential egress failed before Claude accepted the email."""
+
+
+def probe_claude_residential_continuity(
+    *, samples=2, attempts=4, timeout=12, request_get=None
+):
+    """Confirm that separate proxy connections keep one exit IP for login flows."""
+    if proxy_switch is None or proxy_switch.proxy_mode() != "residential":
+        return True
+    proxy_url = proxy_switch.effective_proxy_url()
+    if not proxy_url:
+        return None
+    request_get = request_get or requests.get
+    observed = []
+    proxies = {"http": proxy_url, "https": proxy_url}
+    for _ in range(max(samples, attempts)):
+        try:
+            response = request_get(
+                "https://api.ipify.org",
+                proxies=proxies,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            address = (response.text or "").strip()
+            if address:
+                observed.append(address)
+        except Exception:
+            continue
+        if len(set(observed)) > 1:
+            return False
+        if len(observed) >= samples:
+            return True
+    return None
 
 
 def claude_browser_fingerprint():
@@ -2535,6 +2573,7 @@ async def _claude_managed_challenge_present(page):
         "人間であることを確認中",
         "私はロボットではありません",
         "数秒かかる場合があります",
+        "セキュリティ検証の実行",
         "正在验证您是否是真人",
         "正在確認您是否為真人",
         "正在确认您是真人",
@@ -2547,6 +2586,59 @@ async def _claude_managed_challenge_present(page):
         "verifica che tu sia umano",
     )
     return any(marker in title or marker in body for marker in markers)
+
+
+def _find_turnstile_checkbox_center(image_bytes):
+    """Locate an explicit dark square checkbox without relying on page coordinates."""
+    try:
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(image_bytes)).convert("L")
+    except Exception:
+        return None
+    width, height = image.size
+    pixels = image.load()
+    dark = set()
+    for y in range(max(0, int(height * 0.2)), min(height, int(height * 0.8))):
+        for x in range(max(0, int(width * 0.05)), min(width, int(width * 0.5))):
+            if pixels[x, y] < 90:
+                dark.add((x, y))
+
+    while dark:
+        seed = dark.pop()
+        component = [seed]
+        stack = [seed]
+        while stack:
+            x, y = stack.pop()
+            for neighbor in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if neighbor in dark:
+                    dark.remove(neighbor)
+                    component.append(neighbor)
+                    stack.append(neighbor)
+        xs = [point[0] for point in component]
+        ys = [point[1] for point in component]
+        left, right = min(xs), max(xs)
+        top, bottom = min(ys), max(ys)
+        box_width = right - left + 1
+        box_height = bottom - top + 1
+        if not (16 <= box_width <= 36 and 16 <= box_height <= 36):
+            continue
+        if not (0.75 <= box_width / box_height <= 1.25):
+            continue
+        points = set(component)
+        horizontal_edges = sum(
+            (x, y) in points
+            for x in range(left, right + 1)
+            for y in (top, bottom)
+        )
+        vertical_edges = sum(
+            (x, y) in points
+            for y in range(top, bottom + 1)
+            for x in (left, right)
+        )
+        if horizontal_edges >= box_width and vertical_edges >= box_height:
+            return ((left + right) / 2, (top + bottom) / 2)
+    return None
 
 
 async def solve_turnstile(page, max_wait=60):
@@ -2635,6 +2727,21 @@ async def solve_turnstile(page, max_wait=60):
                             break
                     except Exception as e:
                         print(f"  [cf] checkbox click failed: {e}")
+                if not checkbox_clicked:
+                    try:
+                        screenshot = await page.screenshot(type="png")
+                        point = await asyncio.to_thread(
+                            _find_turnstile_checkbox_center, screenshot
+                        )
+                        if point:
+                            await page.mouse.click(*point)
+                            checkbox_clicked = True
+                            print(
+                                "  [cf] clicked screenshot-detected "
+                                "Cloudflare checkbox"
+                            )
+                    except Exception as e:
+                        print(f"  [cf] screenshot checkbox detection failed: {e}")
             await asyncio.sleep(2)
         print("  [cf] Managed Challenge did not clear")
         return False
@@ -2823,6 +2930,7 @@ async def ensure_claude_login_form(
             and allow_node_rotation
             and CLAUDE_PROXY_AUTO
             and proxy_switch is not None
+            and proxy_switch.proxy_mode() != "residential"
         )
         if not can_rotate:
             break
@@ -3051,7 +3159,36 @@ def _solve_claude_hcaptcha_yescaptcha(params):
     return None
 
 
-def _verify_claude_magic_link_http(magic_link):
+def _build_claude_magic_verify_payload(template, nonce, encoded_email, hcaptcha_token):
+    try:
+        payload = json.loads((template or {}).get("post_data") or "{}")
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["credentials"] = {
+        "method": "nonce",
+        "nonce": nonce,
+        "encoded_email_address": encoded_email,
+    }
+    payload.setdefault("locale", "en-US")
+    attestation = payload.get("client_attestation")
+    if isinstance(attestation, str):
+        payload["client_attestation"] = hcaptcha_token
+    else:
+        attestation = dict(attestation or {})
+        token_key = next(
+            (key for key in attestation if "token" in key.lower()),
+            "hcaptcha_token",
+        )
+        attestation[token_key] = hcaptcha_token
+        payload["client_attestation"] = attestation
+    payload.setdefault("source", "claude")
+    payload.pop("oauth_client_id", None)
+    return payload
+
+
+def _verify_claude_magic_link_http(magic_link, request_template=None, browser_cookies=()):
     """Verify a magic-link nonce with a YesCaptcha attestation over Chrome TLS."""
     from urllib.parse import urlsplit
 
@@ -3074,6 +3211,16 @@ def _verify_claude_magic_link_http(magic_link):
                 "http": proxy_switch.effective_proxy_url(),
                 "https": proxy_switch.effective_proxy_url(),
             }
+        for cookie in browser_cookies or ():
+            try:
+                session.cookies.set(
+                    cookie.get("name"),
+                    cookie.get("value"),
+                    domain=cookie.get("domain") or ".claude.ai",
+                    path=cookie.get("path") or "/",
+                )
+            except Exception:
+                pass
         if not _warm_claude_http_session(session, "magic-http"):
             return None
         solution = _solve_claude_hcaptcha_yescaptcha({
@@ -3085,22 +3232,28 @@ def _verify_claude_magic_link_http(magic_link):
         })
         if not solution:
             return None
-        session.headers.update({
+        captured_headers = (request_template or {}).get("headers") or {}
+        replay_headers = {
+            key: value for key, value in captured_headers.items()
+            if key.lower() == "content-type"
+            or key.lower().startswith("anthropic-")
+            or key.lower().startswith("x-")
+        }
+        replay_headers.update({
             "user-agent": solution.get("user_agent") or user_agent,
             "content-type": "application/json",
         })
+        session.headers.update(replay_headers)
+        request_payload = _build_claude_magic_verify_payload(
+            request_template,
+            nonce,
+            encoded_email,
+            solution["token"],
+        )
         response = session.post(
-            "https://claude.ai/api/auth/verify_magic_link",
-            json={
-                "credentials": {
-                    "method": "nonce",
-                    "nonce": nonce,
-                    "encoded_email_address": encoded_email,
-                },
-                "locale": "en-US",
-                "arkose_session_token": solution["token"],
-                "source": "claude",
-            },
+            (request_template or {}).get("url")
+            or "https://claude.ai/api/auth/verify_magic_link",
+            json=request_payload,
             timeout=30,
         )
         data = _claude_json_response(response) or {}
@@ -3123,7 +3276,19 @@ def _verify_claude_magic_link_http(magic_link):
 
 
 async def verify_claude_magic_link_http(page, magic_link):
-    verified = await asyncio.to_thread(_verify_claude_magic_link_http, magic_link)
+    request_template = getattr(
+        page, "__dict__", {}
+    ).get("_rf_magic_verify_template") or {}
+    try:
+        browser_cookies = await page.context.cookies()
+    except Exception:
+        browser_cookies = []
+    verified = await asyncio.to_thread(
+        _verify_claude_magic_link_http,
+        magic_link,
+        request_template,
+        browser_cookies,
+    )
     if not verified:
         return False
     cookies = []
@@ -3251,11 +3416,13 @@ async def _verify_claude_magic_link_browser_api(page, solution, magic_link=None)
         "nonce": nonce,
         "encoded_email_address": encoded_email,
     }
-    if not request_payload.get("arkose_session_token"):
-        print("  [magic-browser] no native Arkose token available for replay")
+    existing_attestation = request_payload.get("client_attestation")
+    if not template or not (
+        request_payload.get("arkose_session_token") or existing_attestation
+    ):
+        print("  [magic-browser] no captured client attestation available for replay")
         return False
     request_payload.setdefault("locale", "en-US")
-    existing_attestation = request_payload.get("client_attestation")
     if isinstance(existing_attestation, str):
         request_payload["client_attestation"] = solution["token"]
     else:
@@ -3655,7 +3822,12 @@ async def solve_claude_hcaptcha(page, manual_timeout=None):
 async def verify_claude_magic_link_with_browser_token(page, magic_link=None):
     """Verify the pending nonce in its original browser session."""
     params = await _extract_claude_hcaptcha_params(page, magic_link=magic_link)
-    if not params.get("sitekey") or not params.get("callback_count"):
+    captured_template = bool(
+        getattr(page, "__dict__", {}).get("_rf_magic_verify_template")
+    )
+    if not params.get("sitekey") or not (
+        params.get("callback_count") or captured_template
+    ):
         return False
     print(
         f"  [magic-browser] token fallback sitekey={params['sitekey']} "
@@ -3916,9 +4088,12 @@ async def prepare_claude_post_magic_with_http_fallback(page, magic_link, max_wai
                 "reloading the magic link once"
             )
             await open_claude_magic_link(page, magic_link)
-            return await prepare_claude_post_magic(
-                page, max_wait=max(max_wait, 45)
-            )
+            try:
+                return await prepare_claude_post_magic(
+                    page, max_wait=max(max_wait, 45)
+                )
+            except ClaudeChallengeError as reload_error:
+                error = reload_error
         recoverable = (
             "stayed in loading state",
             "hCaptcha was not solved",
@@ -3929,14 +4104,14 @@ async def prepare_claude_post_magic_with_http_fallback(page, magic_link, max_wai
             "  [magic-http] browser magic-link verification incomplete; "
             "trying token verification in the pending browser session"
         )
+        if await verify_claude_magic_link_with_browser_token(page, magic_link):
+            return True
         if getattr(page, "__dict__", {}).get("_rf_visible_email_submitted"):
             print(
                 "  [magic-http] pending browser session requires native visual "
-                "client attestation; skipping incompatible HTTP fallback"
+                "client attestation; raw HTTP fallback is incompatible"
             )
             raise
-        if await verify_claude_magic_link_with_browser_token(page, magic_link):
-            return True
         print("  [magic-http] browser token fallback failed; trying HTTP nonce verification")
         if await verify_claude_magic_link_http(page, magic_link):
             return True
@@ -3987,6 +4162,33 @@ async def handle_birthday_page(page, birth_year, birth_month, birth_day):
               f"aria=\"{el['ariaLabel']}\" haspopup=\"{el['ariaHaspopup']}\" "
               f"id=\"{el['id']}\" name=\"{el['name']}\" type=\"{el['type']}\" "
               f"state=\"{el['dataState']}\" class=\"{el['className'][:60]}\"")
+
+    # Current Claude onboarding uses react-date-picker with three number inputs.
+    # Fill by semantic name/label so localized placeholder text does not matter.
+    number_fields = (
+        ("month", birth_month),
+        ("day", birth_day),
+        ("year", birth_year),
+    )
+    filled_number_fields = 0
+    for field, value in number_fields:
+        locator = page.locator(
+            f'input[name="{field}"], input[id*="{field}" i], '
+            f'input[aria-label*="{field}" i]'
+        ).first
+        try:
+            if await locator.count() and await locator.is_visible():
+                await locator.fill(str(value))
+                if (await locator.input_value()).strip() == str(value):
+                    filled_number_fields += 1
+        except Exception as e:
+            print(f"    fill {field} failed: {str(e)[:80]}")
+    if filled_number_fields == len(number_fields):
+        print(
+            "  [birthday] number inputs: "
+            f"{birth_month:02d}/{birth_day:02d}/{birth_year}"
+        )
+        return True
 
     # method 1: standard <select>
     selects = page.locator('select')
@@ -5000,6 +5202,7 @@ async def register(
     print(f"  ws: {ws_url}")
 
     session_key = None
+    email_submitted = False
     try:
         async with async_playwright() as p:
             print("[2/6] connect Playwright...")
@@ -5154,13 +5357,25 @@ async def register(
             except Exception:
                 pass
             login_loaded = False
-            for goto_attempt in range(3):
+            residential_login = bool(
+                proxy_switch is not None
+                and proxy_switch.proxy_mode() == "residential"
+            )
+            login_attempts = 1 if residential_login else 3
+            login_timeout = 30000 if residential_login else 60000
+            for goto_attempt in range(login_attempts):
                 try:
-                    await page.goto(CLAUDE_LOGIN_URL, timeout=60000)
+                    await page.goto(
+                        CLAUDE_LOGIN_URL,
+                        timeout=login_timeout,
+                        wait_until="domcontentloaded",
+                    )
                     login_loaded = True
                     break
                 except Exception as e:
-                    print(f"  Claude login navigation retry {goto_attempt + 1}/3: "
+                    print(
+                        f"  Claude login navigation retry "
+                        f"{goto_attempt + 1}/{login_attempts}: "
                           f"{str(e)[:120]}")
                     await asyncio.sleep(3 + goto_attempt)
             if login_loaded:
@@ -5173,12 +5388,16 @@ async def register(
             # can redirect to another challenge after the first field appears.
             print(f"  email: {email}")
             magic_requested_at = await submit_claude_email(
-                page, email, allow_node_rotation=True, attempts=2
+                page,
+                email,
+                allow_node_rotation=True,
+                attempts=1 if residential_login else 2,
             )
             if not magic_requested_at:
                 raise ClaudeChallengeError(
                     "Claude email form could not be submitted after verification"
                 )
+            email_submitted = True
             check_timeout()
 
             # Poll the selected mailbox source for the magic link.
@@ -5646,20 +5865,9 @@ async def register(
             # 最终检查
             url_path = _urlparse(page.url).path
             if not ('/chat' in url_path or '/new' in url_path):
-                # 尝试直接从当前浏览器 cookie 读取 sessionKey
-                try:
-                    cookies = await context.cookies()
-                    sk_cookie = next((c["value"] for c in cookies if c["name"] == "sessionKey"), None)
-                    if sk_cookie:
-                        print(f"  found sessionKey in cookies: {sk_cookie[:60]}...")
-                        session_key = sk_cookie
-                        await save_cookies(context, profile_id, email=email, email_password=email_password)
-                        mark_email_used(email, email_password)
-                        return session_key
-                except Exception as e:
-                    print(f"  cookie read error: {e}")
-
-                print("  ERROR: not on chat page, not saving cookies")
+                # A sessionKey is issued before onboarding finishes. Treating that
+                # cookie alone as success leaves an unusable account stuck on DOB.
+                print("  ERROR: onboarding did not reach a chat route; not saving cookies")
                 mark_email_error(email, email_password, "onboarding_stuck")
                 return None
 
@@ -5672,15 +5880,35 @@ async def register(
                 print("  no sessionKey in cookies")
                 mark_email_error(email, email_password, "no_session_key")
 
+    except ClaudeEgressRejected:
+        raise
     except ClaudeChallengeError as e:
+        if (
+            not email_submitted
+            and proxy_switch is not None
+            and proxy_switch.proxy_mode() == "residential"
+        ):
+            raise ClaudeEgressRejected(str(e)) from e
         print(f"\n  CLAUDE CHALLENGE: {e}")
         if email:
             print(f"  mailbox retained for retry: {email}")
     except TimeoutError as e:
+        if (
+            not email_submitted
+            and proxy_switch is not None
+            and proxy_switch.proxy_mode() == "residential"
+        ):
+            raise ClaudeEgressRejected(str(e)) from e
         print(f"\n  TIMEOUT: {e}")
         if email:
             mark_email_error(email, email_password, f"timeout")
     except Exception as e:
+        if (
+            not email_submitted
+            and proxy_switch is not None
+            and proxy_switch.proxy_mode() == "residential"
+        ):
+            raise ClaudeEgressRejected(str(e)) from e
         print(f"\n  ERROR: {e}")
         import traceback
         traceback.print_exc()
@@ -5733,6 +5961,11 @@ async def main():
         choices=("yyds", "gptmail", "cfmail", "moemail", "custom"),
         default=None,
         help="temporary email provider; yyds uses YYDS_API_KEY",
+    )
+    parser.add_argument(
+        "--domain",
+        default="",
+        help="optional temporary email domain; leave blank for provider selection",
     )
     parser.add_argument("--node", type=str, default="auto",
                         help="Clash 出口节点绕 claude 区域封锁：none=不走代理 / auto=自动探测 / 具体节点名")
@@ -5792,6 +6025,31 @@ async def main():
         latest_rt=args.latest_rt,
     )
     use_temp_email = bool(temp_email_provider)
+
+    residential = bool(
+        proxy_switch is not None and proxy_switch.proxy_mode() == "residential"
+    )
+    allow_rotating_proxy = str(
+        os.environ.get("CLAUDE_ALLOW_ROTATING_PROXY", "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if residential and not allow_rotating_proxy:
+        print("  [proxy] checking residential session continuity...")
+        continuity = await asyncio.to_thread(probe_claude_residential_continuity)
+        if continuity is False:
+            print(
+                "  [proxy] ERROR: the residential endpoint changes IP between "
+                "connections; Claude login requires a sticky session"
+            )
+            print(
+                "  [proxy] generate Sticky endpoints in the provider console and "
+                "put them in REG_FACTORY_PROXY or REG_FACTORY_PROXY_POOL"
+            )
+            return 2
+        if continuity is None:
+            print(
+                "  [proxy] WARNING: could not verify residential session continuity; "
+                "continuing with the configured endpoint"
+            )
 
     print("=" * 50)
     print("  Claude.ai Auto Register")
@@ -5867,7 +6125,8 @@ async def main():
                 print(f"\n  email from file: {email}")
 
             ts = datetime.now().strftime("%m%d_%H%M%S") + f"_{i}"
-            name = f"claude_{ts}"
+            base_name = f"claude_{ts}"
+            name = base_name
             temp_mailbox = None
             if use_temp_email:
                 try:
@@ -5875,7 +6134,9 @@ async def main():
 
                     print(f"\n  create {temp_email_provider} temp mailbox...")
                     temp_mailbox = await asyncio.to_thread(
-                        create_mailbox, provider=temp_email_provider
+                        create_mailbox,
+                        provider=temp_email_provider,
+                        domain=(args.domain or "").strip() or None,
                     )
                     email = temp_mailbox["email"]
                     print(f"  temp mailbox: {email}")
@@ -5886,61 +6147,113 @@ async def main():
                             "index": i, "profile": name, "status": "ERROR", "sk": None
                         })
                     return
-            print(f"\n  create browser: {name}")
-            profile_id = None
-            browser_proxy = claude_browser_proxy_fields() if (CLAUDE_PROXY_NODE or CLAUDE_PROXY_AUTO) else {}
-            for _retry in range(3):
-                try:
-                    profile_id = bb.create_browser(
-                        name=name,
-                        browserFingerPrint=claude_browser_fingerprint(),
-                        **browser_proxy,
-                    )
-                    break
-                except Exception as e:
-                    err_msg = str(e)
-                    if '最大创建窗口数' in err_msg or '超过' in err_msg:
-                        print(f"\n  窗口数量已满；为避免误删已有浏览器资料，停止本任务")
-                        break
-                    elif 'TLS' in err_msg or 'socket' in err_msg or 'ECONNRESET' in err_msg or 'network' in err_msg.lower() or 'Timeout' in err_msg or 'timeout' in err_msg:
-                        print(f"  create browser network error (retry {_retry+1}/3): {err_msg[:80]}")
-                        await asyncio.sleep(5)
-                        continue
-                    else:
-                        raise
-            if not profile_id:
-                print(f"  FATAL: create browser failed after 3 retries")
-                async with results_lock:
-                    results.append({"index": i, "profile": name, "status": "ERROR", "sk": None})
-                return
-            if browser_proxy.get("host"):
-                print(f"  [proxy] BitBrowser via {browser_proxy['host']}:{browser_proxy['port']} "
-                      f"(mode={proxy_switch.proxy_mode() if proxy_switch else 'legacy'})")
             try:
-                sk = await register(
-                    profile_id,
-                    email,
-                    email_password,
-                    email_token,
-                    email_client_id,
-                    temp_mailbox=temp_mailbox,
+                configured_profile_attempts = int(
+                    os.environ.get("CLAUDE_RESIDENTIAL_PROFILE_RETRIES", "3") or 3
                 )
-                async with results_lock:
-                    results.append({"index": i, "profile": name, "status": "OK" if sk else "FAIL", "sk": sk})
-            except Exception as e:
-                print(f"  FATAL: {e}")
-                if profile_id:
+            except ValueError:
+                configured_profile_attempts = 3
+            profile_attempts = max(1, configured_profile_attempts) if residential else 1
+            sk = None
+            result_status = "FAIL"
+
+            for profile_attempt in range(1, profile_attempts + 1):
+                name = (
+                    base_name if profile_attempt == 1
+                    else f"{base_name}_r{profile_attempt}"
+                )
+                print(f"\n  create browser: {name}")
+                profile_id = None
+                browser_proxy = (
+                    claude_browser_proxy_fields()
+                    if (CLAUDE_PROXY_NODE or CLAUDE_PROXY_AUTO) else {}
+                )
+                for _retry in range(3):
                     try:
-                        bb.close_browser(profile_id)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(2)
-                    try:
-                        bb.delete_browser(profile_id)
-                    except Exception:
-                        pass
-                async with results_lock:
-                    results.append({"index": i, "profile": name, "status": "ERROR", "sk": None})
+                        profile_id = bb.create_browser(
+                            name=name,
+                            browserFingerPrint=claude_browser_fingerprint(),
+                            **browser_proxy,
+                        )
+                        break
+                    except Exception as e:
+                        err_msg = str(e)
+                        if '最大创建窗口数' in err_msg or '超过' in err_msg:
+                            print("\n  窗口数量已满；为避免误删已有浏览器资料，停止本任务")
+                            break
+                        if any(marker in err_msg.lower() for marker in (
+                            'tls', 'socket', 'econnreset', 'network', 'timeout'
+                        )):
+                            print(
+                                f"  create browser network error "
+                                f"(retry {_retry+1}/3): {err_msg[:80]}"
+                            )
+                            await asyncio.sleep(5)
+                            continue
+                        raise
+                if not profile_id:
+                    print("  FATAL: create browser failed after 3 retries")
+                    result_status = "ERROR"
+                    break
+                if browser_proxy.get("host"):
+                    print(
+                        f"  [proxy] BitBrowser via {browser_proxy['host']}:"
+                        f"{browser_proxy['port']} (mode="
+                        f"{proxy_switch.proxy_mode() if proxy_switch else 'legacy'})"
+                    )
+                try:
+                    sk = await register(
+                        profile_id,
+                        email,
+                        email_password,
+                        email_token,
+                        email_client_id,
+                        temp_mailbox=temp_mailbox,
+                    )
+                    result_status = "OK" if sk else "FAIL"
+                    break
+                except ClaudeEgressRejected as e:
+                    result_status = "ERROR"
+                    if profile_attempt >= profile_attempts:
+                        print(f"  FATAL: residential egress retries exhausted: {e}")
+                        break
+                    rotation = await asyncio.to_thread(proxy_switch.rotate_proxy)
+                    if rotation.get("ok"):
+                        print(
+                            "  [proxy] rotated residential pool before creating "
+                            "the next browser session"
+                        )
+                    else:
+                        print(
+                            "  [proxy] residential rotation did not produce an "
+                            f"endpoint: {rotation.get('error') or 'not configured'}"
+                        )
+                    print(
+                        f"  [proxy] residential profile rejected before email submit; "
+                        f"creating a fresh session ({profile_attempt + 1}/{profile_attempts})"
+                    )
+                except Exception as e:
+                    print(f"  FATAL: {e}")
+                    if profile_id:
+                        try:
+                            bb.close_browser(profile_id)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(2)
+                        try:
+                            bb.delete_browser(profile_id)
+                        except Exception:
+                            pass
+                    result_status = "ERROR"
+                    break
+
+            async with results_lock:
+                results.append({
+                    "index": i,
+                    "profile": name,
+                    "status": result_status,
+                    "sk": sk,
+                })
 
     await asyncio.gather(*[run_one(i) for i in range(1, total + 1)])
 

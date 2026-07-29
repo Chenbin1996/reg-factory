@@ -121,6 +121,30 @@ class ProxySwitchTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(json.loads(request.data), {"name": "fixed-us"})
 
+    def test_fixed_mode_repairs_repeated_utf8_mojibake(self):
+        actual = "🇯🇵 日本 | 05"
+        broken = actual.encode("utf-8").decode("latin-1")
+        broken = broken.encode("utf-8").decode("latin-1")
+        env = {
+            "PROXY_MODE": "clash_fixed",
+            "CLASH_FIXED_NODE": broken,
+        }
+        with patch.object(
+            proxy_switch, "available_clash_nodes", return_value=[actual]
+        ):
+            self.assertEqual(proxy_switch.resolve_fixed_node(env), actual)
+
+    def test_fixed_mode_reports_removed_node_before_controller_put(self):
+        env = {
+            "PROXY_MODE": "clash_fixed",
+            "CLASH_FIXED_NODE": "removed-node",
+        }
+        with patch.object(
+            proxy_switch, "available_clash_nodes", return_value=["active-node"]
+        ):
+            with self.assertRaisesRegex(ValueError, "不存在或已下线"):
+                proxy_switch.ensure_proxy_mode(env)
+
     def test_auto_rotation_selects_next_responsive_node(self):
         with patch.dict(os.environ, {"PROXY_MODE": "clash_auto"}, clear=True):
             with patch.object(proxy_switch, "concrete_nodes", return_value=["a", "b", "c"]):

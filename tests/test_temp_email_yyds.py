@@ -55,6 +55,45 @@ class YydsMailTests(unittest.TestCase):
         self.assertEqual(mailbox["id"], "box-1")
         self.assertEqual(sess.calls[0][1], "https://maliapi.215.im/v1/accounts")
 
+    def test_domain_picker_uses_current_health_fields_and_prefers_exact_mx(self):
+        sess = FakeSession([
+            FakeResponse(data={"data": {"domains": [
+                {
+                    "domain": "unhealthy.example",
+                    "isPublic": True,
+                    "isVerified": True,
+                    "isMxValid": False,
+                    "dnsRecords": {"receivingReady": False},
+                },
+                {
+                    "domain": "wildcard.example",
+                    "isPublic": True,
+                    "isVerified": True,
+                    "isMxValid": True,
+                    "dnsRecords": {
+                        "receivingReady": True,
+                        "wildcardMxValid": True,
+                    },
+                },
+                {
+                    "domain": "exact.example",
+                    "isPublic": True,
+                    "isVerified": True,
+                    "isMxValid": True,
+                    "dnsRecords": {
+                        "receivingReady": True,
+                        "wildcardMxValid": False,
+                    },
+                },
+            ]}}),
+        ])
+
+        domain = temp_email._yyds_pick_domain(
+            "AC-test", "https://maliapi.215.im", sess
+        )
+
+        self.assertEqual(domain, "exact.example")
+
     def test_create_rotates_shared_domain_after_403(self):
         sess = FakeSession([
             FakeResponse(data={"domains": [

@@ -261,13 +261,43 @@ def concrete_nodes(group=None, environ=None):
     return _filter_concrete_nodes(list_nodes(group, environ), environ)
 
 
+def _mojibake_candidates(value: str):
+    """Yield common repeated UTF-8-as-Latin-1 repairs for legacy .env values."""
+    current = str(value or "").strip()
+    seen = set()
+    for _ in range(3):
+        if not current or current in seen:
+            break
+        seen.add(current)
+        yield current
+        try:
+            repaired = current.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            break
+        if repaired == current:
+            break
+        current = repaired
+
+
+def resolve_fixed_node(environ=None) -> str:
+    """Resolve a configured fixed node, repairing legacy mojibake when possible."""
+    requested = fixed_node(environ)
+    if not requested:
+        raise ValueError("固定节点模式需要配置 CLASH_FIXED_NODE")
+    nodes = available_clash_nodes(environ=environ)
+    for candidate in _mojibake_candidates(requested):
+        if candidate in nodes:
+            return candidate
+    raise ValueError(
+        f"固定节点不存在或已下线: {requested!r}；请在代理设置中重新选择节点"
+    )
+
+
 def ensure_proxy_mode(environ=None):
     """Apply mode constraints before a task starts."""
     mode = proxy_mode(environ)
     if mode == "clash_fixed":
-        node = fixed_node(environ)
-        if not node:
-            raise ValueError("固定节点模式需要配置 CLASH_FIXED_NODE")
+        node = resolve_fixed_node(environ)
         set_node(node, force=True, environ=environ)
     return {
         "mode": mode,

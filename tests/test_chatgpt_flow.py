@@ -12,6 +12,93 @@ import oauth_codex
 
 
 class ChatGPTFlowTests(unittest.TestCase):
+    def test_auth_step_waits_through_blank_redirect(self):
+        page = MagicMock()
+        page.url = "https://chatgpt.com/auth/login"
+        email = MagicMock()
+        email.first = email
+        email.count = AsyncMock(return_value=0)
+        email.is_visible = AsyncMock(return_value=False)
+        code = MagicMock()
+        code.first = code
+        code.count = AsyncMock(side_effect=[0, 1])
+        code.is_visible = AsyncMock(return_value=True)
+        password = MagicMock()
+        password.first = password
+        password.count = AsyncMock(return_value=0)
+        password.is_visible = AsyncMock(return_value=False)
+        body = MagicMock()
+        body.inner_text = AsyncMock(return_value="")
+
+        def locator(selector):
+            if 'type="email"' in selector:
+                return email
+            if 'name="code"' in selector:
+                return code
+            if 'type="password"' in selector:
+                return password
+            return body
+
+        page.locator.side_effect = locator
+        with (
+            patch.object(register_chatgpt, "detect_challenge", AsyncMock(return_value=False)),
+            patch.object(register_chatgpt.asyncio, "sleep", AsyncMock()),
+        ):
+            step = asyncio.run(
+                register_chatgpt.wait_for_chatgpt_auth_step(page, timeout=1)
+            )
+
+        self.assertEqual(step, "code")
+
+    def test_hidden_turnstile_response_is_detected_as_challenge(self):
+        challenge = MagicMock()
+        challenge.count = AsyncMock(return_value=1)
+        page = MagicMock()
+        page.locator.return_value = challenge
+
+        detected = asyncio.run(register_chatgpt.detect_challenge(page))
+
+        self.assertTrue(detected)
+        self.assertIn(
+            'input[name="cf-turnstile-response"]',
+            page.locator.call_args.args[0],
+        )
+
+    def test_onboarding_rejection_propagates_from_finish_click(self):
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=1)
+        button.get_attribute = AsyncMock(return_value=None)
+        button.click = AsyncMock()
+        page = MagicMock()
+        page.url = "https://auth.openai.com/about-you"
+        page.get_by_role.return_value = button
+        auth_monitor = MagicMock()
+        auth_monitor.clear = AsyncMock()
+
+        with (
+            patch.object(register_chatgpt.asyncio, "sleep", AsyncMock()),
+            patch.object(
+                register_chatgpt,
+                "_raise_onboarding_error",
+                AsyncMock(
+                    side_effect=register_chatgpt.OnboardingRejected(
+                        "unsupported_email: domain rejected"
+                    )
+                ),
+            ),
+        ):
+            with self.assertRaises(register_chatgpt.OnboardingRejected):
+                asyncio.run(
+                    register_chatgpt.click_finish_button(
+                        page,
+                        0,
+                        'input[name="birthday"]',
+                        auth_monitor=auth_monitor,
+                        max_wait=0.1,
+                    )
+                )
+
     def setUp(self):
         self.proxy_env = patch.dict(os.environ, {"PROXY_MODE": "clash_auto"})
         self.proxy_env.start()

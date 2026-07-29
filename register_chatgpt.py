@@ -608,6 +608,53 @@ async def chatgpt_email_submission_advanced(page):
     return True
 
 
+async def wait_for_chatgpt_auth_step(page, timeout=20):
+    """Wait through the blank redirect between email submit and the next form."""
+    deadline = time.monotonic() + max(0, timeout)
+    email_visible_since = None
+    while time.monotonic() < deadline:
+        try:
+            email_input = page.locator(
+                'input[type="email"], input[name="email"]'
+            ).first
+            if await email_input.count() and await email_input.is_visible():
+                # The old form can remain visible briefly while auth.openai.com
+                # replaces the document. Requiring a stable form avoids retrying
+                # against a locator that is detached by a late CF transition.
+                if email_visible_since is None:
+                    email_visible_since = time.monotonic()
+                elif time.monotonic() - email_visible_since >= min(3, timeout):
+                    return "email"
+            else:
+                email_visible_since = None
+            code_input = page.locator(
+                'input[name="code"], input[autocomplete="one-time-code"], '
+                'input[inputmode="numeric"]'
+            ).first
+            if await code_input.count() and await code_input.is_visible():
+                return "code"
+            password_input = page.locator('input[type="password"]').first
+            if await password_input.count() and await password_input.is_visible():
+                return "password"
+            if await detect_challenge(page):
+                return "challenge"
+            current_url = (page.url or "").lower()
+            body = (await page.locator("body").inner_text(timeout=2000)).strip().lower()
+            if any(marker in current_url for marker in (
+                "email-verification", "about-you", "onboarding",
+            )):
+                return "advanced"
+            if body and any(marker in body for marker in (
+                "check your inbox", "確認コード", "検証コード",
+                "verification code", "verify your email",
+            )):
+                return "code"
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+    return "unknown"
+
+
 def should_use_browser_mail_fallback(has_graph_token, code_try, total_tries=3):
     """Use the slower Outlook UI only after the final Graph attempt fails."""
     return bool(has_graph_token and code_try >= total_tries - 1)
@@ -616,7 +663,8 @@ def should_use_browser_mail_fallback(has_graph_token, code_try, total_tries=3):
 async def detect_challenge(page):
     """检测 Arkose / Turnstile / hCaptcha 是否出现"""
     sel = ("iframe[src*=arkose], #arkose, [data-pkey], #FunCaptcha, "
-           ".cf-turnstile, iframe[src*=turnstile], iframe[src*=challenges.cloudflare], "
+           ".cf-turnstile, input[name=\"cf-turnstile-response\"], "
+           "iframe[src*=turnstile], iframe[src*=challenges.cloudflare], "
            "iframe[src*=hcaptcha]")
     try:
         return await page.locator(sel).count() > 0
@@ -915,6 +963,8 @@ async def register_one(index, total, p):
                 await email_input.press("Enter")
         await asyncio.sleep(5)
         check_timeout()
+        auth_step = await wait_for_chatgpt_auth_step(page)
+        print(f"  [2] auth step after email: {auth_step}")
         await dump_state(page, "after-email")
         # 若仍停在登录页报"邮箱必填/required"，补填再交一次
         try:
@@ -935,26 +985,37 @@ async def register_one(index, total, p):
         # 部分登录页无错误提示，只把 ?email= 写进 URL 并留在原邮箱表单。
         # 这种状态不能进入 onboarding，否则会反复点击同一个 Continue 后误到游客首页。
         for submit_retry in range(2):
-            if await chatgpt_email_submission_advanced(page):
+            auth_step = await wait_for_chatgpt_auth_step(page)
+            if auth_step not in {"email", "unknown"}:
                 break
             print(f"  [2] email form did not advance, retrying submit {submit_retry + 1}/2...")
-            await dismiss_cookie_banner(page)
-            email_input = page.locator(
-                'input[type="email"], input[name="email"]'
-            ).first
-            await fill_email_verified(page, email_input, email, tries=2)
-            if not await click_any_exact(
-                page,
-                ["Continue", "続行", "继续", "繼續", "Next", "下一步", "Teruskan", "Weiter"],
-            ):
-                sub = page.locator('button[type="submit"]')
-                if await sub.count() > 0:
-                    await sub.first.click()
-                else:
-                    await email_input.press("Enter")
-            await asyncio.sleep(5)
-            await dump_state(page, f"after-email-stuck-retry-{submit_retry + 1}")
-        if not await chatgpt_email_submission_advanced(page):
+            try:
+                await dismiss_cookie_banner(page)
+                email_input = page.locator(
+                    'input[type="email"], input[name="email"]'
+                ).first
+                await fill_email_verified(page, email_input, email, tries=2)
+                if not await click_any_exact(
+                    page,
+                    ["Continue", "続行", "继续", "繼續", "Next", "下一步", "Teruskan", "Weiter"],
+                ):
+                    sub = page.locator('button[type="submit"]')
+                    if await sub.count() > 0:
+                        await sub.first.click()
+                    else:
+                        await email_input.press("Enter")
+                await asyncio.sleep(5)
+                await dump_state(page, f"after-email-stuck-retry-{submit_retry + 1}")
+            except Exception as exc:
+                # A delayed navigation can detach the old email form between
+                # locating and submitting it. Re-classify the new page instead
+                # of aborting the whole registration on the stale locator.
+                print(f"  [2] retry form changed during submit: {str(exc)[:80]}")
+                auth_step = await wait_for_chatgpt_auth_step(page, timeout=5)
+                if auth_step not in {"email", "unknown"}:
+                    break
+        auth_step = await wait_for_chatgpt_auth_step(page, timeout=5)
+        if auth_step in {"email", "unknown"}:
             print("  [2][FAIL] email form remained on login after retries")
             email_pool.mark_error(PLATFORM, email, email_pw, "email_submit_stuck")
             return None
@@ -965,11 +1026,19 @@ async def register_one(index, total, p):
             print("  [!] challenge detected after email (Arkose/Turnstile)")
             await page.screenshot(path=f"screenshots/chatgpt_challenge_{index}.png")
             # 等待自动过（真实指纹有时能过），最多 30s
+            challenge_cleared = False
             for _ in range(6):
+                if await _is_cf_blocked(page):
+                    await _click_turnstile(page)
                 await asyncio.sleep(5)
                 if not await detect_challenge(page):
                     print("  challenge cleared")
+                    challenge_cleared = True
                     break
+            if not challenge_cleared and await detect_challenge(page):
+                print("  [!][FAIL] challenge remained after 30s")
+                email_pool.mark_error(PLATFORM, email, email_pw, "challenge_after_email")
+                return None
 
         # 密码输入（注册流程会让设密码）
         pw_input = page.locator('input[type="password"], input[name="password"], input[name="new-password"]')
@@ -1440,6 +1509,8 @@ async def click_finish_button(page, index, age_sel, auth_monitor=None, max_wait=
                     # 而是下一轮检测到还在 about-you 时只重试点击。
                     print("  [onboarding] 升级提交后仍在 about-you")
                     return False
+                except OnboardingRejected:
+                    raise
                 except Exception as e:
                     print(f"  [onboarding] Finish click failed: {str(e)[:60]}")
         await asyncio.sleep(1)
