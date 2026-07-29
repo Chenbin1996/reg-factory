@@ -8,6 +8,7 @@ tools/upload_tokens.py — 把本地标准 token 批量上传到下游接口（C
     python tools/upload_tokens.py                # all（chatgpt + grok）
     python tools/upload_tokens.py chatgpt        # 只传 ChatGPT（CPA + SUB2API）
     python tools/upload_tokens.py grok           # 只传 Grok（SUB2API + webchat2api）
+    python tools/upload_tokens.py grok --force   # 强制重导 Grok 到 SUB2API，修复已有账号凭据
 
 幂等: 上传成功的 email 会记到 tokens/<platform>/uploaded_<target>.txt，下次跳过。
 配置缺失的 target 自动跳过（不报错）。
@@ -103,7 +104,7 @@ def upload_chatgpt():
                 mark_uploaded("chatgpt", "sub2api", email)
 
 
-def upload_grok():
+def upload_grok(force_sub2api=False):
     files = sorted(glob.glob(os.path.join(TOKEN_OUTPUT_DIR, "grok", "*.sso.json")))
     if not files:
         print("[grok] 无 *.sso.json，跳过")
@@ -127,7 +128,7 @@ def upload_grok():
             continue
         email = data.get("email") or os.path.basename(path)[: -len(".sso.json")]
         sso = data.get("sso")
-        if sub_on and email not in sub_done:
+        if sub_on and (force_sub2api or email not in sub_done):
             ok, msg = uploaders.upload_sub2api_grok(
                 SUB2API_URL,
                 SUB2API_EMAIL,
@@ -150,18 +151,27 @@ def upload_grok():
 
 
 def main():
-    arg = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if arg in ("-h", "--help", "help"):
+    args = sys.argv[1:]
+    if any(arg in ("-h", "--help", "help") for arg in args):
         print(__doc__)
         return
-    target = arg.lower()
+    unknown_options = [arg for arg in args if arg.startswith("-") and arg != "--force"]
+    if unknown_options:
+        print(f"未知参数: {unknown_options[0]}")
+        sys.exit(1)
+    targets = [arg for arg in args if not arg.startswith("-")]
+    if len(targets) > 1:
+        print("只能指定一个目标（all|chatgpt|grok）")
+        sys.exit(1)
+    target = targets[0].lower() if targets else "all"
+    force_sub2api = "--force" in args
     if target not in ("all", "chatgpt", "grok"):
         print(f"未知目标: {target}（可选 all|chatgpt|grok）")
         sys.exit(1)
     if target in ("all", "chatgpt"):
         upload_chatgpt()
     if target in ("all", "grok"):
-        upload_grok()
+        upload_grok(force_sub2api=force_sub2api)
 
 
 if __name__ == "__main__":

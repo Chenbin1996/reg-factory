@@ -192,7 +192,7 @@ def upload_sub2api(base_url, email, password, group, content,
 
 
 def _create_sub2api_grok_oauth(origin, token, group_id, credentials, account_email,
-                               concurrency, priority, timeout):
+                               concurrency, priority, timeout, proxy_id=None):
     name = str(credentials.get("email") or account_email or "Grok OAuth Account").strip()
     existing = _sub2api_request(
         origin,
@@ -203,23 +203,44 @@ def _create_sub2api_grok_oauth(origin, token, group_id, credentials, account_ema
         use_env_proxy=False,
     )
     items = existing.get("items", []) if isinstance(existing, dict) else []
-    for item in items:
-        if str(item.get("name") or "").strip().lower() == name.lower():
-            return True, f"SUB2API Grok 账号已存在({name}, id={item.get('id')})"
-
     payload = {
         "name": name,
-        "notes": "local Grok SSO conversion fallback",
-        "platform": "grok",
         "type": "oauth",
         "credentials": credentials,
-        "extra": {"email": name} if "@" in name else {},
         "concurrency": max(1, int(concurrency)),
         "priority": int(priority),
         "rate_multiplier": DEFAULT_RATE_MULTIPLIER,
         "group_ids": [int(group_id)],
         "auto_pause_on_expired": True,
     }
+    if proxy_id:
+        payload["proxy_id"] = int(proxy_id)
+
+    for item in items:
+        if str(item.get("name") or "").strip().lower() != name.lower():
+            continue
+        account_id = item.get("id")
+        if not account_id:
+            continue
+        update_payload = dict(payload)
+        update_payload["status"] = "active"
+        _sub2api_request(
+            origin,
+            f"/api/v1/admin/accounts/{int(account_id)}",
+            token=token,
+            method="PUT",
+            body=update_payload,
+            timeout=timeout,
+            retries=1,
+            use_env_proxy=False,
+        )
+        return True, f"SUB2API Grok 账号凭据已修复({name}, id={account_id})"
+
+    payload.update({
+        "notes": "local Grok SSO conversion",
+        "platform": "grok",
+        "extra": {"email": name} if "@" in name else {},
+    })
     account = _sub2api_request(
         origin,
         "/api/v1/admin/accounts",
@@ -232,8 +253,8 @@ def _create_sub2api_grok_oauth(origin, token, group_id, credentials, account_ema
     )
     account = account if isinstance(account, dict) else {}
     if not account.get("id"):
-        return False, "SUB2API Grok 本机回退建号未返回账号 ID"
-    return True, f"SUB2API Grok 导入完成({name}, id={account['id']}, 本机 OAuth 回退)"
+        return False, "SUB2API Grok 本机 OAuth 建号未返回账号 ID"
+    return True, f"SUB2API Grok 导入完成({name}, id={account['id']}, 本机 OAuth)"
 
 
 def upload_sub2api_grok(base_url, email, password, group, sso, account_email="",
@@ -249,6 +270,38 @@ def upload_sub2api_grok(base_url, email, password, group, sso, account_email="",
         group_id = _sub2api_group_id(
             origin, token, group or "grok", "grok", timeout=timeout
         )
+
+        # sub2api 的 SSO 转换实现随版本变化。优先在注册所用出口本地换取
+        # refreshable OAuth，避免旧版服务端虽然建号成功、实际调用却持续 401。
+        local_error = None
+        if local_proxy:
+            from common.grok_oauth import convert_grok_sso_local
+
+            local_credentials = None
+            local_email = ""
+            for attempt in range(2):
+                try:
+                    local_credentials, local_email = convert_grok_sso_local(
+                        sso, local_proxy, account_email=account_email
+                    )
+                    break
+                except Exception as e:
+                    local_error = e
+                    if attempt == 0:
+                        time.sleep(2)
+            if local_credentials is not None:
+                return _create_sub2api_grok_oauth(
+                    origin,
+                    token,
+                    group_id,
+                    local_credentials,
+                    local_email or account_email,
+                    concurrency,
+                    priority,
+                    timeout,
+                    proxy_id=proxy_id,
+                )
+
         body = {
             "sso_tokens": [sso],
             "group_ids": [group_id],
@@ -282,33 +335,8 @@ def upload_sub2api_grok(base_url, email, password, group, sso, account_email="",
             if isinstance(item, dict) and item.get("error"):
                 errors.append(str(item["error"]))
         detail = "; ".join(errors) or f"新建{len(created)}/失败{len(failed)}"
-        if local_proxy and not created:
-            from common.grok_oauth import convert_grok_sso_local
-
-            local_error = None
-            for attempt in range(2):
-                try:
-                    credentials, imported_email = convert_grok_sso_local(
-                        sso, local_proxy, account_email=account_email
-                    )
-                    return _create_sub2api_grok_oauth(
-                        origin,
-                        token,
-                        group_id,
-                        credentials,
-                        imported_email or account_email,
-                        concurrency,
-                        priority,
-                        timeout,
-                    )
-                except Exception as e:
-                    local_error = e
-                    if attempt == 0:
-                        time.sleep(2)
-            return False, (
-                f"SUB2API Grok 远端导入失败: {detail}; "
-                f"本机 OAuth 回退失败: {local_error}"
-            )
+        if local_error:
+            return False, f"本机 OAuth 失败: {local_error}; SUB2API 远端导入失败: {detail}"
         return False, f"SUB2API Grok 导入未成功: {detail}"
     except requests.RequestException as e:
         return False, f"SUB2API 请求异常: {e}"

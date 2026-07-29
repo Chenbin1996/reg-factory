@@ -95,6 +95,8 @@ python run_full_flow.py --platforms chatgpt --codex
 python tools/upload_tokens.py
 python tools/upload_tokens.py chatgpt
 python tools/upload_tokens.py grok
+# 强制重新导入 Grok 到 SUB2API，可修复已标记上传但返回 401 的账号
+python tools/upload_tokens.py grok --force
 ```
 
 ## 导出与校验

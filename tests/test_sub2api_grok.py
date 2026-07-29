@@ -71,11 +71,10 @@ class Sub2ApiGrokTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("device flow denied", message)
 
-    def test_falls_back_to_local_oauth_when_remote_conversion_fails(self):
+    def test_prefers_local_oauth_over_remote_conversion(self):
         responses = [
             {"access_token": "admin-token"},
             [{"id": 9, "name": "grok", "platform": "grok"}],
-            {"created": [], "failed": [{"error": "xAI OAuth HTTP 403"}]},
             {"items": []},
             {"id": 99, "platform": "grok", "type": "oauth"},
         ]
@@ -97,17 +96,82 @@ class Sub2ApiGrokTests(unittest.TestCase):
                     "sso-token",
                     account_email="new@example.com",
                     local_proxy="http://127.0.0.1:7897",
+                    proxy_id=12,
                 )
 
         self.assertTrue(ok)
-        self.assertIn("本机 OAuth 回退", message)
+        self.assertIn("本机 OAuth", message)
         convert.assert_called_once()
-        create_call = request.call_args_list[4]
+        create_call = request.call_args_list[3]
         self.assertEqual(create_call.args[1], "/api/v1/admin/accounts")
         self.assertEqual(create_call.kwargs["body"]["platform"], "grok")
         self.assertEqual(create_call.kwargs["body"]["group_ids"], [9])
         self.assertEqual(create_call.kwargs["body"]["credentials"], credentials)
+        self.assertEqual(create_call.kwargs["body"]["proxy_id"], 12)
         self.assertFalse(create_call.kwargs["use_env_proxy"])
+
+    def test_local_oauth_repairs_existing_401_account(self):
+        responses = [
+            {"access_token": "admin-token"},
+            [{"id": 9, "name": "grok", "platform": "grok"}],
+            {"items": [{"id": 41, "name": "new@example.com", "status": "error"}]},
+            {"id": 41, "name": "new@example.com", "status": "active"},
+        ]
+        credentials = {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "email": "new@example.com",
+        }
+        with patch.object(uploaders, "_sub2api_request", side_effect=responses) as request:
+            with patch(
+                "common.grok_oauth.convert_grok_sso_local",
+                return_value=(credentials, "new@example.com"),
+            ):
+                ok, message = uploaders.upload_sub2api_grok(
+                    "https://sub.example.com",
+                    "admin@example.com",
+                    "secret",
+                    "grok",
+                    "sso-token",
+                    account_email="new@example.com",
+                    local_proxy="http://127.0.0.1:7897",
+                )
+
+        self.assertTrue(ok)
+        self.assertIn("凭据已修复", message)
+        update_call = request.call_args_list[3]
+        self.assertEqual(update_call.args[1], "/api/v1/admin/accounts/41")
+        self.assertEqual(update_call.kwargs["method"], "PUT")
+        self.assertEqual(update_call.kwargs["body"]["credentials"], credentials)
+        self.assertEqual(update_call.kwargs["body"]["status"], "active")
+        self.assertEqual(update_call.kwargs["body"]["group_ids"], [9])
+
+    def test_remote_conversion_is_used_when_local_oauth_fails(self):
+        responses = [
+            {"access_token": "admin-token"},
+            [{"id": 9, "name": "grok", "platform": "grok"}],
+            {"created": [{"email": "new@example.com"}], "failed": []},
+        ]
+        with patch.object(uploaders, "_sub2api_request", side_effect=responses) as request:
+            with patch(
+                "common.grok_oauth.convert_grok_sso_local",
+                side_effect=RuntimeError("local denied"),
+            ) as convert, patch.object(uploaders.time, "sleep"):
+                ok, message = uploaders.upload_sub2api_grok(
+                    "https://sub.example.com",
+                    "admin@example.com",
+                    "secret",
+                    "grok",
+                    "sso-token",
+                    account_email="new@example.com",
+                    local_proxy="http://127.0.0.1:7897",
+                )
+
+        self.assertTrue(ok)
+        self.assertIn("new@example.com", message)
+        self.assertEqual(convert.call_count, 2)
+        remote_call = request.call_args_list[2]
+        self.assertEqual(remote_call.args[1], "/api/v1/admin/grok/sso-to-oauth")
 
 
 if __name__ == "__main__":
