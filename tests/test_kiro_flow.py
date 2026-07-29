@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import register_three_platforms
+import register_kiro
 from common import asset_scanner, asset_store
 from common.kiro_crypto import FingerprintBuilder, _xxtea_decrypt, _xxtea_encrypt, encrypt_password
 from common.session_export import save_kiro_token
@@ -13,6 +14,15 @@ from webui.scripts import ENV_SCHEMA, SCRIPTS
 
 
 class KiroCryptoTests(unittest.TestCase):
+    def test_query_reads_fragment_query_parameters(self):
+        self.assertEqual(
+            register_kiro._query(
+                "https://profile.aws.amazon.com/#/signup/start?workflowID=workflow-123",
+                "workflowID",
+            ),
+            "workflow-123",
+        )
+
     def test_xxtea_roundtrip(self):
         builder = FingerprintBuilder()
         raw = "fingerprint payload with unicode-free content"

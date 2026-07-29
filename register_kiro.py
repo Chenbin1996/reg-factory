@@ -52,7 +52,11 @@ def _uuid() -> str:
 
 def _query(url: str, key: str) -> str:
     try:
-        return urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get(key, [""])[0]
+        parsed = urllib.parse.urlparse(url)
+        query = parsed.query
+        if not query and parsed.fragment and "?" in parsed.fragment:
+            query = parsed.fragment.split("?", 1)[1]
+        return urllib.parse.parse_qs(query).get(key, [""])[0]
     except Exception:
         return ""
 
@@ -249,6 +253,7 @@ class KiroClient:
     def signup_init(self, email):
         endpoint = f"{SIGNIN_BASE}/platform/{DIRECTORY_ID}/signup/api/execute"
         referer = f"{SIGNIN_BASE}/platform/{DIRECTORY_ID}/signup?workflowStateHandle={self.workflow_handle}"
+        last_response = ""
         for step_id, event in (("", "first_load"), ("start", "PageLoad")):
             response = self.workflow_execute(endpoint, {
                 "stepId": step_id, "workflowStateHandle": self.workflow_handle,
@@ -256,12 +261,13 @@ class KiroClient:
                            {"input_type": "FingerPrintRequestInput", "fingerPrint": self._fingerprint_input("signup", event)}],
                 "visitorId": self.visitor_id,
             }, referer)
+            last_response = response.text[:600].replace("\n", " ")
             data = _json(response)
             self.workflow_handle = str(data.get("workflowStateHandle") or self.workflow_handle)
             redirect = str((data.get("redirect") or {}).get("url") or "")
             self.workflow_id = _query(redirect, "workflowID") or self.workflow_id
         if not self.workflow_id:
-            raise KiroError("Signup 未返回 workflowID")
+            raise KiroError(f"Signup 未返回 workflowID: {last_response}")
 
     def profile_init(self):
         self.ubid = f"186-{random.randrange(10**7):07d}-{random.randrange(10**6):06d}"
@@ -374,19 +380,47 @@ class KiroClient:
                                                      "inputs": [{"input_type": "FingerPrintRequestInput", "fingerPrint": self._fingerprint_input("signin", "PageLoad")}]}, ref)
         result = _json(response)
         if result.get("stepId") == "start":
-            response = self.workflow_execute(endpoint, {"stepId": "start", "workflowStateHandle": str(result.get("workflowStateHandle") or handle),
+            handle = str(result.get("workflowStateHandle") or handle)
+            self.workflow_handle = handle
+            response = self.workflow_execute(endpoint, {"stepId": "start", "workflowStateHandle": handle,
                                                          "inputs": [{"input_type": "FingerPrintRequestInput", "fingerPrint": self._fingerprint_input("signin", "PageLoad")}]}, ref)
             result = _json(response)
         redirect_url = str((result.get("redirect") or {}).get("url") or "")
         auth_code = _query(redirect_url, "workflowResultHandle") or self.auth_code
         state = _query(redirect_url, "state") or self.sso_state
+        wdc_csrf = _query(redirect_url, "wdc_csrf_token") or self.wdc_csrf
+        if result.get("stepId") == "end-of-workflow-success" and auth_code:
+            start_params = urllib.parse.urlencode({
+                key: value for key, value in {
+                    "state": state,
+                    "workflowResultHandle": auth_code,
+                    "wdc_csrf_token": wdc_csrf,
+                }.items() if value
+            })
+            self.get(f"{VIEW_BASE}/start/?{start_params}",
+                     headers=self._headers(origin=VIEW_BASE, referer=f"{SIGNIN_BASE}/"))
         sso_headers = self._headers(origin=VIEW_BASE, referer=f"{VIEW_BASE}/", content_type="application/x-www-form-urlencoded")
-        csrf_value = self.session.cookies.get("loginCsrfToken")
+        # profile.aws.amazon.com and view.awsapps.com can both set this name;
+        # the Portal response value is the one required by auth/sso-token.
+        csrf_value = csrf or ""
+        if not csrf_value:
+            for cookie in self.session.cookies:
+                if cookie.name == "loginCsrfToken":
+                    csrf_value = cookie.value
+                    break
         if csrf_value:
             sso_headers["x-amz-sso-csrf-token"] = csrf_value
-        response = self.post_form(f"{PORTAL_BASE}/auth/sso-token", urllib.parse.urlencode({"authCode": auth_code, "state": state, "orgId": "view"}),
-                                  headers=sso_headers)
-        token = str(_json(response).get("token") or "")
+        token = ""
+        for _ in range(5):
+            response = self.post_form(
+                f"{PORTAL_BASE}/auth/sso-token",
+                urllib.parse.urlencode({"authCode": auth_code, "state": state, "orgId": "view"}),
+                headers=sso_headers, expected=(200, 401),
+            )
+            token = str(_json(response).get("token") or "")
+            if token or response.status_code != 401:
+                break
+            time.sleep(3)
         if not token:
             raise KiroError("SSO token 获取失败")
         self.sso_token_value = token
@@ -514,7 +548,9 @@ def main():
     else:
         accounts = []
         for _ in range(max(1, args.count)):
-            account = email_pool.next_email("kiro")
+            # Kiro reads the verification code through Microsoft Graph, so do
+            # not reserve a mailbox whose refresh token is already unusable.
+            account = email_pool.latest_email("kiro", require_token=True, validate_token=True)
             if not account:
                 break
             accounts.append(account)

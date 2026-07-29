@@ -1,5 +1,15 @@
 ﻿# 更新日志
 
+## 2026-07-30 - 1.2.10
+
+**Kiro 真实流程修复**
+- 修复 Kiro Signup 重定向位于 URL 片段时无法提取 `workflowID` 的问题。
+- 注册前校验 Outlook Graph refresh token，自动跳过 `service_abuse` 等失效邮箱资产。
+- 补齐 SSO 完成后的回跳、CSRF 跨域 Cookie 处理和临时 401 重试。
+- 已完成真实 Kiro 注册验证，成功导出 Builder ID refresh token、access token 和 Kiro IDE 凭据。
+
+---
+
 ## 2026-07-30 - 1.2.9
 
 **Kiro 渠道与 WebUI 更新**
