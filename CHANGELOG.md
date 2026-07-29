@@ -1,5 +1,16 @@
 ﻿# 更新日志
 
+## 2026-07-29 — 1.2.8
+
+**Grok 导入 sub2api 修复**
+- 修复 Grok SSO 转 OAuth 的 scope、Cookie、Device Flow 和 CLI 请求头配置，降低导入后 401 问题。
+- 导入流程优先生成可刷新的 OAuth 凭据，失败时自动回退到服务端转换。
+- 已存在但状态异常或返回 401 的同名账号会自动更新凭据并恢复正常状态。
+- 新增 `python tools/upload_tokens.py grok --force`，支持重新导入历史 Grok 账号。
+- 增加 OAuth、sub2api 修复及强制重传测试，完整测试 235 项通过。
+
+---
+
 ## 2026-07-29 — 1.2.7
 
 **全流程启动与代理修复**
