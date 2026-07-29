@@ -179,6 +179,10 @@ def _inventory_records() -> list[dict]:
         })
     for platform in ("chatgpt", "claude", "grok"):
         records.extend(_merge_platform_records(platform))
+    # Kiro is an account bundle rather than a browser/cookie pool. Include it
+    # in inventory when present without changing the legacy scan pool contract.
+    if asset_store._token_records("kiro"):
+        records.extend(_merge_platform_records("kiro"))
     return records
 
 
@@ -322,6 +326,7 @@ def _platform_preflight(platform: str, timeout: int) -> dict | None:
                 "chatgpt": "https://chatgpt.com/api/auth/session",
                 "claude": "https://claude.ai/api/account",
                 "grok": "https://accounts.x.ai/",
+                "kiro": "https://oidc.us-east-1.amazonaws.com/",
             }
             with _web_session(platform) as session:
                 response = session.get(urls[platform], timeout=timeout, allow_redirects=True)
@@ -512,11 +517,47 @@ def _scan_grok(record: dict, timeout: int) -> dict:
     return {"status": "unknown", "detail": f"Grok HTTP {response.status_code}", "evidence": f"xai_account:{response.status_code}"}
 
 
+def _scan_kiro(record: dict, timeout: int) -> dict:
+    token = record.get("_token") or {}
+    refresh = str(token.get("refreshToken") or token.get("refresh_token") or "").strip()
+    client_id = str(token.get("clientId") or token.get("client_id") or "").strip()
+    client_secret = str(token.get("clientSecret") or token.get("client_secret") or "").strip()
+    if not refresh or not client_id or not client_secret:
+        return {"status": "invalid", "detail": "缺少 Kiro Builder ID 长期凭据", "evidence": "local:missing_credential"}
+    with _web_session("kiro") as session:
+        response = session.post(
+            "https://oidc.us-east-1.amazonaws.com/token",
+            json={"clientId": client_id, "clientSecret": client_secret, "refreshToken": refresh, "grantType": "refresh_token"},
+            timeout=timeout,
+        )
+        classified = _response_status(response, "kiro_token")
+        if classified:
+            return classified
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        access = str(payload.get("accessToken") or "").strip()
+        if response.status_code != 200 or not access:
+            return {"status": "expired", "detail": "Kiro refresh token 未返回访问令牌", "evidence": "kiro_token:empty"}
+        usage = session.get(
+            "https://q.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true",
+            headers={"Authorization": f"Bearer {access}"}, timeout=timeout,
+        )
+        classified = _response_status(usage, "kiro_usage")
+        if classified:
+            return classified
+        if usage.status_code == 200:
+            return {"status": "normal", "detail": "Kiro Builder ID 凭据正常", "evidence": "kiro_usage:200"}
+        return {"status": "unknown", "detail": f"Kiro usage HTTP {usage.status_code}", "evidence": f"kiro_usage:{usage.status_code}"}
+
+
 _SCANNERS = {
     "outlook": _scan_outlook,
     "chatgpt": _scan_chatgpt,
     "claude": _scan_claude,
     "grok": _scan_grok,
+    "kiro": _scan_kiro,
 }
 
 

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Run one Outlook mailbox through Claude, ChatGPT, and Grok registration flows.
+Run one Outlook mailbox through the selected registration flows.
 
-Default mode is sequential because all three flows may need to read the same
+Default mode is sequential because the flows may need to read the same
 mailbox. Use --parallel only when debugging isolated browser/profile behavior.
 
 Examples:
@@ -92,6 +92,23 @@ def build_command(platform, args, account):
             cmd.append("--sub2api")
             if getattr(args, "grok_sub2api_group", None):
                 cmd += ["--sub2api-group", args.grok_sub2api_group]
+        return cmd
+
+    if platform == "kiro":
+        cmd = [
+            sys.executable, "-u", "register_kiro.py",
+            "--count", "1",
+            "--timeout", timeout,
+            "--email", email,
+            "--password", password or "",
+            "--node", args.node,
+        ]
+        if token:
+            cmd += ["--refresh-token", token]
+        if client_id:
+            cmd += ["--client-id", client_id]
+        if getattr(args, "kiro_account_password", ""):
+            cmd += ["--account-password", args.kiro_account_password]
         return cmd
 
     raise ValueError(f"unknown platform: {platform}")
@@ -204,13 +221,13 @@ async def process_account(account, args, child_env):
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Register one mailbox on three platforms (broker + loop)")
+    parser = argparse.ArgumentParser(description="Register one mailbox on the selected platforms (broker + loop)")
     parser.add_argument("--email", default=None)
     parser.add_argument("--password", default="")
     parser.add_argument("--token", default="", help="Outlook refresh_token")
     parser.add_argument("--client-id", default="", help="Outlook OAuth client_id")
     parser.add_argument("--from-pool", action="store_true", help="reserve one mailbox from emails.txt")
-    parser.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok"], default=["claude", "chatgpt", "grok"])
+    parser.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok", "kiro"], default=["claude", "chatgpt", "grok"])
     parser.add_argument("--parallel", action="store_true", help="run platforms in parallel; default is sequential")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--node", default="auto", help="Claude/ChatGPT/Grok Clash node")
@@ -227,6 +244,8 @@ async def main():
                         help="Grok 注册成功后把 SSO 转成 SUB2API Grok OAuth 账号")
     parser.add_argument("--grok-sub2api-group", default=None,
                         help="SUB2API Grok 目标分组名（默认取 config.SUB2API_GROK_GROUP）")
+    parser.add_argument("--kiro-account-password", default="",
+                        help="Kiro 账号密码；留空由注册脚本随机生成")
     # broker + loop
     parser.add_argument("--broker", default="http://127.0.0.1:8765", help="共享取码服务 URL；传空串 '' 禁用")
     parser.add_argument("--grok-timeout", type=int, default=40, help="Grok 取码 broker 超时(秒，outlook 注定超时故调短)")

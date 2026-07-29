@@ -12,6 +12,8 @@ let assetPickMode = 'sequence';
 let assetScanData = null;
 let assetScanPage = 1;
 let assetScanTimer = null;
+let currentWebVersion = '';
+let updateRequested = false;
 
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
@@ -32,6 +34,48 @@ telegramDialog.onclick = e=>{
 };
 
 // ---------------------------------------------------------------- 状态灯轮询
+function setUpdateMessage(text, state=''){
+  const message = $('#update-message');
+  message.textContent = text || '';
+  message.classList.toggle('ok', state==='ok');
+  message.classList.toggle('bad', state==='bad');
+}
+
+function renderUpdateState(update, version){
+  const button = $('#btn-update');
+  const label = $('#update-label');
+  const available = !!(update && update.available);
+  currentWebVersion = version || currentWebVersion;
+  if(updateRequested && update && update.status === 'failed'){
+    updateRequested = false;
+    button.classList.remove('running');
+    button.disabled = !available;
+    label.textContent = '重试更新';
+    setUpdateMessage(update.message || '更新失败', 'bad');
+    return;
+  }
+  if(updateRequested && update && update.status === 'completed'){
+    button.classList.remove('running');
+    button.disabled = true;
+    label.textContent = '更新完成';
+    setUpdateMessage('面板正在重启…', 'ok');
+    setTimeout(()=>location.reload(), 900);
+    return;
+  }
+  button.disabled = updateRequested || !available;
+  button.classList.toggle('running', updateRequested || update?.status === 'running');
+  if(updateRequested || update?.status === 'running'){
+    label.textContent = '更新中';
+    setUpdateMessage(update?.message || '面板正在重启…');
+  }else if(!available){
+    label.textContent = '不可更新';
+    button.title = '当前安装方式不包含自动更新程序';
+  }else{
+    label.textContent = '更新';
+    button.title = '检查并安装最新版本';
+  }
+}
+
 async function pollStatus(){
   try{
     const s = await (await fetch('/api/status')).json();
@@ -48,6 +92,11 @@ async function pollStatus(){
     $('#k12-nav-state').textContent = s.k12 ? '在线' : '离线';
     $('#k12-nav-state').classList.toggle('on', !!s.k12);
     $('#version').textContent = 'v' + (s.version || '--');
+    if(updateRequested && currentWebVersion && s.version && s.version !== currentWebVersion){
+      setUpdateMessage('更新完成，正在刷新…', 'ok');
+      setTimeout(()=>location.reload(), 500);
+    }
+    renderUpdateState(s.update || {}, s.version || '');
     $('#node').textContent = '出口 ' + (s.node || '--');
     const online = [s.bitbrowser, networkOnline, s.k12].filter(Boolean).length;
     $('#health-dot').classList.remove('pending', 'on', 'partial');
@@ -55,9 +104,36 @@ async function pollStatus(){
     else if(online) $('#health-dot').classList.add('partial');
     $('#health-label').textContent = `${online}/3 服务在线`;
     $('#running').textContent = s.running ? `${s.running} 个任务运行中` : '';
-  }catch(e){}
+  }catch(e){
+    if(updateRequested) setUpdateMessage('面板正在重启，等待重新连接…');
+  }
 }
 setInterval(pollStatus, 5000);
+
+async function startUpdate(){
+  if(updateRequested) return;
+  if(!window.confirm('更新会停止当前面板并重启，运行中的任务必须先停止。继续吗？')) return;
+  const button = $('#btn-update');
+  currentWebVersion = currentWebVersion || $('#version').textContent.replace(/^v/, '');
+  updateRequested = true;
+  button.disabled = true;
+  button.classList.add('running');
+  $('#update-label').textContent = '更新中';
+  setUpdateMessage('正在准备更新…');
+  try{
+    const response = await fetch('/api/update', {method:'POST'});
+    const data = await response.json().catch(()=>({}));
+    if(!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    renderUpdateState(data.update || {status:'running'}, currentWebVersion);
+  }catch(error){
+    updateRequested = false;
+    button.classList.remove('running');
+    button.disabled = false;
+    $('#update-label').textContent = '重试更新';
+    setUpdateMessage(error.message || String(error), 'bad');
+  }
+}
+$('#btn-update').onclick = startUpdate;
 
 // ---------------------------------------------------------------- 视图切换
 function showView(v){
@@ -142,6 +218,7 @@ async function loadProxyPanel(includeNodes=false){
     $('#proxy-mode-claude').value = config.CLAUDE_PROXY_MODE || 'inherit';
     $('#proxy-mode-chatgpt').value = config.CHATGPT_PROXY_MODE || 'inherit';
     $('#proxy-mode-grok').value = config.GROK_PROXY_MODE || 'inherit';
+    $('#proxy-mode-kiro').value = config.KIRO_PROXY_MODE || 'inherit';
     updateProxyFieldVisibility();
     renderProxyNodes(data.nodes, config.CLASH_FIXED_NODE || data.current);
     $('#network-current').textContent = `${data.current || '未连接'} · ${config.PROXY_MODE || 'clash_auto'}`;
@@ -160,6 +237,7 @@ function collectProxyConfig(){
     CLAUDE_PROXY_MODE: $('#proxy-mode-claude').value,
     CHATGPT_PROXY_MODE: $('#proxy-mode-chatgpt').value,
     GROK_PROXY_MODE: $('#proxy-mode-grok').value,
+    KIRO_PROXY_MODE: $('#proxy-mode-kiro').value,
     CLASH_API: $('#proxy-clash-api').value.trim(),
     CLASH_SECRET: $('#proxy-clash-secret').value.trim(),
     CLASH_PROXY: $('#proxy-clash-proxy').value.trim(),
@@ -249,13 +327,14 @@ const ASSET_FORMATS = {
   chatgpt: ['cookies', 'raw', 'header', 'session', 'sub2api', 'cpa', 'chatgpt2api'],
   claude: ['cookies', 'raw', 'header'],
   grok: ['cookies', 'raw', 'header', 'session', 'sub2api'],
+  kiro: ['session'],
 };
 const ASSET_SCAN_STATUS_LABELS = {
   normal:'正常', unlock:'待解锁', banned:'封禁', expired:'过期', restricted:'受限',
   invalid:'凭据异常', unknown:'未知', error:'检测异常',
 };
 const ASSET_SCAN_PLATFORM_LABELS = {
-  outlook:'Outlook', chatgpt:'ChatGPT', claude:'Claude', grok:'Grok',
+  outlook:'Outlook', chatgpt:'ChatGPT', claude:'Claude', grok:'Grok', kiro:'Kiro',
 };
 const ASSET_SCAN_PAGE_SIZE = 25;
 
@@ -328,7 +407,7 @@ async function readAssetResponse(response){
 
 function renderAssetSummary(data){
   $('#asset-count-emails').textContent = data.emails ?? 0;
-  ['chatgpt', 'claude', 'grok'].forEach(platform=>{
+  ['chatgpt', 'claude', 'grok', 'kiro'].forEach(platform=>{
     const item = data.platforms?.[platform] || {};
     const total = Math.max(item.cookies || 0, item.sessions || 0);
     $(`#asset-count-${platform}`).textContent = total;

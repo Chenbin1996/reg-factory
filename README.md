@@ -44,7 +44,7 @@
 
 ---
 
-项目将 Outlook 邮箱、ChatGPT、Grok、Claude 注册，Codex OAuth、账号导出和下游导入整合到同一个 Web 控制台，同时保留可组合的命令行入口。
+项目将 Outlook 邮箱、ChatGPT、Grok、Claude、Kiro 注册，Codex OAuth、账号导出和下游导入整合到同一个 Web 控制台，同时保留可组合的命令行入口。
 
 > 仅用于学习、开发和经授权的测试。密钥、账号、Cookie、Token 和运行日志均应保留在本机，不要提交到仓库。
 
@@ -102,11 +102,11 @@ macOS / Linux：
 
 控制台只监听本机。Codex K12 的独立说明见 [codex_k12/README.md](codex_k12/README.md)。
 
-动态住宅 IP 会在创建新浏览器窗口时写入完整代理认证；轮换后的代理从下一个新窗口开始使用。网络页可分别设置 Outlook、Claude、ChatGPT 和 Grok 的出口，例如 Outlook 使用 Clash、其他平台使用住宅代理，并可按平台测试真实公网 IP。
+动态住宅 IP 会在创建新浏览器窗口时写入完整代理认证；轮换后的代理从下一个新窗口开始使用。网络页可分别设置 Outlook、Claude、ChatGPT、Grok 和 Kiro 的出口，例如 Outlook 使用 Clash、其他平台使用住宅代理，并可按平台测试真实公网 IP。
 
 ## 本地资产 API
 
-本地接口支持按顺序或指定 `index` 读取邮箱、Claude/ChatGPT/Grok Cookie；`format=cookies` 输出浏览器扩展可导入的标准 JSON，并可把 ChatGPT 会话转换为 SUB2API、CPA 或 chatgpt2api 格式。控制台左侧打开“资产 API”即可配置、生成调用命令、在线测试，并一键扫描各类号池状态。默认仅允许本机访问，可配置 `REG_FACTORY_ASSET_API_KEY`。
+本地接口支持按顺序或指定 `index` 读取邮箱、Claude/ChatGPT/Grok Cookie 和 Kiro Builder ID 账号；`format=cookies` 输出浏览器扩展可导入的标准 JSON，并可把 ChatGPT 会话转换为 SUB2API、CPA 或 chatgpt2api 格式。控制台左侧打开“资产 API”即可配置、生成调用命令、在线测试，并一键扫描各类号池状态。默认仅允许本机访问，可配置 `REG_FACTORY_ASSET_API_KEY`。
 
 ```bash
 # 按顺序取下一个邮箱
@@ -128,8 +128,8 @@ curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=cpa" \
 ## 常用命令
 
 ```bash
-# Outlook -> Claude / ChatGPT / Grok
-python run_full_flow.py --platforms claude chatgpt grok
+# Outlook -> Claude / ChatGPT / Grok / Kiro
+python run_full_flow.py --platforms claude chatgpt grok kiro
 
 # 使用已有邮箱池注册三个平台
 python register_three_platforms.py --from-pool
@@ -145,6 +145,9 @@ python register.py --count 1 --node auto --provider yyds
 
 # Grok 浏览器注册并导入 SUB2API
 python register_grok.py --count 1 --sub2api
+
+# Kiro Builder ID 注册并导出长期凭据
+python register_kiro.py --count 1
 
 # Codex OAuth -> SUB2API / CPA
 python oauth_codex.py --keep

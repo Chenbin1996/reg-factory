@@ -10,6 +10,7 @@
 python run_full_flow.py
 python run_full_flow.py --platforms claude chatgpt grok
 python run_full_flow.py --platforms grok --grok-sub2api
+python run_full_flow.py --platforms kiro
 python run_full_flow.py --platforms chatgpt --import-c2a
 python run_full_flow.py --skip-email --email a@outlook.com --password xxx
 python run_full_flow.py --dry-run
@@ -48,6 +49,10 @@ python register.py --count 1 --node auto --provider yyds
 
 # Claude 指定 Outlook；refresh token 与 client_id 必须配套
 python register.py --email a@outlook.com --password xxx --token <refresh_token> --client-id <client_id> --node auto
+
+# Kiro Builder ID；默认从 Outlook 资产池读取 Graph refresh token
+python register_kiro.py --count 1
+python register_kiro.py --email a@outlook.com --refresh-token <refresh_token> --client-id <client_id>
 ```
 
 ## Outlook

@@ -268,7 +268,7 @@ def main():
                     help="循环注册轮数；1=只跑一次(默认)，0=无限循环(Ctrl+C 停)")
     ap.add_argument("--round-sleep", type=int, default=5, help="每轮之间间隔(s)")
     # Stage B
-    ap.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok"],
+    ap.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok", "kiro"],
                     default=["claude"], help="默认只跑 claude（最稳）；grok 已知死结")
     ap.add_argument("--node", default="auto", help="claude/chatgpt/grok 走的 Clash 节点")
     ap.add_argument("--platform-timeout", type=int, default=600)

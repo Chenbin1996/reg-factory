@@ -155,6 +155,15 @@ ASSET_SCAN_STATE = {
     "progress": {"completed": 0, "total": 0, "current": ""},
 }
 
+# 更新由独立进程执行；当前 WebUI 会在 updater 停止自身前返回 202。
+UPDATE_PROCESS = None
+UPDATE_LOG_HANDLE = None
+UPDATE_STATE = {
+    "status": "idle",
+    "message": "",
+    "started_at": "",
+}
+
 
 # ============================================================ 配置/状态读取
 def _read_config_val(key, default=""):
@@ -233,6 +242,66 @@ def _k12_status(message=""):
     else:
         detail = "服务已安装但尚未启动"
     return {"alive": alive, "ready": ready, "managed": managed, "url": _k12_url(), "message": detail}
+
+
+def _update_script():
+    if getattr(sys, "frozen", False) and os.name == "nt":
+        path = os.path.join(ROOT, "update-portable.ps1")
+        if not os.path.isfile(path):
+            return None
+        return [
+            shutil.which("powershell.exe") or "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            path,
+            "-InstallDir",
+            os.path.dirname(os.path.abspath(sys.executable)),
+            "-ProcessId",
+            str(os.getpid()),
+        ]
+    if os.name == "nt":
+        path = os.path.join(ROOT, "update.ps1")
+        if not os.path.isfile(path):
+            return None
+        return [
+            shutil.which("powershell.exe") or "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            path,
+            "-Root",
+            ROOT,
+        ]
+    path = os.path.join(ROOT, "update.sh")
+    if not os.path.isfile(path):
+        return None
+    return ["bash", path, "--root", ROOT]
+
+
+def _update_status():
+    global UPDATE_PROCESS, UPDATE_LOG_HANDLE
+    process = UPDATE_PROCESS
+    if process is not None:
+        returncode = process.poll()
+        if returncode is None:
+            UPDATE_STATE["status"] = "running"
+            UPDATE_STATE["message"] = "正在下载并安装最新版本"
+        elif UPDATE_STATE["status"] == "running":
+            UPDATE_STATE["status"] = "completed" if returncode == 0 else "failed"
+            UPDATE_STATE["message"] = (
+                "更新进程已完成，面板即将重启"
+                if returncode == 0
+                else f"更新失败（退出码 {returncode}），请查看 update.log"
+            )
+            if UPDATE_LOG_HANDLE:
+                UPDATE_LOG_HANDLE.close()
+                UPDATE_LOG_HANDLE = None
+    result = dict(UPDATE_STATE)
+    result["available"] = bool(_update_script())
+    return result
 
 
 async def _start_k12_service():
@@ -942,6 +1011,71 @@ def index():
     return open(os.path.join(WEBUI, "static", "index.html"), encoding="utf-8").read()
 
 
+@app.post("/api/update")
+def api_update():
+    global UPDATE_PROCESS, UPDATE_LOG_HANDLE
+    status = _update_status()
+    if status["status"] == "running":
+        return JSONResponse({"ok": False, "error": "更新已经在进行中", "update": status}, status_code=409)
+    running = sum(1 for rec in RUNS.values() if not rec["done"])
+    if running:
+        return JSONResponse(
+            {"ok": False, "error": f"当前有 {running} 个任务运行中，请先停止任务", "update": status},
+            status_code=409,
+        )
+
+    command = _update_script()
+    if not command:
+        return JSONResponse(
+            {"ok": False, "error": "当前安装方式不包含可用的自动更新程序，请下载最新 Release", "update": status},
+            status_code=501,
+        )
+
+    data_root = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
+    log_dir = os.path.join(data_root, "runtime")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "update.log")
+    if UPDATE_LOG_HANDLE:
+        UPDATE_LOG_HANDLE.close()
+    UPDATE_LOG_HANDLE = open(log_path, "a", encoding="utf-8")
+    child_env = os.environ.copy()
+    child_env["REG_FACTORY_NONINTERACTIVE"] = "1"
+    process_options = {
+        "cwd": ROOT,
+        "env": child_env,
+        "stdin": subprocess.DEVNULL,
+        "stdout": UPDATE_LOG_HANDLE,
+        "stderr": subprocess.STDOUT,
+    }
+    if os.name == "nt":
+        process_options["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    else:
+        process_options["start_new_session"] = True
+    try:
+        UPDATE_PROCESS = subprocess.Popen(command, **process_options)
+    except Exception as exc:
+        UPDATE_LOG_HANDLE.close()
+        UPDATE_LOG_HANDLE = None
+        UPDATE_PROCESS = None
+        UPDATE_STATE.update({
+            "status": "failed",
+            "message": f"更新启动失败: {str(exc)[:160]}",
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+        return JSONResponse({"ok": False, "error": UPDATE_STATE["message"]}, status_code=500)
+
+    UPDATE_STATE.update({
+        "status": "running",
+        "message": "正在下载并安装最新版本",
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
+    return JSONResponse({"ok": True, "update": _update_status()}, status_code=202)
+
+
 @app.get("/api/status")
 def api_status():
     provider = _fingerprint_provider()
@@ -985,6 +1119,7 @@ def api_status():
         "k12": _k12_alive(),
         "node": node,
         "running": sum(1 for r in RUNS.values() if not r["done"]),
+        "update": _update_status(),
     }
 
 
@@ -994,6 +1129,7 @@ _PROXY_ENV_KEYS = (
     "CLAUDE_PROXY_MODE",
     "CHATGPT_PROXY_MODE",
     "GROK_PROXY_MODE",
+    "KIRO_PROXY_MODE",
     "CLASH_API",
     "CLASH_SECRET",
     "CLASH_PROXY",
@@ -1012,7 +1148,7 @@ def _proxy_panel_data(include_nodes=False):
 
     config = {key: _read_config_val(key, "") for key in _PROXY_ENV_KEYS}
     config["PROXY_MODE"] = ps.proxy_mode()
-    for platform in ("OUTLOOK", "CLAUDE", "CHATGPT", "GROK"):
+    for platform in ("OUTLOOK", "CLAUDE", "CHATGPT", "GROK", "KIRO"):
         config[f"{platform}_PROXY_MODE"] = config[f"{platform}_PROXY_MODE"] or "inherit"
     config["CLASH_API"] = config["CLASH_API"] or "http://127.0.0.1:9097"
     config["CLASH_PROXY"] = config["CLASH_PROXY"] or "http://127.0.0.1:7897"
@@ -1037,7 +1173,7 @@ def _proxy_panel_data(include_nodes=False):
         "effective_proxy": ps.effective_proxy_url(),
         "routes": {
             platform: ps.proxy_mode(ps.platform_environment(os.environ, platform))
-            for platform in ("outlook", "claude", "chatgpt", "grok")
+            for platform in ("outlook", "claude", "chatgpt", "grok", "kiro")
         },
     }
 
@@ -1060,7 +1196,7 @@ async def api_proxy_set(request: Request):
     updates["PROXY_MODE"] = mode
     platform_modes = {
         platform: updates[f"{platform.upper()}_PROXY_MODE"] or "inherit"
-        for platform in ("outlook", "claude", "chatgpt", "grok")
+        for platform in ("outlook", "claude", "chatgpt", "grok", "kiro")
     }
     for platform, platform_mode in platform_modes.items():
         if platform_mode not in {"inherit", "clash_auto", "clash_fixed", "residential"}:
@@ -1114,8 +1250,8 @@ async def api_proxy_set(request: Request):
 
 def _proxy_target_env(platform: str = "") -> dict:
     normalized = str(platform or "").strip().lower()
-    if normalized and normalized not in {"outlook", "claude", "chatgpt", "grok"}:
-        raise ValueError("测试平台仅支持 outlook、claude、chatgpt、grok")
+    if normalized and normalized not in {"outlook", "claude", "chatgpt", "grok", "kiro"}:
+        raise ValueError("测试平台仅支持 outlook、claude、chatgpt、grok、kiro")
     return _child_env(normalized)
 
 

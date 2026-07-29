@@ -41,6 +41,10 @@ _PLATFORMS = {
         "key_names": {"sso", "sso-rw", "__Secure-next-auth.session-token"},
         "domains": {"grok.com", "x.ai"},
     },
+    "kiro": {
+        "key_names": set(),
+        "domains": set(),
+    },
 }
 
 
@@ -225,7 +229,7 @@ def _cookie_records(platform: str) -> list[dict]:
 
 def _token_records(platform: str) -> list[dict]:
     directory = _token_root() / platform
-    pattern = "*.session.json" if platform == "chatgpt" else "*.sso.json"
+    pattern = "*.session.json" if platform == "chatgpt" else "*.account.json" if platform == "kiro" else "*.sso.json"
     records = []
     paths = directory.glob(pattern) if directory.is_dir() else ()
     for path in paths:
@@ -294,7 +298,7 @@ def get_platform_asset(platform: str, output_format: str = "raw", index: int | N
     platform = str(platform or "").strip().lower()
     output_format = str(output_format or "raw").strip().lower()
     if platform not in _PLATFORMS:
-        raise AssetError("platform 仅支持 claude、chatgpt、grok")
+        raise AssetError("platform 仅支持 claude、chatgpt、grok、kiro")
 
     token_formats = {"session", "sub2api", "cpa", "chatgpt2api"}
     if output_format in {"raw", "cookies", "header"}:
@@ -328,6 +332,8 @@ def get_platform_asset(platform: str, output_format: str = "raw", index: int | N
             data = session
         elif platform == "grok":
             data = {"sso_tokens": [str(session.get("sso") or "")], "name": email}
+        elif platform == "kiro":
+            data = session
         elif output_format == "sub2api":
             data = {
                 "content": build_sub2api_content(session),
@@ -363,7 +369,7 @@ def summary() -> dict:
         "platforms": {
             platform: {
                 "cookies": len(_cookie_records(platform)),
-                "sessions": len(_token_records(platform)) if platform in {"chatgpt", "grok"} else 0,
+                "sessions": len(_token_records(platform)) if platform in {"chatgpt", "grok", "kiro"} else 0,
             }
             for platform in _PLATFORMS
         },

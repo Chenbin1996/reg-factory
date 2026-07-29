@@ -31,6 +31,7 @@ common/ 共享能力
 | `register.py` | Claude 注册 |
 | `register_chatgpt.py` | ChatGPT 注册 |
 | `register_grok.py` | Grok 指纹浏览器注册主流程 |
+| `register_kiro.py` | AWS Builder ID / Kiro 注册与长期凭据导出 |
 | `register_grok_http.py` | Grok 浏览器流程复用的内部协议辅助模块，不作为 UI 入口 |
 | `outlook_reg_loop.py` | Outlook 常驻注册与入池 |
 | `oauth_codex.py` | Codex OAuth 与下游导入 |

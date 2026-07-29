@@ -52,7 +52,7 @@ _MODE_ALIASES = {
     "off": "direct",
 }
 
-_PLATFORMS = ("outlook", "claude", "chatgpt", "grok")
+_PLATFORMS = ("outlook", "claude", "chatgpt", "grok", "kiro")
 
 
 def _env(environ=None):

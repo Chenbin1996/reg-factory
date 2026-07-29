@@ -53,6 +53,9 @@ curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=chatgpt2api"
 
 # Grok -> SUB2API SSO 请求体
 curl "http://127.0.0.1:8799/api/assets/cookies/grok?format=sub2api"
+
+# Kiro Builder ID 账号凭据
+curl "http://127.0.0.1:8799/api/assets/cookies/kiro?format=session"
 ```
 
 支持的平台与格式：
@@ -62,6 +65,7 @@ curl "http://127.0.0.1:8799/api/assets/cookies/grok?format=sub2api"
 | Claude | `cookies`、`raw`、`header` |
 | ChatGPT | `cookies`、`raw`、`header`、`session`、`sub2api`、`cpa`、`chatgpt2api` |
 | Grok | `cookies`、`raw`、`header`、`session`、`sub2api` |
+| Kiro | `session` |
 
 `cookies` 是浏览器扩展通用导入数组，包含 `domain`、`hostOnly`、`httpOnly`、`name`、`path`、`sameSite`、`secure`、`session`、`storeId`、`value`，持久 Cookie 额外包含 `expirationDate`。`raw` 保留注册脚本保存的原始字段，供旧调用兼容。
 

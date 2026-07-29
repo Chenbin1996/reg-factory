@@ -12,6 +12,7 @@ TASK_FILES = [
     "register_chatgpt.py",
     "register_grok_http.py",
     "register_grok.py",
+    "register_kiro.py",
     "register.py",
     "register_github.py",
     "outlook_reg_loop.py",
@@ -27,6 +28,7 @@ TASK_FILES = [
 datas = [
     (str(ROOT / ".env.example"), "."),
     (str(ROOT / "VERSION"), "."),
+    (str(ROOT / "update-portable.ps1"), "."),
     (str(ROOT / "webui" / "static"), "webui/static"),
     (str(ROOT / "assets"), "assets"),
     (str(ROOT / "common" / "bundled_browser_helper.py"), "common"),
@@ -45,6 +47,7 @@ hiddenimports = playwright_hidden + [
     "register_chatgpt",
     "register_grok_http",
     "register_grok",
+    "register_kiro",
     "register",
     "register_github",
     "outlook_reg_loop",

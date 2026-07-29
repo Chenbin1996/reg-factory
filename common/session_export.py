@@ -463,3 +463,28 @@ def save_claude_token(session_key, email=""):
                   f, indent=2, ensure_ascii=False)
     print(f"  [claude] sessionKey saved: {path}")
     return True
+
+
+def save_kiro_token(record, email=""):
+    """Save a Builder ID credential bundle for Kiro.
+
+    Kiro consumers need the long-lived Builder ID refresh token together with
+    the OIDC client pair, so the file intentionally keeps those fields in one
+    account record instead of splitting them across cookie/session formats.
+    """
+    if not isinstance(record, dict):
+        return False
+    refresh = _s(record.get("refreshToken") or record.get("refresh_token"))
+    client_id = _s(record.get("clientId") or record.get("client_id"))
+    if not refresh or not client_id:
+        return False
+    pdir = _platform_dir("kiro")
+    name = _safe_email_name(email or record.get("email") or "account")
+    path = os.path.join(pdir, f"{name}.account.json")
+    output = dict(record)
+    output["email"] = _s(email or record.get("email"))
+    output.setdefault("updatedAt", int(time.time()))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+    print(f"  [kiro] account saved: {path}")
+    return True
