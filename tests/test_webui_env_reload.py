@@ -132,6 +132,29 @@ class WebUIEnvReloadTests(unittest.TestCase):
         self.assertNotIn("user", payload["error"])
         self.assertNotIn("pass", payload["error"])
 
+    def test_proxy_save_write_failure_returns_json(self):
+        path = self._env_file("unchanged")
+
+        async def save():
+            with patch.object(server, "ENV_PATH", path):
+                with patch.object(server, "_write_env_file", side_effect=OSError("disk full")):
+                    return await server.api_proxy_set(FakeJSONRequest({
+                        "config": {"PROXY_MODE": "clash_auto"},
+                    }))
+
+        response = asyncio.run(save())
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(payload["ok"])
+        self.assertIn("disk full", payload["error"])
+
+    def test_proxy_test_invalid_platform_returns_json(self):
+        response = asyncio.run(server.api_proxy_test("invalid-platform"))
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["error"])
+
     def test_asset_api_without_key_is_loopback_only(self):
         local = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
         remote = SimpleNamespace(headers={}, client=SimpleNamespace(host="192.0.2.10"))

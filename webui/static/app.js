@@ -18,6 +18,20 @@ let updateRequested = false;
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 
+async function readJsonResponse(response){
+  const text = await response.text();
+  if(!text.trim()){
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    return {};
+  }
+  try{
+    return JSON.parse(text);
+  }catch(_error){
+    const detail = text.replace(/\s+/g, ' ').trim().slice(0, 180);
+    throw new Error(`HTTP ${response.status}: ${detail || 'Invalid server response'}`);
+  }
+}
+
 function setNavOpen(open){
   document.body.classList.toggle('nav-open', open);
   $('#btn-nav').setAttribute('aria-expanded', String(open));
@@ -202,7 +216,9 @@ function renderProxyNodes(nodes, selected){
 async function loadProxyPanel(includeNodes=false){
   setProxyMessage('读取中…');
   try{
-    const data = await (await fetch(includeNodes ? '/api/proxy?nodes=1' : '/api/proxy')).json();
+    const response = await fetch(includeNodes ? '/api/proxy?nodes=1' : '/api/proxy');
+    const data = await readJsonResponse(response);
+    if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const config = data.config || {};
     setProxyMode(config.PROXY_MODE || 'clash_auto');
     $('#proxy-clash-api').value = config.CLASH_API || '';
@@ -257,7 +273,8 @@ async function applyProxyConfig(){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({config:collectProxyConfig()}),
   });
-  const data = await response.json();
+  const data = await readJsonResponse(response);
+  if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   if(!data.ok) throw new Error(data.error || '保存失败');
   if(data.config?.PROXY_MODE && data.config.PROXY_MODE !== proxyMode){
     throw new Error(`代理模式未生效：后端仍为 ${data.config.PROXY_MODE}`);
@@ -284,7 +301,8 @@ async function rotateProxy(){
     const target = $('#proxy-platform-target').value;
     const params = target ? `?platform=${encodeURIComponent(target)}` : '';
     const response = await fetch(`/api/proxy/rotate${params}`, {method:'POST'});
-    const data = await response.json();
+    const data = await readJsonResponse(response);
+    if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     if(!data.ok) throw new Error(data.error || '轮换失败');
     const delay = data.latency_ms ? `，延迟 ${data.latency_ms} ms` : '';
     const applies = data.mode === 'residential' ? '，新建 BitBrowser 窗口生效' : '';
@@ -305,7 +323,8 @@ async function testProxy(){
     const target = $('#proxy-platform-target').value;
     const params = target ? `?platform=${encodeURIComponent(target)}` : '';
     const response = await fetch(`/api/proxy/test${params}`, {method:'POST'});
-    const data = await response.json();
+    const data = await readJsonResponse(response);
+    if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     if(!data.ok) throw new Error(data.error || '检测失败');
     setProxyMessage(`${data.platform || 'global'} 出口 IP：${data.ip} · ${data.node || data.mode}`, true);
     $('#network-current').textContent = `${applied.current || data.node || '--'} · ${data.mode || proxyMode}`;

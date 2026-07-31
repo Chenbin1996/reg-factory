@@ -560,6 +560,8 @@ MS_POSITIVE_ACTION_LABELS = (
     "接受", "允许", "同意", "继续", "下一步", "确定",
     "允許", "繼續", "下一步", "確定",
     "承諾", "許可", "続行", "次へ", "はい", "同意する",
+    "\u8a31\u53ef\u3059\u308b", "\u627f\u8a8d", "\u627f\u8a8d\u3059\u308b",
+    "\u540c\u610f", "\u540c\u610f\u3057\u3066\u7d9a\u884c", "\u540c\u610f\u3057\u3066\u6b21\u3078", "\u78ba\u8a8d",
     "동의", "허용", "계속", "다음", "예", "확인",
 )
 MS_NEGATIVE_ACTION_LABELS = (
@@ -575,7 +577,9 @@ MS_NEGATIVE_ACTION_LABELS = (
     "отклонить", "отмена", "нет",
     "reddet", "iptal", "hayır",
     "رفض", "إلغاء", "لا", "رجوع",
-    "拒绝", "拒絕", "取消", "否", "いいえ", "拒否", "취소", "거부", "아니요",
+    "拒绝", "拒絕", "取消", "否", "いいえ", "拒否", "\u62d2\u5426\u3059\u308b",
+    "\u8a31\u53ef\u3057\u306a\u3044", "\u30ad\u30e3\u30f3\u30bb\u30eb", "\u623b\u308b",
+    "취소", "거부", "아니요",
 )
 MS_SKIP_ACTION_LABELS = (
     "skip for now", "skip", "not now", "no thanks", "maybe later", "later",
@@ -985,6 +989,8 @@ async def _accept_microsoft_app_consent(page, idx=0):
         or "允许此应用访问你的信息" in body
         or "讓此應用程式存取您的資訊" in body
         or "このアプリが情報にアクセスすることを許可" in body
+        or "このアプリがあなたの情報にアクセスすることを許可" in body
+        or "このアプリに情報へのアクセスを許可" in body
         or "이 앱이 사용자 정보에 액세스하도록 허용" in body
         or "autoriser cette application à accéder" in body
         or "permitir que esta aplicación acceda" in body
@@ -1037,6 +1043,8 @@ async def _handle_microsoft_kmsi(page, idx=0):
         "oturumunuz açık kalsın",
         "هل تريد أن يظل دخولك مسجلاً", "هل تريد البقاء قيد تسجيل الدخول",
         "保持登录状态", "保持登入狀態", "サインインしたままにする",
+        "\u30b5\u30a4\u30f3\u30a4\u30f3\u306e\u72b6\u614b\u3092\u7dad\u6301\u3057\u307e\u3059\u304b",
+        "\u30b5\u30a4\u30f3\u30a4\u30f3\u306e\u72b6\u614b\u3092\u7dad\u6301",
         "로그인 상태를 유지",
     )
     detected = "/kmsi" in current_url or any(marker in body for marker in markers)
@@ -1388,7 +1396,11 @@ async def _maybe_confirm_before_register(page, tag, captcha_early_abort=False):
     curl = (page.url or "").lower()
     consent_hit = (
         any(kw in page_text for kw in ["同意并继续", "个人数据", "数据导出", "数据确认",
-                                       "資料", "個人資料", "同意並繼續"])
+                                       "資料", "個人資料", "同意並繼續",
+                                       "\u540c\u610f\u3057\u3066\u7d9a\u884c", "\u540c\u610f\u3057\u3066\u6b21\u3078",
+                                       "\u500b\u4eba\u30c7\u30fc\u30bf", "\u500b\u4eba\u60c5\u5831",
+                                       "\u30c7\u30fc\u30bf\u306e\u30a8\u30af\u30b9\u30dd\u30fc\u30c8",
+                                       "\u30d7\u30e9\u30a4\u30d0\u30b7\u30fc\u306b\u95a2\u3059\u308b\u901a\u77e5"])
         or any(kw in ptl for kw in ["agree and continue", "consent", "data export",
                                     "accepter et continuer", "consentement",
                                     "your data", "personal data",
@@ -1447,7 +1459,11 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
             # Only trigger for actual privacy/consent standalone pages, not signup pages with footer links
             is_signup_form = "signup.live.com" in current_url and "privacynotice" not in current_url
             if not is_signup_form and (
-                any(kw in page_text for kw in ["同意并继续", "个人数据", "数据导出"]) or \
+                any(kw in page_text for kw in ["同意并继续", "个人数据", "数据导出",
+                                               "\u540c\u610f\u3057\u3066\u7d9a\u884c", "\u540c\u610f\u3057\u3066\u6b21\u3078",
+                                               "\u500b\u4eba\u30c7\u30fc\u30bf", "\u500b\u4eba\u60c5\u5831",
+                                               "\u30c7\u30fc\u30bf\u306e\u30a8\u30af\u30b9\u30dd\u30fc\u30c8",
+                                               "\u30d7\u30e9\u30a4\u30d0\u30b7\u30fc\u306b\u95a2\u3059\u308b\u901a\u77e5"]) or \
                 any(kw in page_text.lower() for kw in [
                     "agree and continue", "consent", "data export",
                     "accepter et continuer", "consentement", "aceptar y continuar",

@@ -88,6 +88,15 @@ class ReleaseLauncherTests(unittest.TestCase):
         function = source.split("async function testProxy(){", 1)[1].split("\n}", 1)[0]
         self.assertLess(function.index("applyProxyConfig()"), function.index("/api/proxy/test"))
 
+    def test_proxy_requests_handle_non_json_server_errors(self):
+        source = (ROOT / "webui" / "static" / "app.js").read_text(encoding="utf-8")
+        parser = source.split("async function readJsonResponse(response){", 1)[1].split("\n}", 1)[0]
+        self.assertIn("response.text()", parser)
+        self.assertIn("JSON.parse(text)", parser)
+        for name in ("applyProxyConfig", "rotateProxy", "testProxy"):
+            function = source.split(f"async function {name}(", 1)[1].split("\n}", 1)[0]
+            self.assertIn("readJsonResponse(response)", function)
+
     def test_task_exit_code_does_not_trigger_desktop_startup_pause(self):
         with patch.object(launcher, "main", side_effect=SystemExit(2)):
             with patch.object(launcher, "_pause_after_error") as pause:

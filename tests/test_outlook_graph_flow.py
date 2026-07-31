@@ -96,6 +96,53 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("aceptar", payload["labels"])
         self.assertIn("denegar", payload["negativeLabels"])
 
+    async def test_japanese_device_app_consent_is_accepted(self):
+        page = MagicMock()
+        page.url = "https://account.live.com/Consent/Update?mkt=ja-JP"
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            return_value=(
+                "このアプリがあなたの情報にアクセスすることを許可しますか? "
+                "拒否 許可"
+            )
+        )
+        page.locator.return_value = body
+        page.evaluate = AsyncMock(return_value="許可")
+        with patch.object(register_outlook_standalone.asyncio, "sleep", AsyncMock()):
+            detected, accepted = await (
+                register_outlook_standalone._accept_microsoft_app_consent(page, 9)
+            )
+
+        self.assertTrue(detected)
+        self.assertTrue(accepted)
+        payload = page.evaluate.call_args.args[1]
+        self.assertIn("許可する", payload["labels"])
+        self.assertIn("拒否する", payload["negativeLabels"])
+        self.assertIn("idBtn_Accept", payload["preferredIds"])
+
+    async def test_japanese_signup_consent_gate_is_detected(self):
+        page = MagicMock()
+        page.url = "https://signup.live.com/privacynotice?mkt=ja-JP"
+        page.title = AsyncMock(return_value="Microsoft アカウントのプライバシー")
+        page.evaluate = AsyncMock(
+            side_effect=[
+                "個人データのエクスポート 同意して続行",
+                "同意して続行",
+            ]
+        )
+        with (
+            patch.dict(register_outlook_standalone.os.environ,
+                       {"OUTLOOK_CONFIRM_BEFORE_REGISTER": "1"}, clear=False),
+            patch.object(register_outlook_standalone.asyncio, "sleep", AsyncMock()),
+        ):
+            await register_outlook_standalone._maybe_confirm_before_register(
+                page, "[#10]"
+            )
+
+        self.assertGreaterEqual(page.evaluate.await_count, 2)
+        payload = page.evaluate.call_args.args[1]
+        self.assertIn("同意して続行", payload["labels"])
+
     async def test_arabic_device_app_consent_is_accepted(self):
         page = MagicMock()
         page.url = "https://account.live.com/Consent/Update?mkt=ar-AE"
@@ -165,6 +212,31 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
         payload = page.evaluate.call_args.args[1]
         self.assertIn("\u662f", payload["labels"])
         self.assertIn("\u5426", payload["negativeLabels"])
+
+    async def test_japanese_stay_signed_in_prompt_clicks_yes_not_no(self):
+        page = MagicMock()
+        page.url = "https://login.live.com/kmsi"
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            return_value=(
+                "サインインの状態を維持しますか? "
+                "毎回サインインする必要がないようにします。 はい いいえ"
+            )
+        )
+        page.locator.return_value = body
+        page.evaluate = AsyncMock(return_value="はい")
+
+        with patch.object(register_outlook_standalone.asyncio, "sleep", AsyncMock()):
+            detected, continued = await (
+                register_outlook_standalone._handle_microsoft_kmsi(page, 11)
+            )
+
+        self.assertTrue(detected)
+        self.assertTrue(continued)
+        payload = page.evaluate.call_args.args[1]
+        self.assertIn("はい", payload["labels"])
+        self.assertIn("いいえ", payload["negativeLabels"])
+        self.assertIn("idSIButton9", payload["preferredIds"])
 
     async def test_german_recovery_email_is_skipped(self):
         page = MagicMock()

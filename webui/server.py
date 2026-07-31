@@ -1178,16 +1178,45 @@ def _proxy_panel_data(include_nodes=False):
     }
 
 
+def _proxy_error_message(exc, proxy_values=()):
+    from common import direct_proxy
+
+    message = str(exc).strip() or type(exc).__name__
+    for raw in proxy_values:
+        raw = str(raw or "").strip()
+        if not raw:
+            continue
+        try:
+            spec = direct_proxy.parse_proxy(raw)
+        except (TypeError, ValueError):
+            continue
+        if spec is None:
+            continue
+        message = message.replace(raw, spec.server)
+        for secret in (spec.username, spec.password):
+            if secret:
+                message = message.replace(secret, "***")
+    return message[:240]
+
+
 @app.get("/api/proxy")
 def api_proxy_get(nodes: bool = False):
-    return _proxy_panel_data(include_nodes=nodes)
+    try:
+        return _proxy_panel_data(include_nodes=nodes)
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": _proxy_error_message(exc)}, status_code=500
+        )
 
 
 @app.post("/api/proxy")
 async def api_proxy_set(request: Request):
     from common import direct_proxy
 
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON request"}, status_code=400)
     incoming = (data or {}).get("config") or {}
     updates = {key: str(incoming.get(key) or "").strip() for key in _PROXY_ENV_KEYS}
     mode = updates["PROXY_MODE"] or "clash_auto"
@@ -1231,10 +1260,22 @@ async def api_proxy_set(request: Request):
         return JSONResponse({"ok": False, "error": "ChatGPT 轮换上限必须是整数"}, status_code=400)
     updates["REG_FACTORY_PROXY_POOL"] = ",".join(pool_values)
 
-    if not os.path.isfile(ENV_PATH) and os.path.isfile(ENV_EXAMPLE):
-        shutil.copy(ENV_EXAMPLE, ENV_PATH)
-    _write_env_file(ENV_PATH, updates)
-    _apply_saved_env(updates)
+    try:
+        if not os.path.isfile(ENV_PATH) and os.path.isfile(ENV_EXAMPLE):
+            shutil.copy(ENV_EXAMPLE, ENV_PATH)
+        _write_env_file(ENV_PATH, updates)
+        _apply_saved_env(updates)
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Network configuration could not be saved: "
+                + _proxy_error_message(
+                    exc, [updates["REG_FACTORY_PROXY"], *pool_values]
+                ),
+            },
+            status_code=500,
+        )
     try:
         from common import proxy_switch as ps
         applied = await asyncio.to_thread(ps.ensure_proxy_mode)
@@ -1269,7 +1310,12 @@ async def api_proxy_rotate(platform: str = ""):
 
 @app.post("/api/proxy/test")
 async def api_proxy_test(platform: str = ""):
-    target_env = _proxy_target_env(platform)
+    try:
+        target_env = _proxy_target_env(platform)
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": _proxy_error_message(exc)}, status_code=400
+        )
 
     def _test():
         from common import direct_proxy
