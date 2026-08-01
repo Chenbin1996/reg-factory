@@ -1,5 +1,17 @@
 ﻿# 更新日志
 
+## 2026-08-02 - 1.2.12
+
+**Grok OAuth 与 SUB2API 导入修复**
+- 修复 xAI 注册页 Next.js chunk URL 带 `?dpl=` 参数时无法发现动态 Server Action 的问题，并兼容 40-44 位 action ID。
+- OAuth 授权与 consent 统一使用 `plan=generic`、`referrer=grok-build`，对齐当前 xAI 授权参数。
+- 注册浏览器保持登录态完成 Device Flow，取得 refresh token 后直接创建或修复 SUB2API Grok OAuth 账号。
+- 导入前解析 Grok 注册风控状态；`policy=deny,event=$registration` 的账号明确早停，不再触发无效远端转换或创建脏账号。
+- 补齐波兰语、西班牙语邮箱注册入口和 Cookie 横幅文案，并增加通用邮箱入口兜底。
+- 真实流程验证：Outlook 邮箱完成注册、OAuth 和 SUB2API 导入；临时邮箱注册成功后被 xAI 注册风控拒绝并正确跳过导入。
+
+---
+
 ## 2026-07-31 - 1.2.11
 
 **Outlook 日文注册与 WebUI 网络配置修复**
