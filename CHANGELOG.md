@@ -1,5 +1,14 @@
 ﻿# 更新日志
 
+## 2026-08-02 - 1.2.13
+
+**Outlook Graph 日文保持登录页修复**
+- 修复 Microsoft Graph Device Flow 的“サインインの状態を維持しますか?”提示位于 iframe 时，页面文字可见但“はい”按钮无法点击的问题。
+- Graph 授权动作现在同时扫描顶层页面和所有 iframe，避免网页任务持续等待并最终超时。
+- 增加日文 iframe 场景回归测试；`check_outlook_status unavailable` 仍仅表示可选的注册后校验模块未安装，不影响 Graph 授权。
+
+---
+
 ## 2026-08-02 - 1.2.12
 
 **Grok OAuth 与 SUB2API 导入修复**
