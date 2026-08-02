@@ -623,6 +623,9 @@ async def acquire_browser_grok_oauth(page, sso, email):
     """Approve Device Flow in the authenticated registration browser."""
     if not IMPORT_SUB2API:
         return None
+    if os.environ.get("REG_FACTORY_WEBUI_TASK", "").strip() == "1":
+        print("  [oauth] WebUI 任务跳过浏览器 Device Flow，直接使用本机 OAuth 导入")
+        return None
 
     from common.grok_oauth import (
         finish_grok_device_flow,

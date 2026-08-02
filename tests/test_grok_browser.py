@@ -68,6 +68,17 @@ class GrokBrowserTests(unittest.TestCase):
 
 
 class GrokBrowserOAuthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_webui_task_skips_browser_device_flow(self):
+        with patch.object(register_grok, "IMPORT_SUB2API", True), patch.dict(
+            register_grok.os.environ, {"REG_FACTORY_WEBUI_TASK": "1"}, clear=False
+        ), patch("common.grok_oauth.start_grok_device_flow") as start:
+            result = await register_grok.acquire_browser_grok_oauth(
+                MagicMock(), "sso-token", "webui@example.com"
+            )
+
+        self.assertIsNone(result)
+        start.assert_not_called()
+
     async def test_risk_denied_account_does_not_start_device_flow(self):
         state = {
             "denied": True,
