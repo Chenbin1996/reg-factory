@@ -67,7 +67,21 @@ def _trusted_xai_url(raw):
     except Exception:
         return False
     host = str(parsed.hostname or "").lower()
-    return parsed.scheme == "https" and (host == "x.ai" or host.endswith(".x.ai"))
+    return parsed.scheme == "https" and (
+        host == "x.ai"
+        or host.endswith(".x.ai")
+        or host == "grok.com"
+        or host.endswith(".grok.com")
+    )
+
+
+def _browser_device_verification_url(url):
+    """Use Grok's live UI route; accounts.x.ai's legacy route now renders 404."""
+    raw = str(url or "").strip()
+    prefix = "https://accounts.x.ai/oauth2/device"
+    if raw.lower().startswith(prefix):
+        return "https://grok.com/oauth2/device" + raw[len(prefix):]
+    return raw
 
 
 def _device_authorized(url="", body=""):
@@ -242,6 +256,7 @@ def start_grok_device_flow(proxy):
             if verification_uri:
                 separator = "&" if "?" in verification_uri else "?"
                 verification_url = f"{verification_uri}{separator}user_code={quote(user_code)}"
+        verification_url = _browser_device_verification_url(verification_url)
         if not device_code or not user_code or not _trusted_xai_url(verification_url):
             raise RuntimeError("xAI Device Flow returned incomplete data")
         return {

@@ -1,5 +1,14 @@
 ﻿# 更新日志
 
+## 2026-08-02 - 1.2.14
+
+**Grok Device Flow 页面路由修复**
+- 修复 xAI 返回的 `accounts.x.ai/oauth2/device` 浏览器地址当前实际渲染 404，导致 Grok 页面无按钮并卡住的问题。
+- 浏览器授权自动改用当前可用的 `grok.com/oauth2/device` 页面；token 交换仍使用 `auth.x.ai` 协议端点。
+- 增加线上设备授权地址转换测试，保留本机 OAuth 回退，避免授权页面异常时影响 SUB2API 导入。
+
+---
+
 ## 2026-08-02 - 1.2.13
 
 **Outlook Graph 日文保持登录页修复**

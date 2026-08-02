@@ -69,6 +69,14 @@ class _DeviceFlowSession:
 
 
 class GrokOAuthTests(unittest.TestCase):
+    def test_browser_device_url_uses_live_grok_route(self):
+        self.assertEqual(
+            grok_oauth._browser_device_verification_url(
+                "https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH"
+            ),
+            "https://grok.com/oauth2/device?user_code=ABCD-EFGH",
+        )
+
     def test_authorization_url_uses_current_grok_referrer(self):
         url = build_authorization_url(
             client_id=grok_oauth.XAI_CLIENT_ID,
