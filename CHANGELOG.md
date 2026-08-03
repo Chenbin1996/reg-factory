@@ -1,5 +1,15 @@
 ﻿# 更新日志
 
+## 2026-08-04 - 1.2.16
+
+**ChatGPT iCloud 邮箱支持**
+- 新增 `icloud` 邮箱 provider，支持 `icloud-code + service=openai` 申请地址，并通过 `/api/user/mail` 轮询 ChatGPT 验证码。
+- ChatGPT 新增 `--email-provider icloud`；WebUI 增加邮箱来源、API 地址、API key、类型和 service 配置项。
+- 正确处理 iCloud API 的空邮件响应，不会把 `{code: 0, message: success}` 误当成验证码邮件。
+- API key 仅从 `.env` 或进程环境读取，示例配置不包含真实密钥；文档站 `email.manageh.shop` 与实际 API 主机 `mail.no-replyca.xyz` 已明确区分。
+
+---
+
 ## 2026-08-02 - 1.2.15
 
 **WebUI Grok OAuth 路径修复**

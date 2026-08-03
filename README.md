@@ -143,6 +143,9 @@ python register.py --count 1 --node auto --latest-rt
 # Claude 使用 YYDS 临时邮箱
 python register.py --count 1 --node auto --provider yyds
 
+# ChatGPT 使用 iCloud 接码邮箱（先在 .env 配置 ICLOUD_MAIL_API_KEY）
+python register_chatgpt.py --count 1 --email-provider icloud
+
 # Grok 浏览器注册并导入 SUB2API
 python register_grok.py --count 1 --sub2api
 

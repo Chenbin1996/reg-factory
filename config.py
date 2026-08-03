@@ -92,8 +92,11 @@ MAIL_NEW_PASS = _env("MAIL_NEW_PASS", "")
 GROK_USE_TEMP_EMAIL = _env("GROK_USE_TEMP_EMAIL", "false").strip().lower() in ("1", "true", "yes", "on")
 # CLAUDE_USE_TEMP_EMAIL=true 时 register.py 走临时邮箱取 magic link，免去 Outlook 注册/轮询。
 CLAUDE_USE_TEMP_EMAIL = _env("CLAUDE_USE_TEMP_EMAIL", "false").strip().lower() in ("1", "true", "yes", "on")
-# provider: moemail | yyds | gptmail | cfmail（默认 gptmail，带公共测试 key 开箱即用）
+# provider: moemail | yyds | gptmail | cfmail | icloud（默认 gptmail，带公共测试 key 开箱即用）
 TEMP_EMAIL_PROVIDER = _env("TEMP_EMAIL_PROVIDER", "gptmail").strip().lower() or "gptmail"
+
+# ChatGPT 邮箱来源：pool=emails.txt Outlook 池；icloud=自动申请 iCloud 地址并通过 API 取码。
+CHATGPT_EMAIL_PROVIDER = _env("CHATGPT_EMAIL_PROVIDER", "pool").strip().lower() or "pool"
 
 # MoeMail（beilunyang/moemail，需自部署）
 MOEMAIL_BASE_URL = _env("MOEMAIL_BASE_URL", "https://moemail.example.com")
@@ -108,6 +111,12 @@ YYDS_API_KEY = _env("YYDS_API_KEY", "")  # AC-... 格式，profile 页获取
 # GPTMail（mail.chatgpt.org.uk），支持公共测试 key "gpt-test"
 GPTMAIL_BASE_URL = _env("GPTMAIL_BASE_URL", "https://mail.chatgpt.org.uk")
 GPTMAIL_API_KEY = _env("GPTMAIL_API_KEY", "gpt-test")
+
+# iCloud Mail API（API 主机，不是文档站 email.manageh.shop）
+ICLOUD_MAIL_API_BASE = _env("ICLOUD_MAIL_API_BASE", "https://mail.no-replyca.xyz")
+ICLOUD_MAIL_API_KEY = _env("ICLOUD_MAIL_API_KEY", "")
+ICLOUD_MAIL_TYPE = _env("ICLOUD_MAIL_TYPE", "icloud-code").strip().lower() or "icloud-code"
+ICLOUD_MAIL_SERVICE = _env("ICLOUD_MAIL_SERVICE", "openai").strip().lower() or "openai"
 
 # Cloudflare Temp Email（dreamhunter2333/cloudflare_temp_email，建议自部署 Workers）
 CFMAIL_BASE_URL = _env("CFMAIL_BASE_URL", "https://temp-email-api.awsl.uk")

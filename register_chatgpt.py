@@ -31,12 +31,14 @@ from common.browser import open_and_connect, teardown, human_type, react_fill
 from common.mailbox import get_code_by_token, get_code_outlook_pw, prelogin_outlook
 from common.cookies import save_platform_cookies
 from common import emails as email_pool
+from common.temp_email import create_mailbox, poll_verification_code
 from common import proxy_switch
 
 try:
-    from config import CHATGPT2API_URL, CHATGPT2API_KEY
+    from config import CHATGPT2API_URL, CHATGPT2API_KEY, CHATGPT_EMAIL_PROVIDER
 except Exception:
     CHATGPT2API_URL, CHATGPT2API_KEY = "", ""
+    CHATGPT_EMAIL_PROVIDER = "pool"
 
 try:
     from config import (
@@ -57,6 +59,7 @@ FIXED_EMAIL = None
 FIXED_PASSWORD = None
 FIXED_REFRESH_TOKEN = None
 FIXED_CLIENT_ID = None
+EMAIL_PROVIDER = "pool"
 IMPORT_C2A = False  # 注册成功后即时把 token 导入 chatgpt2api（--import-c2a 开启）
 C2A_URL = None  # chatgpt2api host（默认取 config.CHATGPT2API_URL）
 C2A_KEY = None  # chatgpt2api admin key（默认取 config.CHATGPT2API_KEY）
@@ -813,12 +816,22 @@ async def register_one(index, total, p):
         if time.time() - start > REGISTER_TIMEOUT:
             raise TimeoutError(f"timeout {REGISTER_TIMEOUT}s")
 
+    mailbox = None
     # 取邮箱。调试同一邮箱注册多平台时可通过 CLI 指定，避免邮箱池自动分配。
     if FIXED_EMAIL:
         email = FIXED_EMAIL
         email_pw = FIXED_PASSWORD or ""
         refresh_token = FIXED_REFRESH_TOKEN or ""
         client_id = FIXED_CLIENT_ID or ""
+    elif EMAIL_PROVIDER == "icloud":
+        try:
+            mailbox = create_mailbox(provider="icloud")
+            email = mailbox["email"]
+            email_pw = refresh_token = client_id = ""
+            print(f"  [email] iCloud mailbox allocated: {email}")
+        except Exception as exc:
+            print(f"  [email] iCloud mailbox unavailable: {str(exc)[:160]}")
+            return None
     else:
         em = email_pool.next_email(PLATFORM)
         if not em:
@@ -1061,6 +1074,8 @@ async def register_one(index, total, p):
         if await code_input.count() > 0 or "verify" in page.url.lower() or "check" in (await page.locator("body").inner_text()).lower():
             code_sel = 'input[inputmode="numeric"], input[name="code"], input[autocomplete="one-time-code"], input[type="text"]'
 
+            icloud_seen_codes = set()
+
             async def _fetch_email_code(received_after=None, allow_browser_fallback=False):
                 """取一次码：先 Graph token，失败再浏览器登录 Outlook 取信。
                 取码窗口**跨 resend 复用**：已登录就只刷新收件箱轮询(skip_login)，不关窗不重登。
@@ -1069,6 +1084,16 @@ async def register_one(index, total, p):
                 浏览器兜底只是去查同一个收件箱、纯浪费；取不到码该靠上层 resend 重发，而非开窗口。
                 received_after: resend 后传重发时刻，只收该时刻后到的邮件(旧码已被 OpenAI 作废)。"""
                 nonlocal mail_bb, mail_pid, mail_page, mail_logged_in
+                if mailbox and mailbox.get("provider") == "icloud":
+                    c = await poll_verification_code(
+                        mailbox["id"], "icloud", email=mailbox["email"],
+                        max_wait=120, poll_interval=4,
+                        sender_hint=(), subject_hint=(), code_regex=r"\b(\d{6})\b",
+                        exclude_codes=tuple(icloud_seen_codes),
+                    )
+                    if c:
+                        icloud_seen_codes.add(str(c))
+                    return c
                 c = await asyncio.get_event_loop().run_in_executor(
                     None, functools.partial(
                         get_code_by_token, email, refresh_token, client_id or None,
@@ -1752,6 +1777,8 @@ async def main():
     parser.add_argument("--password", default=None, help="指定邮箱密码")
     parser.add_argument("--refresh-token", default=None, help="指定 Outlook refresh_token")
     parser.add_argument("--client-id", default=None, help="指定 Outlook OAuth client_id")
+    parser.add_argument("--email-provider", choices=["pool", "icloud"], default=None,
+                        help="邮箱来源：pool=emails.txt，icloud=API 自动申请并取码")
     parser.add_argument("--import-c2a", action="store_true",
                         help="注册成功后即时把 token 导入 chatgpt2api (POST <host>/api/accounts)")
     parser.add_argument("--c2a-url", default=None, help="chatgpt2api host (默认取 config.CHATGPT2API_URL)")
@@ -1766,7 +1793,7 @@ async def main():
                         help="Codex 授权捕获超时秒 (手动填号会自动抬到至少 300)")
     args = parser.parse_args()
 
-    global REGISTER_TIMEOUT, KEEP_ON_FAIL, FIXED_EMAIL, FIXED_PASSWORD, FIXED_REFRESH_TOKEN, FIXED_CLIENT_ID
+    global REGISTER_TIMEOUT, KEEP_ON_FAIL, FIXED_EMAIL, FIXED_PASSWORD, FIXED_REFRESH_TOKEN, FIXED_CLIENT_ID, EMAIL_PROVIDER
     global IMPORT_C2A, C2A_URL, C2A_KEY
     global EXTRACT_CODEX, CODEX_GROUP, CODEX_MANUAL_PHONE, CODEX_TIMEOUT, CHATGPT_NODE
     REGISTER_TIMEOUT = args.timeout
@@ -1775,6 +1802,10 @@ async def main():
     FIXED_PASSWORD = args.password
     FIXED_REFRESH_TOKEN = args.refresh_token
     FIXED_CLIENT_ID = args.client_id
+    EMAIL_PROVIDER = args.email_provider or CHATGPT_EMAIL_PROVIDER or "pool"
+    if EMAIL_PROVIDER not in {"pool", "icloud"}:
+        print(f"  [config] CHATGPT_EMAIL_PROVIDER={EMAIL_PROVIDER!r} 无效，回退 pool")
+        EMAIL_PROVIDER = "pool"
     IMPORT_C2A = args.import_c2a
     C2A_URL = args.c2a_url
     C2A_KEY = args.c2a_key
