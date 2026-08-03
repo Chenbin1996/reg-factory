@@ -541,7 +541,7 @@ async function loadAssetScan(){
 
 async function startAssetScan(all=false){
   const platform = $('#asset-scan-platform').value;
-  const platforms = all || platform === 'all' ? ['outlook','chatgpt','claude','grok'] : [platform];
+  const platforms = all || platform === 'all' ? ['outlook','chatgpt','claude','grok','kiro'] : [platform];
   setAssetMessage('#asset-scan-msg', '正在启动扫描…');
   try{
     const response = await fetch('/api/assets/scan', {method:'POST', headers:assetHeaders(true), body:JSON.stringify({
@@ -550,7 +550,7 @@ async function startAssetScan(all=false){
       timeout:15,
     })});
     await readAssetResponse(response);
-    setAssetMessage('#asset-scan-msg', `已开始扫描 ${platforms.length === 4 ? '全部号池' : ASSET_SCAN_PLATFORM_LABELS[platforms[0]]}`, true);
+    setAssetMessage('#asset-scan-msg', `已开始扫描 ${all || platform === 'all' ? '全部号池' : ASSET_SCAN_PLATFORM_LABELS[platforms[0]]}`, true);
     await loadAssetScan();
   }catch(error){
     setAssetMessage('#asset-scan-msg', error.message || String(error), false);
@@ -599,14 +599,14 @@ async function saveAssetKey(){
 async function callAssetApi(){
   const button = $('#btn-call-asset');
   button.disabled = true;
-  setAssetMessage('#asset-call-msg', '调用中…');
+  setAssetMessage('#asset-call-msg', '正在在线校验并读取资产…');
   try{
     const request = buildAssetRequest();
     const response = await fetch(request.relative, {headers:assetHeaders()});
     const data = await readAssetResponse(response);
     $('#asset-response').textContent = JSON.stringify(data, null, 2);
     const progress = data.total === undefined ? '' : `，index ${data.index}/${Math.max(0, data.total-1)}`;
-    setAssetMessage('#asset-call-msg', `调用成功${progress}`, true);
+    setAssetMessage('#asset-call-msg', `在线校验通过并调用成功${progress}`, true);
     await refreshAssetSummary(true);
   }catch(error){
     $('#asset-response').textContent = JSON.stringify({error:error.message || String(error)}, null, 2);
@@ -620,7 +620,7 @@ async function resetAssetCursor(){
   const request = buildAssetRequest();
   const scope = $('#asset-reset-scope').value === 'all'
     ? 'all'
-    : (request.resource === 'emails' ? 'email' : `cookie:${request.resource}:${request.format}`);
+    : (request.resource === 'emails' ? 'verified:email' : `verified:cookie:${request.resource}:${request.format}`);
   try{
     const response = await fetch('/api/assets/cursors/reset', {method:'POST', headers:assetHeaders(true), body:JSON.stringify({scope})});
     const data = await readAssetResponse(response);
@@ -1137,37 +1137,92 @@ const GUIDE_STEPS = [
   {
     id:'network', section:'网络', title:'先打开网络出口', target:'[data-guide="network-entry"]', placement:'right',
     prepare:async()=>{ await showView('network'); if(innerWidth<=900) setNavOpen(true); },
-    skipLabel:'跳过网络配置', skipTo:'browser',
+    skipLabel:'跳过网络配置', skipTo:'env-overview',
     body:`<p>网络出口决定注册页面看到的公网 IP。新手建议先用 Clash 自动轮换，稳定住宅代理也可以单独配置。</p>
       <p>不同平台可使用不同出口，避免一个平台的设置影响全部任务。</p>`,
   },
   {
     id:'clash', section:'网络', title:'Clash API 配置方法', target:'[data-guide="clash-config"]', placement:'left',
     prepare:async()=>{ setNavOpen(false); await ensureGuideView('network'); previewGuideClashFields(); },
-    skipLabel:'跳过网络配置', skipTo:'browser',
+    skipLabel:'跳过网络配置', skipTo:'env-overview',
     body:`<ol class="tour-list">
-        <li>在 Clash Verge 的设置中启用外部控制器。</li>
-        <li>控制器地址通常是 <code>http://127.0.0.1:9097</code>。mihomo 常见端口是 <code>9090</code>。</li>
-        <li>控制器密钥必须和 Clash 中的 Secret 完全一致。Clash 未设置密钥时这里留空。</li>
-        <li>混合代理地址通常是 <code>http://127.0.0.1:7897</code>，对应 Clash 的 mixed-port。</li>
+        <li>打开 Clash Verge，进入“设置”中的 Clash 设置或内核设置，找到“外部控制器”或 External Controller。</li>
+        <li>启用外部控制器，并填写监听地址 <code>127.0.0.1:9097</code>。面板中的控制器地址填写 <code>http://127.0.0.1:9097</code>。mihomo 常见端口是 <code>9090</code>。</li>
+        <li>在同一页填写控制密码。不同版本名称可能是 Secret、Controller Secret 或 API Secret。将完全相同的内容填入面板的“控制器密钥”。</li>
+        <li>保存 Clash 设置后应用或重载内核。若 Clash 未设置控制密码，面板中的控制器密钥也必须留空。</li>
+        <li>找到 mixed-port 或混合端口，通常为 <code>7897</code>。面板中的混合代理地址填写 <code>http://127.0.0.1:7897</code>。</li>
         <li>全局模式的代理组通常填 <code>GLOBAL</code>，规则模式填写实际节点选择组名。</li>
       </ol>
-      <p class="tour-note">教程临时切换到自动轮换用于展示，当前配置尚未保存。</p>`,
+      <p class="tour-note">外部控制器应只监听 <code>127.0.0.1</code>，不要配置为公网地址。教程临时切换到自动轮换用于展示，当前配置尚未保存。</p>`,
+  },
+  {
+    id:'residential', section:'网络', title:'住宅代理填写方法', target:'#network-residential-fields', placement:'left',
+    prepare:async()=>{ setNavOpen(false); await ensureGuideView('network'); previewGuideProxyMode('residential'); },
+    skipLabel:'跳过网络配置', skipTo:'env-overview',
+    body:`<p>选择“动态住宅 IP”后，单个代理填写完整地址，例如 <code>http://user:pass@host:port</code> 或 <code>socks5://user:pass@host:port</code>。</p>
+      <p>有多个出口时使用代理池，每行一个。程序会在创建新的浏览器 profile 时从池中选择代理。</p>
+      <p>供应商提供换 IP 接口时填写接口地址和请求方法。轮换后新的浏览器窗口才会使用新 IP。</p>
+      <p class="tour-note">教程临时切换到住宅代理表单用于展示，当前配置尚未保存。</p>`,
+  },
+  {
+    id:'platform-proxy', section:'网络', title:'平台出口覆盖和继承全局', target:'[data-guide="platform-proxy-overrides"]', placement:'top',
+    prepare:async()=>{ setNavOpen(false); await ensureGuideView('network'); },
+    skipLabel:'跳过网络配置', skipTo:'env-overview',
+    body:`<p>每个平台默认选择“继承全局”，表示直接使用页面顶部选择的全局网络模式和配置。</p>
+      <p>只有某个平台需要单独出口时才改为 Clash 自动、Clash 固定或动态住宅 IP。例如 Outlook 用 Clash，ChatGPT 用住宅代理。</p>
+      <p>下方“轮换或测试目标”选择具体平台后，轮换和 IP 测试只作用于该平台。没有特殊需求时全部保持继承全局。</p>`,
   },
   {
     id:'network-test', section:'网络', title:'保存后先测试出口', target:'[data-guide="network-actions"]', placement:'top',
     prepare:async()=>{ setNavOpen(false); await ensureGuideView('network'); },
-    skipLabel:'跳过网络配置', skipTo:'browser',
+    skipLabel:'跳过网络配置', skipTo:'env-overview',
     body:`<p>填写完成后先点“应用并测试 IP”。成功时会显示出口 IP 和当前节点。</p>
       <p>测试失败时不要直接跑任务，先检查 Clash 是否启动、端口是否正确、Secret 是否一致，以及代理组是否能切换节点。</p>`,
   },
   {
-    id:'browser', section:'浏览器', title:'选择浏览器方式', target:'[data-guide-group="browser"]', placement:'left',
+    id:'env-overview', section:'环境配置', title:'环境配置按功能分组', target:'#view-env .env-head', placement:'bottom',
     prepare:async()=>{ setNavOpen(false); restoreGuideProxyMode(); await showView('env'); },
-    skipLabel:'跳过浏览器配置', skipTo:'chatgpt-email',
+    skipLabel:'跳过环境配置', skipTo:'chatgpt-email',
+    body:`<p>环境配置会保存到本机 <code>.env</code>，新任务立即读取，无需重启服务。</p>
+      <ul class="tour-list">
+        <li>指纹浏览器决定 Chrome、内置浏览器或 BitBrowser 的启动方式。</li>
+        <li>邮箱和临时邮箱组用于收取网页验证码。</li>
+        <li>短信接码和打码平台只在需要手机号或验证码挑战时配置。</li>
+        <li>SUB2API、CPA、chatgpt2api 等组只在注册后自动导入时配置。</li>
+      </ul>
+      <p>只填写本次任务会用到的组。所有填写完成后点击这里的“保存配置”。</p>`,
+  },
+  {
+    id:'browser', section:'浏览器', title:'选择浏览器方式', target:'[data-guide-group="browser"]', placement:'left',
+    prepare:async()=>ensureGuideView('env'),
+    skipLabel:'跳过浏览器配置', skipTo:'env-test',
     body:`<p><strong>bundled</strong> 适合新手，使用程序自带或系统可用的 Chromium。</p>
       <p><strong>custom</strong> 使用普通 Chrome，填写 <code>CUSTOM_BROWSER_PATH</code>。Windows 常见路径是 <code>C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe</code>。</p>
       <p><strong>bitbrowser</strong> 需要先启动比特浏览器，并确认本地 API 通常为 <code>http://127.0.0.1:54345</code>。填写后使用本组的连通测试。</p>`,
+  },
+  {
+    id:'env-test', section:'环境配置', title:'每组都可以一键测试', target:()=>$('[data-guide-group="browser"] .btn-test'), placement:'left',
+    prepare:async()=>ensureGuideView('env'),
+    skipLabel:'跳过环境配置', skipTo:'asset-scan',
+    body:`<p>组标题右侧的测试按钮会使用当前表单中的值发起连通检查，即使还没有保存也可以先测试。</p>
+      <p>浏览器组用于测试本地浏览器 API，临时邮箱和短信组用于测试接码服务。测试通过后再点击页面顶部“保存配置”。</p>
+      <p>连通测试只确认本机配置和服务接口可用，不代表目标网站一定允许注册，注册前仍应测试网络出口。</p>`,
+  },
+  {
+    id:'asset-scan', section:'资产 API', title:'先看号池状态', target:'[data-guide="asset-scan"]', placement:'bottom',
+    prepare:async()=>{ setNavOpen(false); await showView('assets'); },
+    skipLabel:'跳过资产 API', skipTo:'chatgpt-email',
+    body:`<p>资产 API 用于向本地程序或下游服务读取邮箱、Cookie 和登录凭据。先在号池状态区选择类型，再运行“扫描当前类型”或“一键扫描全部”。</p>
+      <p>扫描会将资产分为正常、待解锁、封禁、过期、受限、凭据异常和检测异常。网络错误或目标站风控会显示为受限或检测异常，不会误判为封禁。</p>
+      <p>API 不会输出未验证、封禁、过期、受限或凭据异常资产。</p>`,
+  },
+  {
+    id:'asset-call', section:'资产 API', title:'每次输出前都会在线校验', target:'[data-guide="asset-call"]', placement:'top',
+    prepare:async()=>ensureGuideView('assets'),
+    skipLabel:'跳过资产 API', skipTo:'chatgpt-email',
+    body:`<p>选择资产、输出格式和取用方式后，点击“在线校验并调用 API”。顺序取用只会在健康资产池中推进，指定 index 也以健康资产池为准。</p>
+      <p>接口会先扫描对应平台，再只返回状态为“正常”的记录。响应中的 verification 字段包含本次检测时间和依据。</p>
+      <p>这代表账号在本次检测时可用，不代表后续不会被目标服务限制。读取地址和 API key 仅应提供给受信任的本地服务。</p>`,
   },
   {
     id:'chatgpt-email', section:'邮箱接码', title:'ChatGPT 邮箱接码', target:'[data-guide-group="chatgpt-email"]', placement:'left',
@@ -1257,9 +1312,13 @@ function guideViewVisible(view){
   return !!element && getComputedStyle(element).display!=='none';
 }
 
-function previewGuideClashFields(){
+function previewGuideProxyMode(mode){
   if(guideOriginalProxyMode===null) guideOriginalProxyMode = proxyMode;
-  setProxyMode('clash_auto');
+  setProxyMode(mode);
+}
+
+function previewGuideClashFields(){
+  previewGuideProxyMode('clash_auto');
 }
 
 function restoreGuideProxyMode(){

@@ -39,7 +39,14 @@ Claude 的登录、验证码和 magic-link 验证必须保持同一个出口 IP�
 
 编排器会为每个平台创建独立子进程环境；住宅代理认证直接写入该平台新建的浏览器 profile。网络页的“轮换/测试目标”可逐个平台验证出口 IP。
 
-Clash 模式先安装 [Clash Verge 2.5.2 Windows x64](https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe)，再开启 External Controller，记录控制器地址、secret 和 mixed port。默认值：
+Clash 模式先安装 [Clash Verge 2.5.2 Windows x64](https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe)。在 Clash Verge 的“设置”中进入 Clash 设置或内核设置，找到“外部控制器”或 External Controller，按下面顺序配置：
+
+1. 启用 External Controller，并填仅本机监听地址，例如 `127.0.0.1:9097`。面板的控制器地址填写为 `http://127.0.0.1:9097`。mihomo 常见默认端口是 `9090`。
+2. 在同一页设置 Secret、Controller Secret 或 API Secret。将完全相同的值写入 `CLASH_SECRET`。未设置密码时，`CLASH_SECRET` 也必须留空。
+3. 找到 mixed-port 或混合端口，例如 `7897`，写入 `CLASH_PROXY=http://127.0.0.1:7897`。
+4. 保存后应用设置或重载内核，再在网络页点击“应用并测试 IP”。外部控制器只应监听 `127.0.0.1`，不要公开到网络。
+
+默认值：
 
 ```env
 CLASH_API=http://127.0.0.1:9097

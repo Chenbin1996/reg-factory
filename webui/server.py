@@ -18,6 +18,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -154,6 +155,7 @@ ASSET_SCAN_STATE = {
     "error": "",
     "progress": {"completed": 0, "total": 0, "current": ""},
 }
+ASSET_SCAN_LOCK = threading.Lock()
 
 # 更新由独立进程执行；当前 WebUI 会在 updater 停止自身前返回 202。
 UPDATE_PROCESS = None
@@ -668,9 +670,16 @@ def api_asset_email(request: Request, index: int | None = None, format: str = "j
     denied = _asset_api_denied(request)
     if denied:
         return denied
-    from common import asset_store
-
-    return _asset_result(lambda: asset_store.get_email(index=index, output_format=format))
+    return _asset_result(
+        lambda: _get_verified_asset(
+            "outlook",
+            lambda asset_store: asset_store.get_email(
+                index=index,
+                output_format=format,
+                verified_only=True,
+            ),
+        )
+    )
 
 
 @app.get("/api/assets/cookies/{platform}")
@@ -683,10 +692,16 @@ def api_asset_cookie(
     denied = _asset_api_denied(request)
     if denied:
         return denied
-    from common import asset_store
-
     return _asset_result(
-        lambda: asset_store.get_platform_asset(platform, output_format=format, index=index)
+        lambda: _get_verified_asset(
+            platform,
+            lambda asset_store: asset_store.get_platform_asset(
+                platform,
+                output_format=format,
+                index=index,
+                verified_only=True,
+            ),
+        )
     )
 
 
@@ -724,6 +739,36 @@ def _set_asset_scan_progress(value):
     }
 
 
+def _scan_assets_sync(platforms, concurrency=4, timeout=15, progress=None):
+    from common import asset_scanner
+
+    with ASSET_SCAN_LOCK:
+        return asset_scanner.scan_pool(
+            platforms=platforms,
+            concurrency=concurrency,
+            timeout=timeout,
+            progress=progress,
+        )
+
+
+def _get_verified_asset(platform, callback):
+    """Scan the requested pool immediately before exposing a credential."""
+    from common import asset_store
+
+    normalized = str(platform or "").strip().lower()
+    if normalized not in {"outlook", "chatgpt", "claude", "grok", "kiro"}:
+        raise asset_store.AssetError("platform 仅支持 outlook、chatgpt、claude、grok、kiro")
+    if ASSET_SCAN_STATE["running"]:
+        raise asset_store.AssetUnverified("号池扫描正在运行，请等待扫描结束后再次读取资产")
+    with ASSET_SCAN_LOCK:
+        if ASSET_SCAN_STATE["running"]:
+            raise asset_store.AssetUnverified("号池扫描正在运行，请等待扫描结束后再次读取资产")
+        from common import asset_scanner
+
+        asset_scanner.scan_pool(platforms=[normalized], concurrency=4, timeout=15)
+        return callback(asset_store)
+
+
 async def _run_asset_scan(platforms, concurrency, timeout):
     global ASSET_SCAN_TASK
     from common import asset_scanner
@@ -735,7 +780,7 @@ async def _run_asset_scan(platforms, concurrency, timeout):
 
     try:
         report = await asyncio.to_thread(
-            asset_scanner.scan_pool,
+            _scan_assets_sync,
             platforms=platforms,
             concurrency=concurrency,
             timeout=timeout,

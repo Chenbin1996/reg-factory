@@ -170,11 +170,11 @@
           <div><span>Kiro</span><strong id="asset-count-kiro">--</strong></div>
         </div>
 
-        <section class="asset-section asset-pool" aria-labelledby="asset-pool-title">
+        <section class="asset-section asset-pool" aria-labelledby="asset-pool-title" data-guide="asset-scan">
           <div class="asset-section-head asset-pool-head">
             <div>
               <h3 id="asset-pool-title">号池状态</h3>
-              <p>在线校验邮箱与平台登录凭据；检测异常和出口风控单独显示，不计作封禁。</p>
+              <p>在线校验邮箱与平台登录凭据；API 输出前会再次校验，只返回本次检测正常的资产。</p>
             </div>
             <div class="asset-scan-actions">
               <label class="asset-scan-concurrency"><span>并发</span>
@@ -208,6 +208,7 @@
               <option value="chatgpt">ChatGPT</option>
               <option value="claude">Claude</option>
               <option value="grok">Grok</option>
+              <option value="kiro">Kiro</option>
             </select></label>
             <label><span>状态</span><select id="asset-scan-status">
               <option value="all">全部状态</option>
@@ -250,9 +251,9 @@
           <button id="btn-save-asset-key" class="btn-secondary" type="button">保存 API Key</button>
         </section>
 
-        <section class="asset-section" aria-labelledby="asset-call-title">
+        <section class="asset-section" aria-labelledby="asset-call-title" data-guide="asset-call">
           <div class="asset-section-head">
-            <div><h3 id="asset-call-title">调用与输出</h3><p>默认顺序取下一条；指定 index 时不会推进游标，下标从 0 开始。</p></div>
+            <div><h3 id="asset-call-title">调用与输出</h3><p>每次输出前会在线校验，只返回正常资产；默认顺序取下一条，指定 index 不推进游标。</p></div>
           </div>
           <div class="asset-builder-grid">
             <label class="asset-field"><span>资产</span>
@@ -284,7 +285,7 @@
           </div>
 
           <div class="asset-actions">
-            <button id="btn-call-asset" class="btn-run" type="button">调用 API</button>
+            <button id="btn-call-asset" class="btn-run" type="button">在线校验并调用 API</button>
             <select id="asset-reset-scope" aria-label="游标重置范围"><option value="current">重置当前游标</option><option value="all">重置全部游标</option></select>
             <button id="btn-reset-asset" class="btn-secondary" type="button">重置</button>
             <span id="asset-call-msg" class="asset-message" role="status" aria-live="polite"></span>
@@ -350,7 +351,7 @@
           </div>
         </div>
 
-        <div class="network-fields">
+        <div class="network-fields" data-guide="platform-proxy-overrides">
           <div class="network-section-title">平台出口覆盖</div>
           <div class="network-grid">
             <label class="network-field"><span>Outlook</span><select id="proxy-mode-outlook" data-platform-proxy><option value="inherit">继承全局</option><option value="clash_auto">Clash 自动</option><option value="clash_fixed">Clash 固定</option><option value="residential">动态住宅 IP</option></select></label>

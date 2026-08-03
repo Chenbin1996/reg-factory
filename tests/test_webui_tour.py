@@ -20,8 +20,14 @@ class WebUiTourTests(unittest.TestCase):
         for step_id in (
             "network",
             "clash",
+            "residential",
+            "platform-proxy",
             "network-test",
+            "env-overview",
             "browser",
+            "env-test",
+            "asset-scan",
+            "asset-call",
             "chatgpt-email",
             "temp-email",
             "sms",
@@ -33,6 +39,11 @@ class WebUiTourTests(unittest.TestCase):
         ):
             self.assertIn(f"id:'{step_id}'", APP)
         self.assertIn("Clash API 配置方法", APP)
+        self.assertIn("External Controller", APP)
+        self.assertIn("控制密码", APP)
+        self.assertIn("住宅代理填写方法", APP)
+        self.assertIn("继承全局", APP)
+        self.assertIn("每次输出前都会在线校验", APP)
         self.assertIn("跳过网络配置", APP)
         self.assertIn("跳过浏览器配置", APP)
         self.assertIn("跳过邮箱接码", APP)
@@ -44,6 +55,11 @@ class WebUiTourTests(unittest.TestCase):
         self.assertIn("box.dataset.guideGroup = 'chatgpt-email'", APP)
         self.assertIn("box.dataset.guideGroup = 'temp-email'", APP)
         self.assertIn("box.dataset.guideGroup = 'sms'", APP)
+        self.assertIn('data-guide="platform-proxy-overrides"', HTML)
+        self.assertIn('data-guide="asset-scan"', HTML)
+        self.assertIn('data-guide="asset-call"', HTML)
+        self.assertIn("previewGuideProxyMode('residential')", APP)
+        self.assertIn("restoreGuideProxyMode", APP)
 
     def test_tour_has_responsive_spotlight_and_plain_text(self):
         self.assertIn(".tour-spotlight", STYLE)
