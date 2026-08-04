@@ -6,13 +6,14 @@
 
 支持以下浏览器类型；外部客户端模式需要保持客户端运行：
 
+- [RuyiPage](https://github.com/LoseNine/ruyipage)：`FINGERPRINT_BROWSER=ruyipage`，默认用于 ChatGPT、Codex OAuth、GitHub 等共享浏览器流程。先运行 WebUI 的“安装 RuyiPage Firefox”任务，或执行 `python -m ruyipage install`。可用 `RUYIPAGE_BROWSER_PATH` 指定已有 Firefox。
 - 内置 Chromium：`FINGERPRINT_BROWSER=bundled`，安装程序会配置浏览器路径。
 - 普通 Chrome/Chromium：`FINGERPRINT_BROWSER=custom`，通过 `CUSTOM_BROWSER_PATH` 指定可执行文件；留空时会尝试查找系统 Chrome。
 - [BitBrowser 官方下载页](https://www.bitbrowser.cn/download)：默认 API 为 `http://127.0.0.1:54345`。
 - AdsPower：默认 API 为 `http://127.0.0.1:50325`，启用鉴权时还需 API Key。
 - 其他指纹浏览器：`FINGERPRINT_BROWSER=custom_api` 并设置 `CUSTOM_BROWSER_API`；当前要求兼容 BitBrowser 的 `/browser/update|open|close|delete|list` 协议。
 
-在 `.env` 中用 `FINGERPRINT_BROWSER=bundled|custom|bitbrowser|adspower|custom_api` 切换。
+在 `.env` 中用 `FINGERPRINT_BROWSER=ruyipage|bundled|custom|bitbrowser|adspower|custom_api` 切换。Claude、Grok 和 Outlook 的旧流程仍直接依赖 Playwright Chromium CDP；选择 RuyiPage 时这些流程自动使用 bundled Chromium，ChatGPT 与 Codex OAuth 使用 RuyiPage Firefox。
 
 ### 网络出口
 
@@ -114,7 +115,7 @@ cp .env.example .env
 | 通用视觉 | `VISION_*`、`VOTE_*`、`IMAGE_EDIT_*` | 多模型视觉投票 |
 | ChatGPT iCloud 邮箱 | `CHATGPT_EMAIL_PROVIDER`、`ICLOUD_MAIL_*` | ChatGPT 不使用 Outlook 池时 |
 | 临时邮箱 | `YYDS_API_KEY` 等 provider 配置 | Claude/Grok 不使用 Outlook 池时 |
-| 接码 | `SMSMAN_*`、`SMS_TOKEN`、`HERO_SMS_*` | 手机验证 |
+| 接码 | `SMSMAN_*`、`SMS_API_NAME`、`SMS_TOKEN`、`HERO_SMS_*` | 手机验证；firefox.fun 使用 APIName 标识账号，token + 项目 ID 调用接口 |
 | SUB2API | `SUB2API_*` | Codex / Grok 下游导入 |
 | CPA | `CPA_URL`、`CPA_MGMT_KEY` | Codex 凭据导入 |
 | chatgpt2api | `CHATGPT2API_URL`、`CHATGPT2API_KEY` | 普通 ChatGPT 网页号导入 |

@@ -100,7 +100,7 @@ async function pollStatus(){
   try{
     const s = await (await fetch('/api/status')).json();
     $('#dot-bb').classList.toggle('on', s.bitbrowser);
-    const browserLabels = {adspower:'AdsPower', bundled:'内置浏览器', custom:'自定义 Chrome', custom_api:'自定义指纹浏览器'};
+    const browserLabels = {ruyipage:'RuyiPage Firefox', adspower:'AdsPower', bundled:'内置浏览器', custom:'自定义 Chrome', custom_api:'自定义指纹浏览器'};
     const label = browserLabels[s.browser_provider] || 'BitBrowser';
     $('#browser-label').textContent = label;
     const networkOnline = s.network ?? s.clash;
@@ -1196,7 +1196,8 @@ const GUIDE_STEPS = [
     id:'browser', section:'浏览器', title:'选择浏览器方式', target:'[data-guide-group="browser"]', placement:'left',
     prepare:async()=>ensureGuideView('env'),
     skipLabel:'跳过浏览器配置', skipTo:'env-test',
-    body:`<p><strong>bundled</strong> 适合新手，使用程序自带或系统可用的 Chromium。</p>
+    body:`<p><strong>ruyipage</strong> 是默认值，使用 Firefox WebDriver BiDi 指纹内核。首次使用先在任务库运行“安装 RuyiPage Firefox”，再点本组连通测试。</p>
+      <p><strong>bundled</strong> 使用程序自带或系统可用的 Chromium；Claude、Grok 和 Outlook 等仍依赖 Chromium CDP 的旧流程会自动回退到它。</p>
       <p><strong>custom</strong> 使用普通 Chrome，填写 <code>CUSTOM_BROWSER_PATH</code>。Windows 常见路径是 <code>C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe</code>。</p>
       <p><strong>bitbrowser</strong> 需要先启动比特浏览器，并确认本地 API 通常为 <code>http://127.0.0.1:54345</code>。填写后使用本组的连通测试。</p>`,
   },

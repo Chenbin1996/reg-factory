@@ -491,15 +491,27 @@ def _test_clash():
 
 def _fingerprint_provider():
     return (
-        _read_config_val("FINGERPRINT_BROWSER", "bitbrowser")
+        _read_config_val("FINGERPRINT_BROWSER", "ruyipage")
         or os.environ.get("BROWSER_PROVIDER")
-        or "bitbrowser"
+        or "ruyipage"
     ).strip().lower()
 
 
 def _test_bitbrowser():
     """Test selected fingerprint browser local API."""
     provider = _fingerprint_provider()
+    if provider in {"ruyipage", "ruyi", "firefox_bidi"}:
+        try:
+            import ruyipage
+            from ruyipage import resolve_firefox_path
+
+            configured = _read_config_val("RUYIPAGE_BROWSER_PATH", "")
+            path = resolve_firefox_path(configured or None)
+            if path:
+                return True, f"RuyiPage {ruyipage.__version__} Firefox ready: {os.path.basename(path)}"
+        except Exception as exc:
+            return False, f"RuyiPage 不可用: {str(exc)[:100]}"
+        return False, "RuyiPage Firefox runtime 未安装；请运行面板中的安装任务"
     if provider in {"bundled", "embedded", "local", "custom", "chrome", "chromium"}:
         from common.bundled_browser import find_browser_path
 
@@ -577,17 +589,20 @@ def _test_smsman():
 
 
 def _test_firefox():
-    """测 firefox.fun 接码：用 token 查询(getBalance 类)。"""
+    """测 firefox.fun 接码：用官方 myInfo 动作验证持久 token。"""
+    api_name = _read_config_val("SMS_API_NAME", "").strip()
     token = _read_config_val("SMS_TOKEN", "")
+    if not api_name:
+        return False, "未配置 SMS_API_NAME"
     if not token:
         return False, "未配置 SMS_TOKEN"
     base = _read_config_val("SMS_API_BASE", "http://www.firefox.fun/yhapi.ashx")
     try:
-        code, body = _proxied_get(base + "?" + urllib.parse.urlencode({"act": "getuserinfo", "token": token}), timeout=15)
+        code, body = _proxied_get(base + "?" + urllib.parse.urlencode({"act": "myInfo", "token": token}), timeout=15)
         body = body.strip()
         # firefox 返回 1|... 表示成功，0|... 表示错误
         if body.startswith("1"):
-            return True, f"firefox.fun 连通 ✓ {body[:80]}"
+            return True, "firefox.fun 连通，APIName 与 token 已配置，token 有效"
         return False, f"firefox.fun 返回：{body[:80]}（token 可能无效）"
     except Exception as e:
         return False, f"firefox.fun 请求失败：{str(e)[:80]}"
@@ -1124,7 +1139,17 @@ def api_update():
 @app.get("/api/status")
 def api_status():
     provider = _fingerprint_provider()
-    if provider in {"bundled", "embedded", "local", "custom", "chrome", "chromium"}:
+    if provider in {"ruyipage", "ruyi", "firefox_bidi"}:
+        try:
+            from ruyipage import resolve_firefox_path
+
+            bb = resolve_firefox_path(
+                _read_config_val("RUYIPAGE_BROWSER_PATH", "") or None
+            ) or ""
+        except Exception:
+            bb = ""
+        provider_label = "ruyipage"
+    elif provider in {"bundled", "embedded", "local", "custom", "chrome", "chromium"}:
         from common.bundled_browser import find_browser_path
 
         bb = find_browser_path()
@@ -1155,7 +1180,7 @@ def api_status():
         "version": WEBUI_VERSION,
         "root": ROOT,
         "data_root": os.environ.get("REG_FACTORY_DATA_DIR") or ROOT,
-        "bitbrowser": os.path.isfile(bb) if provider_label in {"bundled", "custom"} else _http_alive(bb),
+        "bitbrowser": os.path.isfile(bb) if provider_label in {"ruyipage", "bundled", "custom"} else _http_alive(bb),
         "browser_provider": provider_label,
         "clash": network,
         "network": network,

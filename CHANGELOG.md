@@ -1,5 +1,18 @@
 ﻿# 更新日志
 
+## 2026-08-04 - 1.2.19
+
+**RuyiPage 默认浏览器和 ChatGPT 网页端修复**
+- 新增 RuyiPage Firefox WebDriver BiDi 浏览器，并设为共享网页流程的默认浏览器；首次使用可从 WebUI 一键安装 runtime，也可配置自定义 Firefox 路径。
+- ChatGPT iCloud 注册修复邮箱验证码提交后的 HTML Route Error，页面会点击 Retry 并按实际表单状态继续，不再盲目重复提交旧验证码。
+- WebUI 的 ChatGPT 注册表单突出 iCloud 邮箱来源和注册后直接导入 SUB2API 选项，补充目标分组配置。
+- Codex OAuth 在 ChatGPT cookie 未传递到新授权域时自动完成 iCloud 邮箱重新登录，并支持 RuyiPage 的 localhost 回调捕获、cookie 字段转换和导航硬超时。
+- Codex 手机验证支持在 Hero SMS、SMS-Man、firefox.fun 和自动切换之间明确选择；无回码时释放号码并重新登录后继续换号。
+- firefox.fun 配置补充 APIName 字段，一键测试改用官方 myInfo 动作验证 token；取号继续按官方要求使用 token 和项目 ID。
+- Chromium 专用的旧注册流程继续自动使用内置浏览器，避免将不兼容流程强行切换到 Firefox。
+
+---
+
 ## 2026-08-04 - 1.2.18
 
 **新手网络引导和健康资产 API**

@@ -50,8 +50,8 @@ def _env_int(name, default):
 
 
 # ---------------------------------------------------------------- 本地基建
-# Fingerprint browser provider: bitbrowser / adspower
-FINGERPRINT_BROWSER = _env("FINGERPRINT_BROWSER", "bitbrowser").strip().lower()
+# Fingerprint browser provider: ruyipage / bundled / bitbrowser / adspower
+FINGERPRINT_BROWSER = _env("FINGERPRINT_BROWSER", "ruyipage").strip().lower()
 
 # BitBrowser 本地 API 地址
 BITBROWSER_API = _env("BITBROWSER_API", "http://127.0.0.1:54345")
@@ -148,7 +148,8 @@ CUSTOM_MAIL_MSG_PATH = _env("CUSTOM_MAIL_MSG_PATH", "")         # detail 响应�
 
 # ---------------------------------------------------------------- 短信接码平台 (firefox.fun)
 SMS_API_BASE = _env("SMS_API_BASE", "http://www.firefox.fun/yhapi.ashx")
-SMS_TOKEN = _env("SMS_TOKEN", "")  # 接码平台 token
+SMS_API_NAME = _env("SMS_API_NAME", "")  # firefox.fun APIName（仅标识账号）
+SMS_TOKEN = _env("SMS_TOKEN", "")  # firefox.fun 持久 token；取号还需平台项目 iid
 SMS_PROJECT_ID = _env("SMS_PROJECT_ID", "2313")  # claude 项目
 # 优先国家列表，按顺序尝试，""=任意(排除黑名单)
 SMS_COUNTRY_PREFER = ["60", "56", "57", "44", ""]  # 60=马来西亚 56=智利 57=哥伦比亚 44=英国 ""=任意
