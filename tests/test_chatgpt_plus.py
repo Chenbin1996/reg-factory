@@ -97,6 +97,16 @@ class ChatGPTPlusTests(unittest.TestCase):
         self.assertIn("billingMode: ''", frontend)
         self.assertIn("billing: null", frontend)
 
+    def test_batch_rotation_skips_terminal_accounts_and_advances_remaining_rows(self):
+        root = Path(__file__).resolve().parents[1] / "vendor" / "chatgpt_plus"
+        frontend = (root / "static" / "direct-bind.js").read_text(encoding="utf-8")
+
+        self.assertIn("function runnableBatchAccounts", frontend)
+        self.assertIn("!isBatchTerminalAccount(account)", frontend)
+        self.assertIn("const accounts = [...data.runnable]", frontend)
+        self.assertIn("if (isBatchTerminalAccount(account)) account.selected = false", frontend)
+        self.assertNotIn("const accounts = [...data.accounts]", frontend)
+
     def test_vendored_checkout_accepts_oaics_and_modern_stripe_session_ids(self):
         root = Path(__file__).resolve().parents[1] / "vendor" / "chatgpt_plus"
         flow = (root / "standalone_flow.py").read_text(encoding="utf-8")

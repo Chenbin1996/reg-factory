@@ -548,6 +548,14 @@
     return state.accounts.filter((account) => account.selected);
   }
 
+  function isBatchTerminalAccount(account) {
+    return ['success', 'action_required'].includes(String(account?.status || ''));
+  }
+
+  function runnableBatchAccounts(accounts = state.accounts) {
+    return accounts.filter((account) => account.selected && !isBatchTerminalAccount(account));
+  }
+
   function accountEnvironmentSignature(accounts = selectedAccounts()) {
     return accounts
       .map((account) => `${account.id}:${account.accountId || ''}`)
@@ -1053,6 +1061,7 @@
     const bind = parseProxyPool($('bindProxyPool').value);
     const promo = parseProxyPool($('promoProxyPool').value);
     const selected = selectedAccounts();
+    const runnable = runnableBatchAccounts();
     applyGeneratedBilling(selected);
     const missingAccountIds = selected.filter((account) => !account.accountId);
     const billingMissingAccounts = selected.filter(
@@ -1067,27 +1076,29 @@
     const cardInputReady = environmentReady && Boolean(cardFromForm(false));
     const billingReady = billingMissingAccounts.length === 0;
     const ready = basicReady && cardInputReady && billingReady;
+    const batchReady = ready && runnable.length > 0;
     $('loadCardButton').disabled = !basicReady || environmentReady || state.mounting || state.running;
     $('batchMode').disabled = state.running;
     $('nextBatchButton').disabled = !(state.running && state.manualBatchWaiting);
-    $('batchBindLinkButton').disabled = !ready || state.running;
+    $('batchBindLinkButton').disabled = !batchReady || state.running;
     const paymentConfirmed = $('paymentConfirm').checked;
     ['fullFlowButton', 'linkPayButton'].forEach((id) => {
-      $(id).disabled = !ready || !paymentConfirmed || state.running;
+      $(id).disabled = !batchReady || !paymentConfirmed || state.running;
     });
-    $('linkOnlyButton').disabled = !linkOnlyReady || state.running;
+    $('linkOnlyButton').disabled = !linkOnlyReady || !runnable.length || state.running;
     $('deleteSelectedButton').disabled = state.running || state.mounting || !selected.length;
     $('exportCsvButton').disabled = !state.accounts.length;
     $('clearButton').disabled = state.running || state.mounting || !state.accounts.length;
     $('selectAllAccounts').disabled = state.running || state.mounting || !state.accounts.length;
     $('cardReady').className = `inline-state ${ready ? 'ok' : ''}`;
-    if (ready) $('cardReady').textContent = `卡片输入已就绪；已选择 ${selected.length} 个账号。`;
+    if (!runnable.length && selected.length) $('cardReady').textContent = '已选账号均已完成或待提交，请选择待执行账号。';
+    else if (ready) $('cardReady').textContent = `卡片输入已就绪；已选择 ${selected.length} 个账号。`;
     else if (missingAccountIds.length) $('cardReady').textContent = `${missingAccountIds.length} 个 AT 缺少账号 ID，请导入 ChatGPT access_token。`;
     else if (!basicReady) $('cardReady').textContent = state.runtimeReady ? '请先导入并选择账号。' : '正在读取主程序网络出口。';
     else if (!environmentReady) $('cardReady').textContent = state.mounting ? '正在自动预检账号环境…' : '账号环境等待自动预检。';
     else if (!cardInputReady) $('cardReady').textContent = '请填写卡号、有效期和 CVC。';
     else if (!billingReady) $('cardReady').textContent = `还有 ${billingMissingAccounts.length} 个账号的账单地址未就绪。`;
-    return { accounts: selected, bind, promo, basicReady, linkOnlyReady, environmentReady, cardInputReady, billingReady, billingMissingAccounts, missingAccountIds, ready };
+    return { accounts: selected, runnable, bind, promo, basicReady, linkOnlyReady, environmentReady, cardInputReady, billingReady, billingMissingAccounts, missingAccountIds, ready, batchReady };
   }
 
   async function mountCard() {
@@ -1378,8 +1389,8 @@
 
   async function runBatch(mode, label) {
     const data = refresh();
-    if ((mode === 'link_only' ? !data.linkOnlyReady : !data.ready) || state.running) return;
-    const accounts = [...data.accounts];
+    if ((mode === 'link_only' ? !data.linkOnlyReady : !data.ready) || !data.runnable.length || state.running) return;
+    const accounts = [...data.runnable];
     const manual = $('batchMode').value === 'manual';
     state.running = true;
     state.stop = false;
@@ -1428,7 +1439,12 @@
     for (let offset = 0; offset < accounts.length && !state.stop; offset += limit) {
       const wave = accounts.slice(offset, offset + limit);
       const prepared = [];
-      updateProgress(done, accounts.length, `正在准备同步批次 ${Math.floor(offset / limit) + 1}`);
+      const batchNumber = Math.floor(offset / limit) + 1;
+      setBatchRotationStatus(
+        `${manual ? '手动' : '自动'}模式：正在执行第 ${batchNumber}/${totalBatches} 批（账号 ${offset + 1}-${offset + wave.length}）`,
+        'is-active',
+      );
+      updateProgress(done, accounts.length, `正在准备同步批次 ${batchNumber}`);
       for (const account of wave) {
         if (state.stop) break;
         try {
@@ -1449,7 +1465,7 @@
         await waitForNextWaveIfNeeded(offset);
         continue;
       }
-      appendLog(`同步批次 ${Math.floor(offset / limit) + 1}：${prepared.length} 个账号已就绪，统一放行。`);
+      appendLog(`同步批次 ${batchNumber}：${prepared.length} 个账号已就绪，统一放行。`);
       try {
         const settled = await submitAlignedWave(prepared, mode);
         settled.forEach((result, index) => {
@@ -1471,6 +1487,9 @@
       }
       await waitForNextWaveIfNeeded(offset);
     }
+    accounts.forEach((account) => {
+      if (isBatchTerminalAccount(account)) account.selected = false;
+    });
     releaseManualBatch();
     if (state.stop) {
       accounts.filter((account) => account.status === 'running' && !account.taskId).forEach((account) => {
@@ -1480,10 +1499,11 @@
     }
     state.running = false;
     $('stopButton').disabled = true;
+    const remaining = runnableBatchAccounts().length;
     if (success === accounts.length && !state.stop) setModeSteps(mode, 'done');
     $('progressText').textContent = state.stop ? `${label}已停止` : `${label}完成`;
     setBatchRotationStatus(
-      state.stop ? `${label}已停止` : `${label}完成，共 ${totalBatches} 批`,
+      state.stop ? `${label}已停止，剩余 ${remaining} 个待执行账号` : `${label}完成，共 ${totalBatches} 批；剩余 ${remaining} 个待执行账号`,
       state.stop ? '' : 'is-done',
     );
     showBatchSummary(
