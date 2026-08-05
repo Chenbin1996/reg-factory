@@ -619,7 +619,7 @@ def _extract_checkout(ctx: dict[str, Any], config: dict[str, Any], logger: Calla
                         country=country,
                         currency=currency,
                         promo_campaign=_text(config.get("promo_campaign") or "plus-1-month-free"),
-                        require_oaics=False,
+                        require_oaics=True,
                         reject_nonzero=bool(config.get("reject_nonzero", True)),
                         timeout=max(30, min(1800, int(config.get("timeout") or 900))),
                         diagnose_coupon=bool(config.get("coupon_diagnostic", False)),

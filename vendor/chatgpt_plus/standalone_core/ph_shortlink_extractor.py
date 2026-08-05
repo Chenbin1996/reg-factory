@@ -418,7 +418,34 @@ def summarize_http_error(response: Any) -> str:
     return f"HTTP {status}{f' / {compact}' if compact else ''}"
 
 
+_OAICS_ID_RE = re.compile(r"oaics_[A-Za-z0-9_-]{8,160}")
+_STRIPE_ID_RE = re.compile(r"cs_(?:live|test)_[A-Za-z0-9_-]{6,512}|cs_[A-Za-z0-9_-]{6,512}")
+
+
+def _extract_oaics_checkout_id(payload: Any, seen: set[int] | None = None) -> str:
+    """Prefer the OpenAI internal session when a response also contains Stripe IDs."""
+    if isinstance(payload, str):
+        match = _OAICS_ID_RE.search(payload)
+        return match.group(0) if match else ""
+    if not isinstance(payload, (dict, list)):
+        return ""
+    visited = seen if seen is not None else set()
+    marker = id(payload)
+    if marker in visited:
+        return ""
+    visited.add(marker)
+    values = payload.values() if isinstance(payload, dict) else payload
+    for value in values:
+        found = _extract_oaics_checkout_id(value, visited)
+        if found:
+            return found
+    return ""
+
+
 def extract_checkout_id(payload: Any) -> str:
+    preferred = _extract_oaics_checkout_id(payload)
+    if preferred:
+        return preferred
     if isinstance(payload, dict):
         for key in ("checkout_session_id", "session_id", "id"):
             value = str(payload.get(key) or "").strip()
@@ -430,10 +457,7 @@ def extract_checkout_id(payload: Any) -> str:
             if found:
                 return found
         text = json.dumps(payload, ensure_ascii=False)
-        match = re.search(
-            r"(?:oaics_[A-Za-z0-9]+|cs_(?:live|test)_[A-Za-z0-9]+|cs_[A-Za-z0-9]+)",
-            text,
-        )
+        match = _STRIPE_ID_RE.search(text)
         return match.group(0) if match else ""
     if isinstance(payload, list):
         for item in payload:
@@ -777,13 +801,13 @@ class Mode8Extractor:
                 "country": cfg.country.upper(),
                 "currency": cfg.currency.upper(),
             },
+            "cancel_url": (
+                f"{APP_BASE}/?promo_campaign="
+                f"{cfg.promo_campaign.strip() or 'plus-1-month-free'}#pricing"
+            ),
             "checkout_ui_mode": "custom",
+            "locale": "zh-CN",
         }
-        if cfg.promo_campaign.strip():
-            body["promo_campaign"] = {
-                "promo_campaign_id": cfg.promo_campaign.strip(),
-                "is_coupon_from_query_param": False,
-            }
         response = session.post(
             CHECKOUT_URL,
             json=body,
@@ -817,15 +841,10 @@ class Mode8Extractor:
             "plan_name": "chatgptplusplan",
             "price_interval": "month",
             "seat_quantity": 1,
-            "billing_details": {
-                "country": cfg.country.upper(),
-                "currency": cfg.currency.upper(),
-            },
             "promo_campaign": {
                 "promo_campaign_id": cfg.promo_campaign.strip(),
                 "is_coupon_from_query_param": False,
             },
-            "checkout_ui_mode": "custom",
         }
         response = session.post(
             CHECKOUT_UPDATE_URL,
@@ -919,6 +938,11 @@ class Mode8Extractor:
             raise Mode8Error(
                 "阶段1返回中没有 checkout_session_id："
                 + json.dumps(create_payload, ensure_ascii=False)[:500]
+            )
+        if self.config.require_oaics and not checkout_id.startswith("oaics_"):
+            raise Mode8Error(
+                f"基线 Checkout 未返回 oaics_*；仅发现 {checkout_id[:20]}...，"
+                "已停止向错误提供方会话应用优惠。"
             )
         processor_entity = extract_processor_entity(
             create_payload, self.config.country
@@ -1086,31 +1110,30 @@ class _FakeSession:
         body = kwargs.get("json") or {}
         if url == CHECKOUT_URL:
             assert body["checkout_ui_mode"] == "custom"
-            assert body["promo_campaign"]["promo_campaign_id"] == (
-                "plus-1-month-free"
-            )
+            assert "promo_campaign" not in body
             return _FakeResponse(
                 200,
                 {
-                    "checkout_session_id": "oaics_fixture123",
+                    "checkout_session_id": "cs_live_fixture123456",
+                    "custom_checkout": {"id": "oaics_fixture123456789"},
                     "processor_entity": "openai_ie",
                     "billing_details": {"country": "PH", "currency": "PHP"},
-                    "promo_campaign": {
-                        "promo_campaign_id": "plus-1-month-free"
-                    },
                     "payment_method_types": ["card", "link"],
                     "status": "open",
                 },
             )
         if url == CHECKOUT_UPDATE_URL:
-            assert body["checkout_session_id"] == "oaics_fixture123"
+            assert body["checkout_session_id"] == "oaics_fixture123456789"
             assert body["promo_campaign"]["promo_campaign_id"] == (
                 "plus-1-month-free"
             )
+            assert "billing_details" not in body
+            assert "checkout_ui_mode" not in body
             return _FakeResponse(
                 200,
                 {
-                    "checkout_session_id": "oaics_fixture123",
+                    "checkout_session_id": "cs_live_fixture123456",
+                    "custom_checkout": {"id": "oaics_fixture123456789"},
                     "processor_entity": "openai_ie",
                     "billing_details": {"country": "PH", "currency": "PHP"},
                     "total_summary": {"due": 0},
@@ -1130,7 +1153,7 @@ def run_self_test() -> None:
     )
     result = extractor.run("", "")
     expected = (
-        "https://chatgpt.com/checkout/openai_ie/oaics_fixture123"
+        "https://chatgpt.com/checkout/openai_ie/oaics_fixture123456789"
     )
     assert result["url"] == expected, result
     assert result["amount"] == "0", result

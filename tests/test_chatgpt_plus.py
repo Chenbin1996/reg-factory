@@ -107,14 +107,30 @@ class ChatGPTPlusTests(unittest.TestCase):
         self.assertIn("if (isBatchTerminalAccount(account)) account.selected = false", frontend)
         self.assertNotIn("const accounts = [...data.accounts]", frontend)
 
-    def test_vendored_checkout_accepts_oaics_and_modern_stripe_session_ids(self):
+    def test_shortlink_flow_prefers_nested_oaics_and_updates_a_clean_baseline(self):
+        root = Path(__file__).resolve().parents[1] / "vendor" / "chatgpt_plus"
+        extractor = root / "standalone_core" / "ph_shortlink_extractor.py"
+        completed = subprocess.run(
+            [sys.executable, str(extractor), "--self-test"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("SELF-TEST PASS", completed.stdout)
+        self.assertIn("oaics_fixture123456789", completed.stdout)
+
+    def test_vendored_checkout_requires_oaics_while_payment_accepts_stripe_ids(self):
         root = Path(__file__).resolve().parents[1] / "vendor" / "chatgpt_plus"
         flow = (root / "standalone_flow.py").read_text(encoding="utf-8")
         payment = (root / "standalone_core" / "card_payment.py").read_text(encoding="utf-8")
         server = (root / "server.py").read_text(encoding="utf-8")
         frontend = (root / "static" / "direct-bind.js").read_text(encoding="utf-8")
         self.assertIn('SUPPORTED_CHECKOUT_PREFIXES = ("oaics_", "cs_live_", "cs_test_", "cs_")', flow)
-        self.assertIn("require_oaics=False", flow)
+        self.assertIn("require_oaics=True", flow)
         self.assertIn('strong_bind_direct=_text(first.get("checkout_id")).startswith("oaics_")', flow)
         self.assertIn('checkout refresh: missing supported checkout id', payment)
         self.assertIn('(?:oaics_|cs_)', server)
