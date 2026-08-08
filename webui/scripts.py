@@ -368,6 +368,10 @@ ENV_SCHEMA = [
     {"group": "本地资产 API", "items": [
         {"key": "REG_FACTORY_ASSET_API_KEY", "secret": True,
          "help": "可选；配置后调用邮箱/Cookie 读取 API 必须提供 X-API-Key 或 Bearer Token。留空时仅允许本机访问。"},
+        {"key": "ASSET_SCAN_CHATGPT_PLUS_TRIAL", "type": "bool", "default": "true",
+         "help": "扫描正常 ChatGPT 账号时调用优惠资格接口，标注 Plus 免费试用资格；失败仅标为未知，不影响账号健康状态。"},
+        {"key": "ASSET_SCAN_CHATGPT_PLUS_CAMPAIGN", "default": "plus-1-month-free",
+         "help": "ChatGPT Plus 试用资格检测使用的活动标识。"},
     ]},
     {"group": "网络出口", "tests": [{"target": "clash", "label": "测试 Clash 连通"}], "items": [
         {"key": "PROXY_MODE", "type": "choice", "choices": ["clash_auto", "clash_fixed", "residential"],
@@ -470,8 +474,8 @@ ENV_SCHEMA = [
      "tests": [{"target": "outlook-recovery", "label": "验证 Outlook 辅助邮箱 RT"}],
      "items": [
         {"key": "OUTLOOK_PROXIES", "help": "Outlook 自注册住宅代理池(换行/逗号分隔)"},
-        {"key": "OUTLOOK_GRAPH_RECOVERY_EMAIL", "type": "choice", "choices": ["true", "false"],
-         "default": "true", "help": "Graph proofs/Add 自动绑定辅助邮箱并接收验证码；关闭后无法保证 RT 可提取"},
+        {"key": "OUTLOOK_GRAPH_RECOVERY_EMAIL", "type": "bool",
+         "default": "true", "help": "启用 Graph proofs/Add 辅助邮箱自动绑定和接码；关闭后无法保证 RT 可提取"},
         {"key": "OUTLOOK_GRAPH_RECOVERY_PROVIDER", "type": "choice", "choices": ["yyds", "custom", "outlook"],
          "default": "yyds", "help": "Graph 辅助邮箱提供方；outlook 使用下方用户自有邮箱并通过 Graph API 收码"},
         {"key": "OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX", "secret": True,

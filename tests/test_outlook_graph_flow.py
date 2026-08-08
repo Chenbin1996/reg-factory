@@ -50,6 +50,8 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
         recovery = {
             item["key"]: item for item in group["items"]
         }
+        self.assertEqual(recovery["OUTLOOK_GRAPH_RECOVERY_EMAIL"]["type"], "bool")
+        self.assertEqual(recovery["OUTLOOK_GRAPH_RECOVERY_EMAIL"]["default"], "true")
         self.assertIn("outlook", recovery["OUTLOOK_GRAPH_RECOVERY_PROVIDER"]["choices"])
         self.assertTrue(recovery["OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX"]["secret"])
 
