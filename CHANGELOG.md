@@ -1,5 +1,15 @@
 ﻿# 更新日志
 
+## 2026-08-08 - 1.2.26
+
+**Outlook Graph 辅助邮箱与 RT 提取提醒**
+- Outlook Graph `proofs/Add` 安全信息页支持使用用户自有 Outlook 辅助邮箱。
+- 新增 `email----password----refresh_token----client_id` 配置格式；提交前通过 Graph API 验证 refresh token，并从 Inbox/Junk 轮询 Microsoft 安全码。
+- `yyds`、`custom`、`outlook` 支持按逗号顺序配置故障转移；WebUI 增加醒目的 RT 前置配置提醒和辅助邮箱 API 验证按钮。
+- 注册浏览器 profile 在 Graph 授权完成前保持复用，避免注册成功后提前关闭窗口。
+
+---
+
 ## 2026-08-05 - 1.2.25
 
 **Plus 提链协议更新**

@@ -256,6 +256,14 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,s
   min-height:44px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px;
   background:var(--surface-raised);font-size:12px;font-weight:650
 }
+.env-notice{
+  margin:10px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;
+  color:var(--muted);font-size:11.5px;line-height:1.5
+}
+.env-notice.warning{
+  border-color:rgba(229,168,75,.7);border-left:4px solid var(--amber);
+  background:rgba(229,168,75,.1);color:#efcb91;font-weight:600
+}
 .test-area{display:flex;align-items:center;justify-content:flex-end;gap:7px;min-width:0;font-weight:400}
 .btn-test{
   min-height:27px;padding:4px 9px;border:1px solid var(--line-strong);border-radius:5px;

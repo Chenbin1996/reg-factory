@@ -139,6 +139,13 @@ python register_three_platforms.py --from-pool
 # 常驻注册 Outlook
 python outlook_reg_loop.py
 
+# [重要] Graph RT 提取必须配置可接收验证码的辅助邮箱，否则 proofs/Add 安全信息页无法完成授权
+# 默认使用 YYDS 辅助邮箱并自动接码
+python tools/extract_graph_tokens.py --email user@outlook.com --password 'password'
+# 自定义临时邮箱：.env 设置 OUTLOOK_GRAPH_RECOVERY_PROVIDER=custom，并填好 CUSTOM_MAIL_*
+# 自有 Outlook 辅助邮箱：设置 provider=outlook，并填
+# OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX=email@outlook.com----password----refresh_token----client_id
+
 # Claude 使用最新 Outlook refresh token
 python register.py --count 1 --node auto --latest-rt
 
@@ -147,6 +154,9 @@ python register.py --count 1 --node auto --provider yyds
 
 # ChatGPT 使用 iCloud 接码邮箱（先在 .env 配置 ICLOUD_MAIL_API_KEY）
 python register_chatgpt.py --count 1 --email-provider icloud
+
+# 使用普通 iCloud 子邮箱接口（/api/user/email?type=icloud&apikey=...）
+# 先在 .env 设置 ICLOUD_MAIL_TYPE=icloud
 
 # ChatGPT 注册成功后进入主 WebUI 的本地 Plus 批处理工作台
 python register_chatgpt.py --count 1 --plus-subscription

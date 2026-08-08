@@ -1165,10 +1165,13 @@ async function loadEnv(){
     else if(itemKeys.has('SMSMAN_TOKEN')) box.dataset.guideGroup = 'sms';
     const tests = (g.tests||[]).map(t=>
       `<button class="btn-test" data-test="${t.target}">${t.label}</button>`).join('');
+    const notice = g.notice
+      ? `<div class="env-notice ${g.notice_level==='warning'?'warning':''}" role="alert">${g.notice}</div>`
+      : '';
     box.innerHTML = `<div class="env-group-title">
         <span>${g.group}</span>
         <span class="test-area">${tests}<span class="test-result" data-result-for="${g.group}"></span></span>
-      </div>`;
+      </div>${notice}`;
     g.items.forEach(it=>{
       const row = document.createElement('div'); row.className='env-item';
       const type = it.secret ? 'password':'text';
