@@ -149,6 +149,7 @@ K12_PROCESS = None
 K12_LOG_HANDLE = None
 K12_START_TASK = None
 K12_LOCK = asyncio.Lock()
+RUYIPAGE_INSTALL_TASK = None
 
 # Plus 工作台使用内置 zkky 服务；网络出口优先住宅 IP，缺失时回退 Clash。
 PLUS_PORT = 5601
@@ -747,10 +748,11 @@ def _test_bitbrowser():
     if provider in {"ruyipage", "ruyi", "firefox_bidi"}:
         try:
             import ruyipage
-            from ruyipage import resolve_firefox_path
+            from common.ruyipage_runtime import ensure_runtime
 
             configured = _read_config_val("RUYIPAGE_BROWSER_PATH", "")
-            path = resolve_firefox_path(configured or None)
+            result = ensure_runtime(configured)
+            path = result.get("path", "")
             if path:
                 return True, f"RuyiPage {ruyipage.__version__} Firefox ready: {os.path.basename(path)}"
         except Exception as exc:
@@ -1538,13 +1540,15 @@ def api_update():
 @app.get("/api/status")
 def api_status():
     provider = _fingerprint_provider()
+    browser_runtime = {}
     if provider in {"ruyipage", "ruyi", "firefox_bidi"}:
         try:
-            from ruyipage import resolve_firefox_path
+            from common.ruyipage_runtime import runtime_status
 
-            bb = resolve_firefox_path(
-                _read_config_val("RUYIPAGE_BROWSER_PATH", "") or None
-            ) or ""
+            browser_runtime = runtime_status(
+                _read_config_val("RUYIPAGE_BROWSER_PATH", "")
+            )
+            bb = browser_runtime.get("path", "") if browser_runtime.get("state") == "ready" else ""
         except Exception:
             bb = ""
         provider_label = "ruyipage"
@@ -1581,6 +1585,7 @@ def api_status():
         "data_root": os.environ.get("REG_FACTORY_DATA_DIR") or ROOT,
         "bitbrowser": os.path.isfile(bb) if provider_label in {"ruyipage", "bundled", "custom"} else _http_alive(bb),
         "browser_provider": provider_label,
+        "browser_runtime": browser_runtime,
         "clash": network,
         "network": network,
         "proxy_mode": mode,
@@ -2221,7 +2226,19 @@ async def api_stop_all():
 
 @app.on_event("startup")
 async def startup_local_services():
-    global K12_START_TASK
+    global K12_START_TASK, RUYIPAGE_INSTALL_TASK
+    if _fingerprint_provider() in {"ruyipage", "ruyi", "firefox_bidi"}:
+        from common.ruyipage_runtime import ensure_runtime, runtime_status
+
+        configured = _read_config_val("RUYIPAGE_BROWSER_PATH", "")
+        if runtime_status(configured).get("state") == "missing":
+            async def install_ruyipage():
+                try:
+                    await asyncio.to_thread(ensure_runtime, configured)
+                except Exception:
+                    pass
+
+            RUYIPAGE_INSTALL_TASK = asyncio.create_task(install_ruyipage())
     auto_start = _read_config_val("K12_AUTO_START", "1").strip().lower() not in {"0", "false", "no", "off"}
     if auto_start and not _k12_alive():
         K12_START_TASK = asyncio.create_task(_start_k12_service())
@@ -2230,12 +2247,13 @@ async def startup_local_services():
 
 @app.on_event("shutdown")
 async def shutdown_local_services():
-    global K12_START_TASK
+    global K12_START_TASK, RUYIPAGE_INSTALL_TASK
     if K12_START_TASK and not K12_START_TASK.done():
         K12_START_TASK.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await K12_START_TASK
     K12_START_TASK = None
+    RUYIPAGE_INSTALL_TASK = None
     await _stop_k12_service()
     await asyncio.to_thread(_stop_plus_service_sync)
 

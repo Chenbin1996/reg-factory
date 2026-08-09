@@ -103,10 +103,15 @@ function renderUpdateState(update, version){
 async function pollStatus(){
   try{
     const s = await (await fetch('/api/status')).json();
+    const browserRuntime = s.browser_runtime || {};
+    $('#dot-bb').classList.toggle('pending', browserRuntime.state === 'installing');
     $('#dot-bb').classList.toggle('on', s.bitbrowser);
     const browserLabels = {ruyipage:'RuyiPage Firefox', adspower:'AdsPower', bundled:'内置浏览器', custom:'自定义 Chrome', custom_api:'自定义指纹浏览器'};
-    const label = browserLabels[s.browser_provider] || 'BitBrowser';
+    let label = browserLabels[s.browser_provider] || 'BitBrowser';
+    if(s.browser_provider === 'ruyipage' && browserRuntime.state === 'installing') label = 'RuyiPage 安装中';
+    else if(s.browser_provider === 'ruyipage' && browserRuntime.state === 'failed') label = 'RuyiPage 安装失败';
     $('#browser-label').textContent = label;
+    $('#browser-label').title = browserRuntime.message || label;
     const networkOnline = s.network ?? s.clash;
     $('#dot-clash').classList.toggle('on', !!networkOnline);
     const modeLabels = {clash_auto:'Clash 自动', clash_fixed:'Clash 固定', residential:'住宅代理', direct:'直连'};
@@ -1432,7 +1437,8 @@ const GUIDE_STEPS = [
     id:'browser', section:'浏览器', title:'选择浏览器方式', target:'[data-guide-group="browser"]', placement:'left',
     prepare:async()=>ensureGuideView('env'),
     skipLabel:'跳过浏览器配置', skipTo:'outlook-recovery',
-    body:`<p><strong>ruyipage</strong> 是默认值，使用 Firefox WebDriver BiDi 指纹内核。首次使用先在任务库运行“安装 RuyiPage Firefox”，再点本组连通测试。</p>
+    body:`<p><strong>ruyipage</strong> 是默认值，使用 Firefox WebDriver BiDi 指纹内核。便携包首次启动会在后台自动安装 Firefox runtime，首次任务打开时也会自动补装；以后升级直接复用，无需重复安装。</p>
+      <p>顶栏状态显示“RuyiPage 安装中”时等待下载完成。自动安装失败可在任务库运行“安装 RuyiPage Firefox”重试，或在本组填写已有 Firefox 路径后点击连通测试。</p>
       <p><strong>bundled</strong> 使用程序自带或系统可用的 Chromium；Claude、Grok 和 Outlook 等仍依赖 Chromium CDP 的旧流程会自动回退到它。</p>
       <p><strong>custom</strong> 使用普通 Chrome，填写 <code>CUSTOM_BROWSER_PATH</code>。Windows 常见路径是 <code>C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe</code>。</p>
       <p><strong>bitbrowser</strong> 需要先启动比特浏览器，并确认本地 API 通常为 <code>http://127.0.0.1:54345</code>。填写后使用本组的连通测试。</p>`,

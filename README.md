@@ -73,7 +73,7 @@ Windows：
 
 ```text
 1. 双击 install.bat
-2. 首次安装会下载 RuyiPage Firefox；启动 Clash Verge
+2. 首次启动会在后台自动下载 RuyiPage Firefox；启动 Clash Verge
 3. 双击 start.bat
 4. 打开 http://127.0.0.1:8799/
 ```

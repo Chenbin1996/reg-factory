@@ -309,7 +309,7 @@ SCRIPTS = [
         "file": "tools/install_ruyipage.py",
         "category": "配置工具",
         "title": "安装 RuyiPage Firefox",
-        "desc": "下载并安装 RuyiPage 配套的 Firefox 指纹浏览器 runtime。首次使用默认浏览器时运行一次。",
+        "desc": "自动安装失败时手动重试 RuyiPage Firefox runtime；正常情况下便携包首次启动会自动安装。",
         "args": [],
     },
 ]

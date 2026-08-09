@@ -6,7 +6,7 @@
 
 支持以下浏览器类型；外部客户端模式需要保持客户端运行：
 
-- [RuyiPage](https://github.com/LoseNine/ruyipage)：`FINGERPRINT_BROWSER=ruyipage`，默认用于 ChatGPT、Codex OAuth、GitHub 等共享浏览器流程。先运行 WebUI 的“安装 RuyiPage Firefox”任务，或执行 `python -m ruyipage install`。可用 `RUYIPAGE_BROWSER_PATH` 指定已有 Firefox。
+- [RuyiPage](https://github.com/LoseNine/ruyipage)：`FINGERPRINT_BROWSER=ruyipage`，默认用于 ChatGPT、Codex OAuth、GitHub 等共享浏览器流程。便携包首次启动和首次打开浏览器时会自动安装 Firefox runtime，后续版本复用 `%LOCALAPPDATA%\ruyipage\browsers`，无需重复安装。自动安装失败时可运行 WebUI 的“安装 RuyiPage Firefox”任务重试，或用 `RUYIPAGE_BROWSER_PATH` 指定已有 Firefox。
 - 内置 Chromium：`FINGERPRINT_BROWSER=bundled`，安装程序会配置浏览器路径。
 - 普通 Chrome/Chromium：`FINGERPRINT_BROWSER=custom`，通过 `CUSTOM_BROWSER_PATH` 指定可执行文件；留空时会尝试查找系统 Chrome。
 - [BitBrowser 官方下载页](https://www.bitbrowser.cn/download)：默认 API 为 `http://127.0.0.1:54345`。
