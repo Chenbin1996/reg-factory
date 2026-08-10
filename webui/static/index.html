@@ -44,14 +44,14 @@
       <button class="navbtn" data-view="network" data-guide="network-entry"><span class="nav-icon" aria-hidden="true">IP</span><span>网络出口</span></button>
       <button class="navbtn" data-view="env" data-guide="env-entry"><span class="nav-icon" aria-hidden="true">CFG</span><span>环境配置</span></button>
       <button class="navbtn navbtn-k12" data-view="k12"><span class="nav-icon" aria-hidden="true">K</span><span>Codex K12</span><span id="k12-nav-state" class="nav-state">检测中</span></button>
-      <button class="navbtn" data-view="plus"><span class="nav-icon" aria-hidden="true">P</span><span>Plus 订阅</span><span id="plus-nav-state" class="nav-state">检测中</span></button>
+      <button class="navbtn" data-view="plus"><span class="nav-icon" aria-hidden="true">P</span><span>Plus 导入</span><span id="plus-nav-state" class="nav-state">检测中</span></button>
     </div>
     <div class="sidebar-footer">
       <div class="service-list" aria-label="服务状态">
         <span class="status-item"><span class="dot" id="dot-bb"></span><span id="browser-label">BitBrowser</span></span>
         <span class="status-item"><span class="dot" id="dot-clash"></span><span id="network-label">网络出口</span></span>
         <span class="status-item"><span class="dot pending" id="dot-k12"></span>Codex K12</span>
-        <span class="status-item"><span class="dot pending" id="dot-plus"></span>Plus 工作台</span>
+        <span class="status-item"><span class="dot pending" id="dot-plus"></span>Plus Codex</span>
       </div>
       <div class="instance-meta">
         <span class="version" id="version" title="当前 WebUI 提交版本">v--</span>
@@ -134,24 +134,43 @@
       </div>
     </section>
 
-    <!-- ChatGPT Plus 本地工作台 -->
+    <!-- Existing ChatGPT Plus accounts -> Codex OAuth -> SUB2API -->
     <section id="view-plus" style="display:none">
-      <div class="plus-workbench-panel">
-        <div class="plus-workbench-quick">
-          <div class="plus-workbench-quick-item">
-            <span class="plus-workbench-label">本地 AT</span>
-            <span id="plus-at-count">检测中...</span>
-            <button id="btn-import-ats" class="btn-plus-primary" type="button">批量导入 AT</button>
-            <button id="btn-copy-ats" class="btn-k12-secondary" type="button">复制本批 AT</button>
+      <div class="plus-import-panel">
+        <div class="plus-import-head">
+          <div>
+            <h2>已开通 Plus 导入 SUB2API</h2>
+            <span id="plus-import-state" role="status" aria-live="polite">正在检查配置</span>
           </div>
-          <div class="plus-workbench-quick-item">
-            <span class="plus-workbench-label">本地工作台</span>
-            <span id="plus-import-state" role="status" aria-live="polite">正在连接</span>
-            <a id="plus-open" href="/chatgpt-plus/" target="_blank" rel="noopener" class="embed-open">新标签页打开</a>
-          </div>
+          <div id="plus-run-summary" class="plus-run-summary">等待任务</div>
         </div>
-        <div class="k12-frame-stage">
-          <iframe id="plus-frame" class="k12-frame" src="about:blank" title="ChatGPT Plus 本地工作台"></iframe>
+        <div class="plus-import-grid">
+          <div class="plus-import-form">
+            <label class="plus-field plus-field-wide">
+              <span>Plus 邮箱 / Cookie / OAuth Token（每行一个）</span>
+              <textarea id="plus-account-input" spellcheck="false" autocomplete="off"
+                placeholder="Outlook: email----password----refresh_token----client_id&#10;iCloud: email@icloud.com&#10;Cookie: __Secure-next-auth.session-token=...&#10;OAuth JSON: {&quot;access_token&quot;:&quot;...&quot;,&quot;refresh_token&quot;:&quot;...&quot;,...}"></textarea>
+            </label>
+            <div class="plus-controls">
+              <label class="plus-field"><span>手机号接码平台</span><select id="plus-sms-provider"><option value="auto">自动切换</option><option value="smsman">SMS-Man</option><option value="firefox">firefox.fun</option><option value="hero">Hero SMS</option></select></label>
+              <label class="plus-field"><span>单账号换号次数</span><input id="plus-phone-attempts" type="number" min="1" max="10" value="3"></label>
+              <label class="plus-field"><span>单号等码秒数</span><input id="plus-sms-timeout" type="number" min="30" max="600" value="180"></label>
+              <label class="plus-field"><span>并发账号数</span><input id="plus-concurrency" type="number" min="1" max="5" value="1"></label>
+              <label class="plus-field"><span>SUB2API 分组</span><input id="plus-group" type="text" value="codex"></label>
+              <label class="plus-field"><span>ChatGPT 节点</span><input id="plus-node" type="text" value="auto"></label>
+            </div>
+            <label class="plus-toggle"><input id="plus-keep-on-fail" type="checkbox"><span>失败时保留浏览器</span></label>
+            <div class="plus-import-actions">
+              <button id="btn-plus-import" class="btn-run" type="button">开始登录并接码</button>
+              <button id="btn-plus-stop" class="btn-secondary" type="button" disabled>停止任务</button>
+            </div>
+          </div>
+          <div class="plus-log-surface">
+            <div class="plus-stage-row">
+              <span>邮箱登录</span><span>手机号验证</span><span>OAuth 换码</span><span>SUB2API</span>
+            </div>
+            <pre id="plus-run-log" data-empty="任务日志"></pre>
+          </div>
         </div>
       </div>
     </section>
@@ -364,16 +383,6 @@
           </div>
         </div>
 
-        <div id="network-plus-fields" class="network-fields">
-          <div class="network-section-title">Plus 阶段出口（可选）</div>
-          <div class="network-grid">
-            <label class="network-field"><span>Plus 提链网络</span><select id="proxy-plus-link-route"><option value="residential">住宅 IP</option><option value="clash">Clash 当前节点</option></select></label>
-            <label class="network-field"><span>Plus 绑卡/支付网络</span><select id="proxy-plus-bind-route"><option value="clash">Clash 当前节点</option><option value="residential">住宅 IP</option></select></label>
-            <label class="network-field"><span>提链独立 Clash 入口（可选）</span><input id="proxy-plus-link-proxy" type="password" autocomplete="off" placeholder="两个固定节点可填不同监听端口"></label>
-            <label class="network-field"><span>绑卡/支付独立 Clash 入口（可选）</span><input id="proxy-plus-bind-proxy" type="password" autocomplete="off" placeholder="两个固定节点可填不同监听端口"></label>
-          </div>
-        </div>
-
         <div id="network-residential-fields" class="network-fields" style="display:none">
           <div class="network-section-title">住宅代理</div>
           <div class="network-grid">
@@ -454,6 +463,6 @@
   </section>
 </div>
 
-<script src="/static/app.js?v=20260809-ruyipage-auto-1"></script>
+<script src="/static/app.js?v=20260810-plus-codex-2"></script>
 </body>
 </html>

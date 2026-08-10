@@ -93,6 +93,12 @@ class WebUIUpdateTests(unittest.TestCase):
         self.assertIn("-InstallDir", command)
         self.assertIn(tmp, command)
 
+    def test_frozen_macos_runtime_requires_release_update(self):
+        with patch.object(server.sys, "frozen", True, create=True), patch.object(
+            server.os, "name", "posix"
+        ):
+            self.assertIsNone(server._update_script())
+
     def test_ui_binds_one_click_update(self):
         root = Path(__file__).resolve().parents[1]
         html = (root / "webui/static/index.html").read_text(encoding="utf-8")

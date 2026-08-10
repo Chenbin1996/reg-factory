@@ -44,6 +44,8 @@
 
 ---
 
+> **服务入口：** [天天 AI Pro](https://tiantianai.pro) · [天天 AI](https://tiantianai.co) · [TTCard 卡网](https://ttcard.zeabur.app)
+
 项目将 Outlook 邮箱、ChatGPT、Grok、Claude、Kiro 注册，Codex OAuth、账号导出和下游导入整合到同一个 Web 控制台，同时保留可组合的命令行入口。
 
 > 仅用于学习、开发和经授权的测试。密钥、账号、Cookie、Token 和运行日志均应保留在本机，不要提交到仓库。
@@ -59,6 +61,19 @@
 配置和运行数据默认保存在 `%LOCALAPPDATA%\RegFactory`，升级时直接替换程序目录即可。首次切换到便携包时，如果检测到仍在运行的源码版且其目录包含邮箱、Cookie 或 Token，新版会自动沿用该资产目录。
 
 为控制体积，Windows 便携包不包含可选的 Codex K12 子项目；需要 K12 时请使用源码方式安装，并准备 Node.js 20+。
+
+### macOS Apple Silicon 便携包
+
+Apple M 系列 Mac 从 Releases 下载 `reg-factory-macos-arm64-<版本>.tar.gz`，无需安装 Python。解压并进入目录后运行：
+
+```bash
+tar -xzf reg-factory-macos-arm64-<版本>.tar.gz
+cd reg-factory-macos-arm64-<版本>
+chmod +x reg-factory
+./reg-factory
+```
+
+首次运行如被 Gatekeeper 拦截，在“系统设置 → 隐私与安全性”中允许打开；当前包未使用 Apple Developer ID 签名。配置与运行数据保存在 `~/Library/Application Support/RegFactory`，升级时下载新包替换程序目录即可，账号和配置不会随旧程序目录删除。首次使用浏览器时会自动安装 RuyiPage Firefox runtime。
 
 ### 从源码运行
 
@@ -100,7 +115,7 @@ macOS / Linux：
 - 网络出口：切换 Clash 自动轮换、固定节点或动态住宅 IP，并测试公网出口。
 - 环境配置：分组编辑 `.env` 并测试外部服务连通性。
 - Codex K12：管理 K12 workspace、邮箱资产、任务与 Codex 凭据。
-- Plus 订阅：ChatGPT 注册任务勾选订阅模式后，成功账号自动进入主 WebUI 的本地 `zkky` 工作台；支持一次导入最多 100 条 AT，按 1-27 的可调并发自动或手动轮换批处理，一次录入卡片后自动应用。提链和绑卡/支付可分别在网络页下拉选择住宅 IP、Clash 当前节点或具体 Clash 节点；缺少其中一种出口时自动回退。也可用 `REG_FACTORY_PLUS_LINK_PROXY_OVERRIDE` 和 `REG_FACTORY_PLUS_BIND_PROXY_OVERRIDE` 显式指定两个固定 Clash 入口。
+- Plus Codex 导入：使用已经开通 Plus 的 ChatGPT 账号，登录后强制完成手机号接码验证，再走 Codex OAuth 并导入 SUB2API；不再执行提链、绑卡或支付。WebUI 支持批量粘贴 Outlook/Hotmail/Live/MSN、iCloud、ChatGPT session Cookie/token 和完整 Codex OAuth JSON，也兼容 RT/client_id 正反顺序及多种分隔符。
 
 控制台只监听本机。Codex K12 的独立说明见 [codex_k12/README.md](codex_k12/README.md)。
 
@@ -158,8 +173,8 @@ python register_chatgpt.py --count 1 --email-provider icloud
 # 使用普通 iCloud 子邮箱接口（/api/user/email?type=icloud&apikey=...）
 # 先在 .env 设置 ICLOUD_MAIL_TYPE=icloud
 
-# ChatGPT 注册成功后进入主 WebUI 的本地 Plus 批处理工作台
-python register_chatgpt.py --count 1 --plus-subscription
+# 已开通 Plus 账号：手机号接码验证 -> Codex OAuth -> SUB2API
+python tools/import_plus_codex.py --accounts-file accounts.txt --sms-provider auto --phone-attempts 3
 
 # Grok 浏览器注册并导入 SUB2API
 python register_grok.py --count 1 --sub2api

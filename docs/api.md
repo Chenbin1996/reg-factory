@@ -26,9 +26,14 @@ curl "http://127.0.0.1:8799/api/assets/emails?index=2"
 
 # 返回原始四段文本
 curl "http://127.0.0.1:8799/api/assets/emails?format=line"
+
+# 只领取 iCloud 注册邮箱
+curl "http://127.0.0.1:8799/api/assets/emails?format=json&email_provider=icloud"
 ```
 
 `format=json` 返回 `email`、`password`、`refresh_token`、`client_id`；`format=line` 返回原始 `----` 分隔文本。响应还包含 `verification`，其中的 `checked_at` 和 `evidence` 表示本次在线检测时间与判定依据。
+
+邮箱与平台资产响应都会包含 `email_provider`：`outlook`、`icloud`、`temporary` 或 `other`。可用 `email_provider` 查询参数按注册邮箱来源筛选。
 
 ## 平台 Cookie 与下游格式
 
@@ -44,6 +49,9 @@ curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=header&index=0"
 
 # ChatGPT -> SUB2API 导入内容
 curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=sub2api"
+
+# ChatGPT -> 只领取 Outlook 注册账号
+curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=sub2api&email_provider=outlook"
 
 # ChatGPT -> CPA codex 授权 JSON
 curl "http://127.0.0.1:8799/api/assets/cookies/chatgpt?format=cpa"

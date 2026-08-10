@@ -16,11 +16,13 @@ import hmac
 import importlib.util
 import json
 import os
+import re
 import signal
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -275,33 +277,45 @@ def _plus_health():
 
 
 def _plus_status(message=""):
-    health = _plus_health()
-    alive = bool(health)
-    required = (
-        os.path.join(PLUS_DIR, "server.py"),
-        os.path.join(PLUS_DIR, "standalone_flow.py"),
-        os.path.join(PLUS_DIR, "index.html"),
+    sub2api_ready = all(
+        _read_config_val(key, "").strip()
+        for key in ("SUB2API_URL", "SUB2API_EMAIL", "SUB2API_PASSWORD")
     )
-    ready = all(os.path.isfile(path) for path in required)
-    managed = bool(PLUS_SERVER_THREAD and PLUS_SERVER_THREAD.is_alive())
-    detail = (
-        "本地工作台在线" if alive else
-        message if message else
-        "内置 zkky 文件不完整" if not ready else
-        "本地工作台尚未启动"
+    providers = []
+    if _read_config_val("SMSMAN_TOKEN", "").strip():
+        providers.append("smsman")
+    if (
+        _read_config_val("SMS_TOKEN", "").strip()
+        and _read_config_val("SMS_PROJECT_ID_OPENAI", "").strip()
+    ):
+        providers.append("firefox")
+    if _read_config_val("HERO_SMS_API_KEY", "").strip():
+        providers.append("hero")
+    active = sum(
+        1 for rec in RUNS.values()
+        if rec.get("script") == "plus_codex_import" and not rec.get("done")
+    )
+    ready = sub2api_ready and bool(providers)
+    detail = message or (
+        f"正在导入 {active} 个批次" if active else
+        "Plus Codex 批量导入已就绪" if ready else
+        "请先配置 SUB2API 和至少一个手机号接码平台"
     )
     return {
-        "alive": alive,
+        "alive": ready,
         "ready": ready,
-        "managed": managed,
-        "url": "/chatgpt-plus/",
-        "batch_size": PLUS_BATCH_SIZE,
+        "managed": bool(active),
+        "active": active,
+        "providers": providers,
+        "sub2api_ready": sub2api_ready,
         "message": detail,
     }
 
 
 def _update_script():
-    if getattr(sys, "frozen", False) and os.name == "nt":
+    if getattr(sys, "frozen", False):
+        if os.name != "nt":
+            return None
         path = os.path.join(ROOT, "update-portable.ps1")
         if not os.path.isfile(path):
             return None
@@ -948,7 +962,12 @@ def api_asset_summary(request: Request):
 
 
 @app.get("/api/assets/emails")
-def api_asset_email(request: Request, index: int | None = None, format: str = "json"):
+def api_asset_email(
+    request: Request,
+    index: int | None = None,
+    format: str = "json",
+    email_provider: str = "",
+):
     denied = _asset_api_denied(request)
     if denied:
         return denied
@@ -959,6 +978,7 @@ def api_asset_email(request: Request, index: int | None = None, format: str = "j
                 index=index,
                 output_format=format,
                 verified_only=True,
+                email_provider=email_provider,
             ),
         )
     )
@@ -970,6 +990,8 @@ def api_asset_cookie(
     request: Request,
     format: str = "raw",
     index: int | None = None,
+    codex_phone_status: str = "",
+    email_provider: str = "",
 ):
     denied = _asset_api_denied(request)
     if denied:
@@ -982,6 +1004,8 @@ def api_asset_cookie(
                 output_format=format,
                 index=index,
                 verified_only=True,
+                codex_phone_status=codex_phone_status,
+                email_provider=email_provider,
             ),
         )
     )
@@ -1157,16 +1181,100 @@ async def api_k12_start():
 
 @app.get("/api/chatgpt-plus/status")
 async def api_chatgpt_plus_status():
-    _plus_runtime_environment()
-    status = _plus_status()
-    if not status["alive"] and status["ready"]:
-        status = await asyncio.to_thread(_start_plus_service_sync)
-    return status
+    return _plus_status()
 
 
 @app.post("/api/chatgpt-plus/start")
 async def api_chatgpt_plus_start():
-    return await asyncio.to_thread(_start_plus_service_sync)
+    return _plus_status()
+
+
+@app.post("/api/chatgpt-plus/import-codex")
+async def api_chatgpt_plus_import_codex(request: Request):
+    data = await request.json()
+    account_text = str((data or {}).get("accounts") or "")
+    if not account_text.strip():
+        return JSONResponse({"error": "请粘贴至少一个 Plus 账号"}, status_code=400)
+    if len(account_text) > 5_000_000:
+        return JSONResponse({"error": "批量账号内容超过 5 MB"}, status_code=413)
+
+    from common.account_records import canonical_account_line, parse_account_text
+
+    records, errors = parse_account_text(account_text)
+    if errors:
+        return JSONResponse(
+            {"error": "账号格式错误或存在重复邮箱", "details": errors[:20]},
+            status_code=400,
+        )
+    if not records:
+        return JSONResponse({"error": "没有可导入的账号"}, status_code=400)
+    if len(records) > 100:
+        return JSONResponse({"error": "单批最多导入 100 个账号"}, status_code=400)
+
+    def bounded_int(key, default, minimum, maximum):
+        try:
+            value = int((data or {}).get(key, default))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} 必须是整数") from exc
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{key} 必须在 {minimum}-{maximum} 之间")
+        return value
+
+    try:
+        concurrency = bounded_int("concurrency", 1, 1, 5)
+        phone_attempts = bounded_int("phone_attempts", 3, 1, 10)
+        sms_timeout = bounded_int("sms_timeout", 180, 30, 600)
+        timeout = bounded_int("timeout", 600, 120, 3600)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    sms_provider = str((data or {}).get("sms_provider") or "auto").strip().lower()
+    if sms_provider not in {"auto", "smsman", "firefox", "hero"}:
+        return JSONResponse({"error": "未知手机号接码平台"}, status_code=400)
+    node = str((data or {}).get("node") or "auto").strip()[:120] or "auto"
+    group = str(
+        (data or {}).get("group")
+        or _read_config_val("SUB2API_GROUP", "codex")
+        or "codex"
+    ).strip()[:120]
+
+    data_root = os.path.abspath(os.environ.get("REG_FACTORY_DATA_DIR") or ROOT)
+    runtime_dir = os.path.join(data_root, "runtime", "plus_codex")
+    os.makedirs(runtime_dir, exist_ok=True)
+    descriptor, input_path = tempfile.mkstemp(
+        prefix="accounts-", suffix=".txt", dir=runtime_dir, text=True
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(canonical_account_line(item) for item in records) + "\n")
+        with contextlib.suppress(OSError):
+            os.chmod(input_path, 0o600)
+
+        script = schema.script_by_id("plus_codex_import")
+        args = {
+            "--accounts-file": input_path,
+            "--group": group,
+            "--concurrency": concurrency,
+            "--node": node,
+            "--sms-provider": sms_provider,
+            "--phone-attempts": phone_attempts,
+            "--sms-timeout": sms_timeout,
+            "--timeout": timeout,
+            "--delete-input": True,
+            "--keep-on-fail": bool((data or {}).get("keep_on_fail")),
+        }
+        task_env = _child_env("chatgpt")
+        from common import proxy_switch
+
+        await asyncio.to_thread(proxy_switch.ensure_proxy_mode, task_env)
+        started = await _start_managed_run(
+            _build_cmd(script, args), "plus_codex_import", task_env, data_root
+        )
+        RUNS[started["run_id"]]["sensitive_input_path"] = input_path
+        return {**started, "accepted": len(records)}
+    except Exception as exc:
+        with contextlib.suppress(OSError):
+            os.unlink(input_path)
+        return JSONResponse({"error": str(exc)[:240]}, status_code=400)
 
 
 def _decode_access_token_claims(token):
@@ -1213,16 +1321,11 @@ def _chatgpt_plus_free_ats(limit=PLUS_BATCH_SIZE):
 
 @app.get("/api/chatgpt-plus/export-ats")
 def api_chatgpt_plus_export_ats(limit: int = PLUS_BATCH_SIZE):
-    """Return a bounded batch of current free-account ATs to the local UI."""
-    accounts, available = _chatgpt_plus_free_ats(limit)
-    response = JSONResponse({
-        "ats": [item["access_token"] for item in accounts],
-        "count": len(accounts),
-        "available": available,
-        "batch_size": min(PLUS_BATCH_SIZE, available),
-    })
-    response.headers["Cache-Control"] = "no-store"
-    return response
+    del limit
+    return JSONResponse(
+        {"error": "Plus 提链和绑卡功能已移除，请使用 Codex OAuth 批量导入"},
+        status_code=410,
+    )
 
 
 async def _proxy_local_plus(request: Request, upstream_path: str):
@@ -1278,7 +1381,10 @@ async def _proxy_local_plus(request: Request, upstream_path: str):
 
 @app.api_route("/chatgpt-plus/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def proxy_chatgpt_plus_page(request: Request, path: str):
-    return await _proxy_local_plus(request, f"/{path}")
+    del request, path
+    return JSONResponse(
+        {"error": "Plus 提链和绑卡工作台已移除"}, status_code=410
+    )
 
 
 @app.api_route(
@@ -1286,7 +1392,10 @@ async def proxy_chatgpt_plus_page(request: Request, path: str):
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 )
 async def proxy_chatgpt_plus_api(request: Request, path: str):
-    return await _proxy_local_plus(request, f"/api/{path}")
+    del request, path
+    return JSONResponse(
+        {"error": "Plus 提链和绑卡 API 已移除"}, status_code=410
+    )
 
 
 # ============================================================ 邮箱池批量导入
@@ -1296,31 +1405,14 @@ _EMAIL_RE = _re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def _parse_mail_line(line):
-    """把一行拆成 [email, password, token, client_id]。兼容分隔符：----(多横线)/制表符/逗号/竖线/空格。
-    email+密码必填，否则返回 None。"""
-    s = line.strip()
-    if not s or s.startswith("#"):
+    """Parse and normalize either RT/client-id column order."""
+    from common.account_records import canonical_account_line, parse_account_line
+
+    try:
+        record = parse_account_line(line)
+    except ValueError:
         return None
-    # 统一各种分隔符成 \x00：先处理 2+ 连字符，再 tab/逗号/竖线
-    norm = _re.sub(r"-{2,}", "\x00", s)
-    norm = _re.sub(r"[\t,|]+", "\x00", norm)
-    parts = [p.strip() for p in norm.split("\x00")]
-    # 若没拆出多列(只有空格分隔)，退化用空白拆
-    if len(parts) < 2:
-        parts = [p.strip() for p in s.split() if p.strip()]
-    parts = [p for p in parts if p != ""]
-    if len(parts) < 2:
-        return None
-    email, password = parts[0], parts[1]
-    if not _EMAIL_RE.match(email):
-        return None
-    token = parts[2] if len(parts) >= 3 else ""
-    client_id = parts[3] if len(parts) >= 4 else ""
-    # 去掉尾部空字段，避免写出 "email----pass--------"(多余空列)
-    fields = [email, password, token, client_id]
-    while len(fields) > 2 and fields[-1] == "":
-        fields.pop()
-    return fields
+    return canonical_account_line(record).split("----")
 
 
 def _existing_emails():
@@ -1591,7 +1683,7 @@ def api_status():
         "proxy_mode": mode,
         "direct_proxy": mode == "residential" and bool(proxy),
         "k12": _k12_alive(),
-        "chatgpt_plus": _plus_status()["alive"],
+        "chatgpt_plus": _plus_status()["ready"],
         "node": node,
         "running": sum(1 for r in RUNS.values() if not r["done"]),
         "update": _update_status(),
@@ -2079,32 +2171,7 @@ def _terminate_process_tree(pid):
     return not _pid_exists(pid)
 
 
-@app.post("/api/run")
-async def api_run(request: Request):
-    data = await request.json()
-    sid = data.get("script")
-    args = data.get("args") or {}
-    script = schema.script_by_id(sid)
-    if not script:
-        return JSONResponse({"error": f"未知脚本: {sid}"}, status_code=400)
-    selected_platforms = args.get("--platforms") or []
-    plus_requested = bool(args.get("--plus-subscription")) and (
-        sid == "register_chatgpt" or "chatgpt" in selected_platforms
-    )
-    task_env = _child_env(script.get("platform", ""))
-    if plus_requested:
-        task_env.update({
-            key: value
-            for key, value in _plus_runtime_environment().items()
-            if key.startswith("REG_FACTORY_PLUS_") or key == "REG_FACTORY_DATA_DIR"
-        })
-    try:
-        from common import proxy_switch
-        await asyncio.to_thread(proxy_switch.ensure_proxy_mode, task_env)
-    except Exception as exc:
-        return JSONResponse({"error": f"网络出口配置未应用: {str(exc)[:160]}"}, status_code=400)
-    cmd = _build_cmd(script, args)
-    task_cwd = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
+async def _start_managed_run(cmd, sid, task_env, task_cwd):
     os.makedirs(task_cwd, exist_ok=True)
     process_options = (
         {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
@@ -2123,10 +2190,20 @@ async def api_run(request: Request):
            "cmd": " ".join(cmd), "started": time.strftime("%H:%M:%S")}
     RUNS[run_id] = rec
 
+    def _sanitize_line(value):
+        line = str(value or "")
+        if sid != "plus_codex_import":
+            return line
+        # OTPs and rented numbers must not be copied into the WebUI log stream.
+        line = re.sub(r"\b\d{6}\b", "******", line)
+        line = re.sub(r"(?<!\d)\+(\d{8,15})\b", lambda match: "+***" + match.group(1)[-4:], line)
+        line = re.sub(r"\bM\.[A-Za-z0-9*!._-]{24,}\b", "[redacted-token]", line)
+        return line
+
     async def _pump():
         try:
             async for raw in proc.stdout:
-                rec["lines"].append(raw.decode("utf-8", "replace").rstrip("\n"))
+                rec["lines"].append(_sanitize_line(raw.decode("utf-8", "replace").rstrip("\n")))
                 if len(rec["lines"]) > 5000:
                     rec["lines"] = rec["lines"][-4000:]
         except Exception as e:
@@ -2136,9 +2213,32 @@ async def api_run(request: Request):
             rec["returncode"] = proc.returncode
             rec["done"] = True
             rec["lines"].append(f"[webui] 进程结束 exit={proc.returncode}")
+            sensitive_input = rec.get("sensitive_input_path")
+            if sensitive_input:
+                with contextlib.suppress(OSError):
+                    os.unlink(sensitive_input)
 
     asyncio.create_task(_pump())
     return {"run_id": run_id, "cmd": rec["cmd"]}
+
+
+@app.post("/api/run")
+async def api_run(request: Request):
+    data = await request.json()
+    sid = data.get("script")
+    args = data.get("args") or {}
+    script = schema.script_by_id(sid)
+    if not script:
+        return JSONResponse({"error": f"未知脚本: {sid}"}, status_code=400)
+    task_env = _child_env(script.get("platform", ""))
+    try:
+        from common import proxy_switch
+        await asyncio.to_thread(proxy_switch.ensure_proxy_mode, task_env)
+    except Exception as exc:
+        return JSONResponse({"error": f"网络出口配置未应用: {str(exc)[:160]}"}, status_code=400)
+    cmd = _build_cmd(script, args)
+    task_cwd = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
+    return await _start_managed_run(cmd, sid, task_env, task_cwd)
 
 
 @app.get("/api/logs/{run_id}")
@@ -2242,7 +2342,6 @@ async def startup_local_services():
     auto_start = _read_config_val("K12_AUTO_START", "1").strip().lower() not in {"0", "false", "no", "off"}
     if auto_start and not _k12_alive():
         K12_START_TASK = asyncio.create_task(_start_k12_service())
-    await asyncio.to_thread(_start_plus_service_sync)
 
 
 @app.on_event("shutdown")
