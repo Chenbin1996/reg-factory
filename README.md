@@ -44,7 +44,9 @@
 
 ---
 
-> **服务入口：** [天天 AI Pro](https://tiantianai.pro) · [天天 AI](https://tiantianai.co) · [TTCard 卡网](https://ttcard.zeabur.app)
+> **中转站：** [天天 AI Pro](https://tiantianai.pro) · [天天 AI](https://tiantianai.co)
+>
+> **卡网地址：** [TTCard](https://ttcard.zeabur.app)
 
 项目将 Outlook 邮箱、ChatGPT、Grok、Claude、Kiro 注册，Codex OAuth、账号导出和下游导入整合到同一个 Web 控制台，同时保留可组合的命令行入口。
 
