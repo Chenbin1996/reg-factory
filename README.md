@@ -64,30 +64,6 @@
 
 为控制体积，Windows 便携包不包含可选的 Codex K12 子项目；需要 K12 时请使用源码方式安装，并准备 Node.js 20+。
 
-### macOS Apple Silicon 便携包
-
-项目代码支持 Apple M 系列 Mac，但 macOS 可执行文件必须在 macOS ARM64 环境中构建，不能在 Windows 上交叉生成。如果 Releases 中提供了 `reg-factory-macos-arm64-<版本>.tar.gz`，下载后无需安装 Python，解压并进入目录运行：
-
-```bash
-tar -xzf reg-factory-macos-arm64-<版本>.tar.gz
-cd reg-factory-macos-arm64-<版本>
-chmod +x reg-factory
-./reg-factory
-```
-
-首次运行如被 Gatekeeper 拦截，在“系统设置 → 隐私与安全性”中允许打开；当前包未使用 Apple Developer ID 签名。配置与运行数据保存在 `~/Library/Application Support/RegFactory`，升级时下载新包替换程序目录即可，账号和配置不会随旧程序目录删除。首次使用浏览器时会自动安装 RuyiPage Firefox runtime。
-
-如果当前 Release 没有 macOS 附件，可在 M 系列 Mac 上从源码运行，或使用仓库内的原生打包脚本自行生成：
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements-build.txt
-chmod +x scripts/build_release.sh
-scripts/build_release.sh <版本> --skip-install
-```
-
-生成的安装包和 SHA-256 校验文件位于 `dist/`。构建需要 Python 3.10+ 和 Node.js 20+。
-
 ### 从源码运行
 
 运行前需要：
