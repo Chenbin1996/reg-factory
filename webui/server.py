@@ -175,11 +175,28 @@ ASSET_SCAN_LOCK = threading.Lock()
 # 更新由独立进程执行；当前 WebUI 会在 updater 停止自身前返回 202。
 UPDATE_PROCESS = None
 UPDATE_LOG_HANDLE = None
+UPDATE_RESULT_PATH = os.path.join(
+    os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT,
+    "runtime",
+    "update-result.json",
+)
 UPDATE_STATE = {
     "status": "idle",
     "message": "",
     "started_at": "",
 }
+try:
+    with open(UPDATE_RESULT_PATH, encoding="utf-8-sig") as handle:
+        _previous_update_result = json.load(handle)
+    _previous_update_status = str(_previous_update_result.get("status") or "").lower()
+    if _previous_update_status in {"completed", "up_to_date", "failed"}:
+        UPDATE_STATE.update({
+            "status": "completed" if _previous_update_status != "failed" else "failed",
+            "message": str(_previous_update_result.get("message") or "")[:240],
+            "started_at": str(_previous_update_result.get("updated_at") or ""),
+        })
+except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+    pass
 
 
 # ============================================================ 配置/状态读取
@@ -312,14 +329,14 @@ def _plus_status(message=""):
     }
 
 
-def _update_script():
+def _update_script(result_path=""):
     if getattr(sys, "frozen", False):
         if os.name != "nt":
             return None
         path = os.path.join(ROOT, "update-portable.ps1")
         if not os.path.isfile(path):
             return None
-        return [
+        command = [
             shutil.which("powershell.exe") or "powershell.exe",
             "-NoProfile",
             "-ExecutionPolicy",
@@ -331,6 +348,20 @@ def _update_script():
             "-ProcessId",
             str(os.getpid()),
         ]
+        if result_path:
+            command.extend(["-ResultPath", result_path])
+        for option, default in (("--host", "127.0.0.1"), ("--port", "8799")):
+            value = default
+            try:
+                index = sys.argv.index(option)
+                value = sys.argv[index + 1]
+            except (ValueError, IndexError):
+                pass
+            command.extend([
+                "-ListenHost" if option == "--host" else "-ListenPort",
+                str(value),
+            ])
+        return command
     if os.name == "nt":
         path = os.path.join(ROOT, "update.ps1")
         if not os.path.isfile(path):
@@ -351,21 +382,59 @@ def _update_script():
     return ["bash", path, "--root", ROOT]
 
 
+def _read_update_result():
+    if not UPDATE_RESULT_PATH or not os.path.isfile(UPDATE_RESULT_PATH):
+        return {}
+    try:
+        with open(UPDATE_RESULT_PATH, encoding="utf-8-sig") as handle:
+            result = json.load(handle)
+        return result if isinstance(result, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def _update_status():
     global UPDATE_PROCESS, UPDATE_LOG_HANDLE
     process = UPDATE_PROCESS
     if process is not None:
         returncode = process.poll()
         if returncode is None:
+            result = _read_update_result()
+            result_status = str(result.get("status") or "").strip().lower()
+            target = str(result.get("target_version") or "").strip()
+            stage_messages = {
+                "checking": "正在检查最新版本",
+                "downloading": f"正在下载 v{target}" if target else "正在下载最新版本",
+                "installing": f"正在安装 v{target}" if target else "正在安装最新版本",
+            }
             UPDATE_STATE["status"] = "running"
-            UPDATE_STATE["message"] = "正在下载并安装最新版本"
+            UPDATE_STATE["message"] = str(
+                stage_messages.get(result_status)
+                or result.get("message")
+                or "正在下载并安装最新版本"
+            )[:240]
         elif UPDATE_STATE["status"] == "running":
-            UPDATE_STATE["status"] = "completed" if returncode == 0 else "failed"
-            UPDATE_STATE["message"] = (
-                "更新进程已完成，面板即将重启"
-                if returncode == 0
-                else f"更新失败（退出码 {returncode}），请查看 update.log"
-            )
+            result = _read_update_result()
+            result_status = str(result.get("status") or "").strip().lower()
+            if returncode == 0 and result_status in {"completed", "up_to_date"}:
+                UPDATE_STATE["status"] = "completed"
+                current = str(result.get("current_version") or "").strip()
+                target = str(result.get("target_version") or "").strip()
+                if result_status == "up_to_date":
+                    version = current or target
+                    UPDATE_STATE["message"] = f"已是最新版本 v{version}" if version else "已是最新版本"
+                else:
+                    UPDATE_STATE["message"] = (
+                        f"更新完成：v{current} -> v{target}"
+                        if current and target
+                        else "更新程序已完成"
+                    )
+            else:
+                UPDATE_STATE["status"] = "failed"
+                UPDATE_STATE["message"] = str(
+                    result.get("message")
+                    or f"更新失败（退出码 {returncode}），请查看 runtime/update.log"
+                )[:240]
             if UPDATE_LOG_HANDLE:
                 UPDATE_LOG_HANDLE.close()
                 UPDATE_LOG_HANDLE = None
@@ -971,15 +1040,14 @@ def api_asset_email(
     denied = _asset_api_denied(request)
     if denied:
         return denied
+    from common import asset_store
+
     return _asset_result(
-        lambda: _get_verified_asset(
-            "outlook",
-            lambda asset_store: asset_store.get_email(
-                index=index,
-                output_format=format,
-                verified_only=True,
-                email_provider=email_provider,
-            ),
+        lambda: asset_store.get_email(
+            index=index,
+            output_format=format,
+            claim_once=True,
+            email_provider=email_provider,
         )
     )
 
@@ -996,17 +1064,16 @@ def api_asset_cookie(
     denied = _asset_api_denied(request)
     if denied:
         return denied
+    from common import asset_store
+
     return _asset_result(
-        lambda: _get_verified_asset(
+        lambda: asset_store.get_platform_asset(
             platform,
-            lambda asset_store: asset_store.get_platform_asset(
-                platform,
-                output_format=format,
-                index=index,
-                verified_only=True,
-                codex_phone_status=codex_phone_status,
-                email_provider=email_provider,
-            ),
+            output_format=format,
+            index=index,
+            claim_once=True,
+            codex_phone_status=codex_phone_status,
+            email_provider=email_provider,
         )
     )
 
@@ -1055,24 +1122,6 @@ def _scan_assets_sync(platforms, concurrency=4, timeout=15, progress=None):
             timeout=timeout,
             progress=progress,
         )
-
-
-def _get_verified_asset(platform, callback):
-    """Scan the requested pool immediately before exposing a credential."""
-    from common import asset_store
-
-    normalized = str(platform or "").strip().lower()
-    if normalized not in {"outlook", "chatgpt", "claude", "grok", "kiro"}:
-        raise asset_store.AssetError("platform 仅支持 outlook、chatgpt、claude、grok、kiro")
-    if ASSET_SCAN_STATE["running"]:
-        raise asset_store.AssetUnverified("号池扫描正在运行，请等待扫描结束后再次读取资产")
-    with ASSET_SCAN_LOCK:
-        if ASSET_SCAN_STATE["running"]:
-            raise asset_store.AssetUnverified("号池扫描正在运行，请等待扫描结束后再次读取资产")
-        from common import asset_scanner
-
-        asset_scanner.scan_pool(platforms=[normalized], concurrency=4, timeout=15)
-        return callback(asset_store)
 
 
 async def _run_asset_scan(platforms, concurrency, timeout):
@@ -1405,12 +1454,14 @@ _EMAIL_RE = _re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def _parse_mail_line(line):
-    """Parse and normalize either RT/client-id column order."""
+    """Parse and normalize a mailbox without accepting token-only records."""
     from common.account_records import canonical_account_line, parse_account_line
 
     try:
         record = parse_account_line(line)
     except ValueError:
+        return None
+    if record.get("source_type") != "mailbox" or not record.get("email"):
         return None
     return canonical_account_line(record).split("----")
 
@@ -1566,7 +1617,7 @@ def index():
 
 @app.post("/api/update")
 def api_update():
-    global UPDATE_PROCESS, UPDATE_LOG_HANDLE
+    global UPDATE_PROCESS, UPDATE_LOG_HANDLE, UPDATE_RESULT_PATH
     status = _update_status()
     if status["status"] == "running":
         return JSONResponse({"ok": False, "error": "更新已经在进行中", "update": status}, status_code=409)
@@ -1588,13 +1639,23 @@ def api_update():
     log_dir = os.path.join(data_root, "runtime")
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "update.log")
+    UPDATE_RESULT_PATH = os.path.join(log_dir, "update-result.json")
+    try:
+        os.remove(UPDATE_RESULT_PATH)
+    except FileNotFoundError:
+        pass
     if UPDATE_LOG_HANDLE:
         UPDATE_LOG_HANDLE.close()
     UPDATE_LOG_HANDLE = open(log_path, "a", encoding="utf-8")
     child_env = os.environ.copy()
     child_env["REG_FACTORY_NONINTERACTIVE"] = "1"
+    command = _update_script(UPDATE_RESULT_PATH)
     process_options = {
-        "cwd": ROOT,
+        "cwd": (
+            os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+            if getattr(sys, "frozen", False)
+            else ROOT
+        ),
         "env": child_env,
         "stdin": subprocess.DEVNULL,
         "stdout": UPDATE_LOG_HANDLE,
@@ -1602,8 +1663,7 @@ def api_update():
     }
     if os.name == "nt":
         process_options["creationflags"] = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
     else:

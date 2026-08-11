@@ -174,7 +174,7 @@ def _claim_record(
     identity_for,
     index: int | None,
 ) -> tuple[int, dict, int, int, bool]:
-    """Atomically select and claim one healthy account across all output formats."""
+    """Atomically select and claim one account across all output formats."""
     with _CURSOR_LOCK:
         claims = _read_claims()
         claimed = set(claims.get(scope, set()))
@@ -189,10 +189,10 @@ def _claim_record(
 
         total = len(candidates)
         if total <= 0:
-            raise AssetExhausted("没有未领取的正常资产；如需重新使用，请重置领取记录")
+            raise AssetExhausted("没有未领取的资产；如需重新使用，请重置领取记录")
         selected = 0 if index is None else index
         if selected < 0 or selected >= total:
-            raise AssetNotFound(f"index 超出未领取正常资产范围：{selected}，可用范围 0-{total - 1}")
+            raise AssetNotFound(f"index 超出未领取资产范围：{selected}，可用范围 0-{total - 1}")
 
         record, claim = candidates[selected]
         claimed.add(claim)
@@ -345,6 +345,7 @@ def get_email(
     index: int | None = None,
     output_format: str = "json",
     verified_only: bool = False,
+    claim_once: bool = False,
     email_provider: str = "",
 ) -> dict:
     output_format = str(output_format or "json").strip().lower()
@@ -361,6 +362,7 @@ def get_email(
         records = [record for record in records if record.get("email_provider") == provider_filter]
     if verified_only:
         records = _verified_records("outlook", records, lambda record: record["_asset_source"])
+    if verified_only or claim_once:
         selected, record, total, remaining, advanced = _claim_record(
             records,
             "outlook",
@@ -387,6 +389,7 @@ def get_email(
     }
     if verified_only:
         result["verification"] = record["_verification"]
+    if verified_only or claim_once:
         result.update({
             "claim_recorded": True,
             "claim_scope": "outlook",
@@ -536,6 +539,7 @@ def get_platform_asset(
     output_format: str = "raw",
     index: int | None = None,
     verified_only: bool = False,
+    claim_once: bool = False,
     codex_phone_status: str = "",
     email_provider: str = "",
 ) -> dict:
@@ -562,6 +566,7 @@ def get_platform_asset(
             records = []
         if verified_only:
             records = _verified_records(platform, records, lambda record: record["path"].name)
+        if verified_only or claim_once:
             selected, record, total, remaining, advanced = _claim_record(
                 records,
                 platform,
@@ -605,6 +610,7 @@ def get_platform_asset(
                 records,
                 lambda record: record["path"].name,
             )
+        if verified_only or claim_once:
             selected, record, total, remaining, advanced = _claim_record(
                 records,
                 platform,
@@ -664,6 +670,7 @@ def get_platform_asset(
     }
     if verified_only:
         result["verification"] = record["_verification"]
+    if verified_only or claim_once:
         result.update({
             "claim_recorded": True,
             "claim_scope": platform,

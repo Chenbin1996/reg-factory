@@ -227,6 +227,19 @@ class AssetStoreTests(unittest.TestCase):
         self.assertEqual(reset["claim_scopes_removed"], ["chatgpt"])
         self.assertEqual(converted["email"], "user@example.com")
 
+    def test_direct_claim_never_requires_scan_and_is_shared_across_formats(self):
+        self._write_chatgpt_assets()
+        from common import asset_scanner
+
+        with patch.object(asset_scanner, "get_report", side_effect=AssertionError("scan read")):
+            raw = asset_store.get_platform_asset("chatgpt", "raw", claim_once=True)
+            with self.assertRaises(asset_store.AssetExhausted):
+                asset_store.get_platform_asset("chatgpt", "sub2api", claim_once=True)
+
+        self.assertTrue(raw["claim_recorded"])
+        self.assertNotIn("verification", raw)
+        self.assertEqual(raw["remaining"], 0)
+
     def test_grok_sub2api_and_summary(self):
         token_dir = self.root / "tokens" / "grok"
         token_dir.mkdir(parents=True)

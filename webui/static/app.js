@@ -77,11 +77,12 @@ function renderUpdateState(update, version){
     return;
   }
   if(updateRequested && update && update.status === 'completed'){
+    updateRequested = false;
     button.classList.remove('running');
-    button.disabled = true;
-    label.textContent = '更新完成';
-    setUpdateMessage('面板正在重启…', 'ok');
-    setTimeout(()=>location.reload(), 900);
+    button.disabled = false;
+    const message = update.message || '更新检查完成';
+    label.textContent = message.includes('已是最新') ? '已是最新' : '更新完成';
+    setUpdateMessage(message, 'ok');
     return;
   }
   button.disabled = updateRequested || !available;
@@ -632,14 +633,14 @@ async function saveAssetKey(){
 async function callAssetApi(){
   const button = $('#btn-call-asset');
   button.disabled = true;
-  setAssetMessage('#asset-call-msg', '正在在线校验并读取资产…');
+  setAssetMessage('#asset-call-msg', '正在领取未取用资产…');
   try{
     const request = buildAssetRequest();
     const response = await fetch(request.relative, {headers:assetHeaders()});
     const data = await readAssetResponse(response);
     $('#asset-response').textContent = JSON.stringify(data, null, 2);
-    const progress = data.remaining === undefined ? '' : `，剩余 ${data.remaining} 个未领取正常账号`;
-    setAssetMessage('#asset-call-msg', `在线校验通过并完成一次性领取${progress}`, true);
+    const progress = data.remaining === undefined ? '' : `，剩余 ${data.remaining} 个未领取账号`;
+    setAssetMessage('#asset-call-msg', `已完成一次性领取${progress}`, true);
     await refreshAssetSummary(true);
   }catch(error){
     $('#asset-response').textContent = JSON.stringify({error:error.message || String(error)}, null, 2);
@@ -1403,22 +1404,21 @@ const GUIDE_STEPS = [
       <p>连通测试只确认本机配置和服务接口可用，不代表目标网站一定允许注册，注册前仍应测试网络出口。</p>`,
   },
   {
-    id:'asset-scan', section:'资产 API', title:'先看号池状态', target:'[data-guide="asset-scan"]', placement:'bottom',
+    id:'asset-scan', section:'资产 API', title:'按需查看号池状态', target:'[data-guide="asset-scan"]', placement:'bottom',
     prepare:async()=>{ setNavOpen(false); await showView('assets'); },
     skipLabel:'跳过资产 API', skipTo:'chatgpt-email',
-    body:`<p>资产 API 用于向本地程序或下游服务读取邮箱、Cookie 和登录凭据。先在号池状态区选择类型，再运行“扫描当前类型”或“一键扫描全部”。</p>
-      <p>扫描会将资产分为正常、待解锁、封禁、过期、受限、凭据异常和检测异常。网络错误或目标站风控会显示为受限或检测异常，不会误判为封禁。</p>
+    body:`<p>资产 API 用于向本地程序或下游服务读取邮箱、Cookie 和登录凭据。需要人工复核时，可在号池状态区运行“扫描当前类型”或“一键扫描全部”；领取前无需先扫描。</p>
+      <p>扫描会将资产分为正常、待解锁、封禁、过期、受限、凭据异常和检测异常。它依据检测时的官方接口响应作尽力判断；网络、出口或目标站风控可能造成受限或检测异常，不能作为账号永久状态的绝对结论。</p>
       <p>正常 ChatGPT 账号会额外标注 Plus 免费试用资格。资格接口失败只显示“资格未知”，不会改变账号健康状态。</p>
-      <p>API 不会输出未验证、封禁、过期、受限或凭据异常资产。</p>`,
+      <p>扫描仅供人工参考，不阻塞或改变资产 API 的直接领取。</p>`,
   },
   {
-    id:'asset-call', section:'资产 API', title:'每次输出前都会在线校验', target:'[data-guide="asset-call"]', placement:'top',
+    id:'asset-call', section:'资产 API', title:'直接一次性领取', target:'[data-guide="asset-call"]', placement:'top',
     prepare:async()=>ensureGuideView('assets'),
     skipLabel:'跳过资产 API', skipTo:'chatgpt-email',
-    body:`<p>选择资产、输出格式和取用方式后，点击“在线校验并调用 API”。顺序取用和指定 index 都只面向未领取的健康账号。</p>
-      <p>接口会先扫描对应平台，只返回状态为“正常”的记录，并立即写入领取账本。同一平台账号即使切换输出格式也不会再次返回；只有手动重置领取记录后才可重新领取。</p>
-      <p>响应中的 <code>verification</code> 是本次检测依据，<code>remaining</code> 是该平台剩余未领取正常账号数。</p>
-      <p>这代表账号在本次检测时可用，不代表后续不会被目标服务限制。读取地址和 API key 仅应提供给受信任的本地服务。</p>`,
+    body:`<p>选择资产、输出格式和取用方式后，点击“直接领取”。接口不会先发起在线检测，顺序取用和指定 index 都只面向尚未领取的本地账号。</p>
+      <p>返回后会立即写入领取账本。同一平台账号即使切换输出格式也不会再次返回；只有手动重置领取记录后才可重新领取。</p>
+      <p>响应中的 <code>remaining</code> 是该平台剩余未领取账号数。领取地址和 API key 仅应提供给受信任的本地服务。</p>`,
   },
   {
     id:'chatgpt-email', section:'邮箱接码', title:'ChatGPT 邮箱接码', target:'[data-guide-group="chatgpt-email"]', placement:'left',
