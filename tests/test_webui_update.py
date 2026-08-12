@@ -183,6 +183,12 @@ class WebUIUpdateTests(unittest.TestCase):
         self.assertIn("fetch('/api/update'", app)
         self.assertIn("location.reload()", app)
 
+    def test_source_updater_does_not_kill_its_own_process_tree(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "update.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("Stop-Process -Id $panelPid -Force", script)
+        self.assertNotIn("taskkill.exe /PID $stopPid /T /F", script)
+
 
 if __name__ == "__main__":
     unittest.main()

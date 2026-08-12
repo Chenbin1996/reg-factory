@@ -115,22 +115,35 @@ function Stop-Panel {
         throw "Port $Port is not owned by the reg-factory installation at $Root; refusing to stop PID $panelPid."
     }
 
-    # A Windows venv launcher may own a base-Python child that holds the port.
-    # Stop the matching launcher tree, or its dedicated start.bat console when present.
-    $stopPid = [int]$owner.ProcessId
+    # The updater itself is a child of the WebUI process. Killing the launcher's
+    # full tree would terminate this PowerShell process before it can restart the
+    # panel. Stop only the listener; the venv launcher then exits naturally.
     $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($owner.ParentProcessId)" -ErrorAction SilentlyContinue
-    if ($null -ne $parent -and $parent.Name -eq "cmd.exe" -and
-        $parent.CommandLine -match "start\.bat") {
-        $stopPid = [int]$parent.ProcessId
-    }
 
     Write-Host "Stopping old WebUI (PID $panelPid) ..." -ForegroundColor Yellow
-    & taskkill.exe /PID $stopPid /T /F | Out-Null
+    Stop-Process -Id $panelPid -Force
     for ($i = 0; $i -lt 20; $i++) {
-        if ($null -eq (Get-Process -Id $panelPid -ErrorAction SilentlyContinue)) { return }
+        if ($null -eq (Get-Process -Id $panelPid -ErrorAction SilentlyContinue)) { break }
         Start-Sleep -Milliseconds 500
     }
-    throw "Old WebUI process did not stop"
+    if (Get-Process -Id $panelPid -ErrorAction SilentlyContinue) {
+        throw "Old WebUI process did not stop"
+    }
+
+    $ownerPid = [int]$owner.ProcessId
+    if ($ownerPid -ne $panelPid) {
+        for ($i = 0; $i -lt 10; $i++) {
+            if ($null -eq (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        if (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue) {
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($null -ne $parent -and $parent.Name -eq "cmd.exe" -and
+        $parent.CommandLine -match "start\.bat") {
+        Stop-Process -Id ([int]$parent.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Start-Panel {

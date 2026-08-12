@@ -91,6 +91,18 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args["--min-success-rate"]["default"], 10)
         self.assertEqual(args["--success-rate-window"]["default"], 20)
 
+    def test_outlook_client_uses_ruyipage_for_selected_provider(self):
+        from common.ruyipage_browser import RuyiPageBrowser
+
+        with patch.dict(
+            register_outlook_standalone.os.environ,
+            {"FINGERPRINT_BROWSER": "ruyipage"},
+            clear=False,
+        ):
+            browser = register_outlook_standalone.BitBrowserClient()
+
+        self.assertIsInstance(browser, RuyiPageBrowser)
+
     def test_success_rate_breaker_uses_recent_full_window(self):
         trip, _, size = outlook_reg_loop._success_rate_breaker(
             [False] * 19, 10, 20
@@ -435,6 +447,51 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
                     expected,
                 )
 
+    async def test_birthdate_month_combo_requires_committed_selection(self):
+        combo = MagicMock()
+        combo.evaluate = AsyncMock(side_effect=[
+            {"text": "Month", "value": "", "label": "Birth month", "active": ""},
+            {"text": "June", "value": "", "label": "Birth month", "active": ""},
+        ])
+        combo.click = AsyncMock()
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value=True)
+
+        with patch.object(register_outlook_standalone.asyncio, "sleep", AsyncMock()):
+            selected = await register_outlook_standalone._select_birthdate_combo_option(
+                page, combo, 6, kind="month"
+            )
+
+        self.assertTrue(selected)
+        combo.click.assert_awaited_once_with(force=True)
+        payload = page.evaluate.await_args.args[1]
+        self.assertEqual(payload, {"value": 6, "kind": "month"})
+
+    async def test_birthdate_day_combo_retries_when_value_did_not_change(self):
+        unchanged = {
+            "text": "Day", "value": "", "label": "Birth day", "active": ""
+        }
+        combo = MagicMock()
+        combo.evaluate = AsyncMock(side_effect=[
+            unchanged,
+            unchanged,
+            {"text": "23", "value": "23", "label": "Birth day", "active": ""},
+        ])
+        combo.click = AsyncMock()
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value=True)
+        page.keyboard.press = AsyncMock()
+
+        with patch.object(register_outlook_standalone.asyncio, "sleep", AsyncMock()):
+            selected = await register_outlook_standalone._select_birthdate_combo_option(
+                page, combo, 23, kind="day"
+            )
+
+        self.assertTrue(selected)
+        self.assertEqual(combo.click.await_count, 2)
+        page.keyboard.press.assert_any_await("Home")
+        page.keyboard.press.assert_any_await("Enter")
+
     def test_outlook_domain_selection_respects_network_available_options(self):
         with (
             patch.dict(register_outlook_standalone.os.environ,
@@ -477,6 +534,27 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
                 register_outlook_standalone._preferred_outlook_domain([]),
                 "outlook.eu",
             )
+
+    async def test_signup_inline_suffix_uses_prefix_only(self):
+        email_input = MagicMock()
+        email_input.evaluate = AsyncMock(return_value="Email\n@outlook.com")
+
+        domains = await register_outlook_standalone._signup_email_suffix_domains(
+            email_input
+        )
+        value = register_outlook_standalone._signup_email_entry_value(
+            "sampleuser", domains[0], page_manages_domain=bool(domains)
+        )
+
+        self.assertEqual(domains, ["outlook.com"])
+        self.assertEqual(value, "sampleuser")
+
+    def test_signup_full_email_form_keeps_domain(self):
+        value = register_outlook_standalone._signup_email_entry_value(
+            "sampleuser", "outlook.com", page_manages_domain=False
+        )
+
+        self.assertEqual(value, "sampleuser@outlook.com")
 
     def test_hindi_and_indonesian_action_labels_are_available(self):
         self.assertIn("स्वीकार करें", register_outlook_standalone.MS_POSITIVE_ACTION_LABELS)
@@ -794,6 +872,33 @@ class OutlookGraphFlowTests(unittest.IsolatedAsyncioTestCase):
             registration_timeout=1,
             graph_timeout=2,
         )
+
+    async def test_registration_loop_opens_and_cleans_ruyipage_session(self):
+        page = MagicMock()
+        context = MagicMock(pages=[page])
+        browser = MagicMock(contexts=[context])
+        client = MagicMock()
+        client.open_browser_async = AsyncMock(return_value=(browser, context, page))
+        client.close_browser_async = AsyncMock()
+        client.create_browser.return_value = "ruyi-profile"
+
+        completed = ("user@outlook.com", "password", [], {"refresh_token": "rt"})
+        with (
+            patch.object(register_outlook_standalone, "BitBrowserClient", return_value=client),
+            patch.object(outlook_reg_loop, "_run_outlook_on_ctx", AsyncMock(return_value=completed)),
+        ):
+            result = await outlook_reg_loop.one_attempt(
+                register_outlook_standalone,
+                None,
+                3,
+                registration_timeout=10,
+                graph_timeout=20,
+            )
+
+        self.assertEqual(result, completed)
+        client.open_browser_async.assert_awaited_once_with("ruyi-profile")
+        client.close_browser_async.assert_awaited_once_with("ruyi-profile")
+        client.delete_browser.assert_called_once_with("ruyi-profile")
 
     async def test_standalone_main_uses_device_browser_before_http_fallback(self):
         bb = MagicMock()

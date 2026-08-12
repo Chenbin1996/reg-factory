@@ -108,8 +108,8 @@ http://username:password@host:port
 
 浏览器选择是“优先提供方”，不是强制所有任务使用同一个内核：
 
-- ChatGPT、Codex OAuth、GitHub 和已开通 Plus 导入等共享浏览器流程已适配 RuyiPage，选择后会打开 RuyiPage Firefox。
-- Outlook、Claude 和 Grok 当前直接依赖 Playwright Chromium CDP。选择 RuyiPage 时，这些任务卡片会明确提示并自动使用内置 Chromium；打开 Chrome/Chromium 是兼容行为，不代表配置没有保存。
+- ChatGPT、Outlook、Codex OAuth、GitHub 和已开通 Plus 导入等浏览器流程已适配 RuyiPage，选择后会打开 RuyiPage Firefox。
+- Claude 和 Grok 当前直接依赖 Playwright Chromium CDP。选择 RuyiPage 时，这些任务卡片会明确提示并自动使用内置 Chromium；打开 Chrome/Chromium 是兼容行为，不代表配置没有保存。
 
 Outlook 使用 BitBrowser 时，任务会新建干净的注册标签页并关闭启动时的 IP 环境页或导航页；每个并发槽仍有独立 Profile、Cookie 和指纹种子。
 

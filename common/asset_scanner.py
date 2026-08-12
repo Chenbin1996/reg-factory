@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 import random
+import re
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
 
@@ -30,7 +32,14 @@ STATUSES = (
     "unknown",
     "error",
 )
-PLUS_TRIAL_STATUSES = ("eligible", "ineligible", "active", "unknown", "disabled")
+PLUS_TRIAL_STATUSES = (
+    "eligible",
+    "zero_price",
+    "ineligible",
+    "active",
+    "unknown",
+    "disabled",
+)
 
 SAFE_SCAN_DEFAULT_CACHE_SECONDS = 6 * 60 * 60
 SAFE_SCAN_DEFAULT_MIN_INTERVAL = 3.0
@@ -177,6 +186,10 @@ def _merge_platform_records(platform: str) -> list[dict]:
         if platform == "chatgpt":
             phone_status = str(data.get("codex_phone_status") or "not_verified").strip().lower()
             target["codex_phone_status"] = phone_status if phone_status in {"verified", "not_verified"} else "not_verified"
+            target["registration_country"] = str(
+                data.get("registration_country") or ""
+            ).strip().upper()
+            target["network_node"] = str(data.get("network_node") or "").strip()
 
     for record in asset_store._cookie_records(platform):
         source = record["path"].name
@@ -533,6 +546,70 @@ def _chatgpt_plan_type(record: dict) -> str:
     return str(account.get("planType") or token.get("planType") or "").strip().lower()
 
 
+_ZERO_PRICE_KEYS = {
+    "amount_due",
+    "amount_total",
+    "checkout_price",
+    "display_price",
+    "discounted_price",
+    "due",
+    "final_amount",
+    "final_price",
+    "formatted_price",
+    "payable_amount",
+    "price",
+    "price_after_discount",
+    "price_label",
+    "total",
+    "total_amount",
+}
+_ZERO_PRICE_TEXT = re.compile(
+    r"(?:[$\u20ac\u00a3\u00a5\u20b1\u20b9\u20a9]\s*0(?:[.,]0+)?|"
+    r"0(?:[.,]0+)?\s*(?:usd|eur|gbp|jpy|cny|rmb|php|inr|krw|aud|cad|"
+    r"\u5143|\u5186)|\bfree\b|no\s+charge|\u514d\u8d39)",
+    re.IGNORECASE,
+)
+
+
+def _zero_price_offer(payload) -> str:
+    """Return the evidence path for an explicitly payable zero-price offer."""
+    queue = [("", payload)]
+    while queue:
+        path, value = queue.pop(0)
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                normalized_key = re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower()
+                parent_parts = set(re.split(r"[.\[\]_]+", path.lower()))
+                excluded_price = bool(
+                    parent_parts
+                    & {"credit", "discount", "discounts", "saving", "savings"}
+                )
+                if (
+                    normalized_key in _ZERO_PRICE_KEYS
+                    and not excluded_price
+                    and not isinstance(nested, bool)
+                ):
+                    try:
+                        if Decimal(str(nested).strip()) == 0:
+                            return child_path
+                    except (InvalidOperation, TypeError, ValueError):
+                        if isinstance(nested, str) and _ZERO_PRICE_TEXT.search(nested):
+                            return child_path
+                if isinstance(nested, str) and any(
+                    marker in normalized_key
+                    for marker in ("display_price", "formatted_price", "price_label")
+                ) and _ZERO_PRICE_TEXT.search(nested):
+                    return child_path
+                if isinstance(nested, (dict, list)):
+                    queue.append((child_path, nested))
+        elif isinstance(value, list):
+            for index, nested in enumerate(value):
+                if isinstance(nested, (dict, list)):
+                    queue.append((f"{path}[{index}]", nested))
+    return ""
+
+
 def _scan_chatgpt_plus_trial(record: dict, access_token: str, timeout: int) -> dict:
     enabled = str(os.environ.get("ASSET_SCAN_CHATGPT_PLUS_TRIAL", "true")).strip().lower()
     if enabled in {"0", "false", "no", "off"}:
@@ -587,13 +664,21 @@ def _scan_chatgpt_plus_trial(record: dict, access_token: str, timeout: int) -> d
         redemption = payload.get("redemption") if isinstance(payload.get("redemption"), dict) else {}
         redeemed_by_user = redemption.get("redeemed_by_user") is True
         evidence = f"promo_campaign:{response.status_code}:{state or 'none'}"
+        zero_price_path = _zero_price_offer(payload)
+        ineligible = state in {"ineligible", "redeemed", "expired"} or redeemed_by_user
+        if response.status_code == 200 and zero_price_path and not ineligible:
+            return {
+                "plus_trial": "zero_price",
+                "plus_trial_detail": "命中明确显示 0 元的 Plus 优惠",
+                "plus_trial_evidence": f"{evidence}:zero:{zero_price_path}",
+            }
         if response.status_code == 200 and state == "eligible" and not redeemed_by_user:
             return {
                 "plus_trial": "eligible",
                 "plus_trial_detail": "命中 Plus 免费试用资格",
                 "plus_trial_evidence": evidence,
             }
-        if response.status_code == 200 and (state in {"ineligible", "redeemed", "expired"} or redeemed_by_user):
+        if response.status_code == 200 and ineligible:
             return {
                 "plus_trial": "ineligible",
                 "plus_trial_detail": "当前没有可用的 Plus 免费试用资格",
@@ -622,6 +707,95 @@ def _scan_chatgpt_plus_trial(record: dict, access_token: str, timeout: int) -> d
             "plus_trial_detail": f"Plus 试用资格检测异常：{type(exc).__name__}",
             "plus_trial_evidence": "promo_campaign:error",
         }
+
+
+def check_chatgpt_plus_trial_for_session(
+    session: dict, email: str = "", timeout: int = 15
+) -> dict:
+    """Check one newly saved ChatGPT session and update the local scan cache.
+
+    Registration must not wait for a full pool scan just to label the account.
+    This targeted path reuses the same read-only promotion check as the asset
+    scanner, then merges the result into the cached public record without ever
+    writing the access token to the cache.
+    """
+    data = session if isinstance(session, dict) else {}
+    token = str(data.get("accessToken") or data.get("access_token") or "").strip()
+    address = str(
+        email
+        or (data.get("user") or {}).get("email")
+        or data.get("email")
+        or ""
+    ).strip()
+    record = {
+        "platform": "chatgpt",
+        "kind": "platform",
+        "email": address,
+        "_token": data,
+    }
+    started = time.monotonic()
+    try:
+        outcome = _scan_chatgpt_plus_trial(record, token, int(timeout))
+    except Exception as exc:  # keep registration success independent of labeling
+        outcome = {
+            "plus_trial": "unknown",
+            "plus_trial_detail": f"Plus 试用资格检测异常：{type(exc).__name__}",
+            "plus_trial_evidence": "promo_campaign:error",
+        }
+
+    now = _now_iso()
+    source = f"{address}.session.json" if address else "registration.session.json"
+    target_record = next(
+        (
+            item
+            for item in _inventory_records()
+            if item.get("platform") == "chatgpt"
+            and address
+            and str(item.get("email") or "").strip().lower() == address.lower()
+        ),
+        None,
+    )
+    target_id = str((target_record or {}).get("id") or _stable_id("chatgpt", address, "registration"))
+    if target_record:
+        source = str(target_record.get("source") or source)
+    public = {
+        "platform": "chatgpt",
+        "kind": "platform",
+        "email": address,
+        "email_provider": asset_store.classify_email_provider(address),
+        "source": source,
+        "id": target_id,
+        "status": "normal",
+        "detail": "ChatGPT 注册会话正常",
+        "evidence": "chatgpt_session:registration",
+        "checked_at": now,
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "registration_country": str(data.get("registration_country") or "").strip().upper(),
+        "network_node": str(data.get("network_node") or "").strip(),
+    }
+    public.update(outcome)
+
+    cache = _read_cache()
+    items = cache.get("items")
+    if not isinstance(items, list):
+        items = []
+    replaced = False
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        same_id = str(item.get("id") or "") == target_id
+        same_email = bool(address) and str(item.get("email") or "").strip().lower() == address.lower()
+        if same_id or same_email:
+            items[index] = {**item, **public, "id": str(item.get("id") or target_id)}
+            replaced = True
+            break
+    if not replaced:
+        items.append(public)
+    cache["schema_version"] = max(2, int(cache.get("schema_version") or 0))
+    cache["items"] = items
+    cache["summary"] = _status_summary(items)
+    _write_cache(cache)
+    return public
 
 
 def _scan_claude(record: dict, timeout: int) -> dict:

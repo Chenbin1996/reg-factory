@@ -391,7 +391,7 @@ const ASSET_SCAN_PLATFORM_LABELS = {
   outlook:'Outlook', chatgpt:'ChatGPT', claude:'Claude', grok:'Grok', kiro:'Kiro',
 };
 const ASSET_PLUS_TRIAL_LABELS = {
-  eligible:'可试用', ineligible:'暂无试用', active:'已有套餐', unknown:'资格未知', disabled:'检测关闭',
+  eligible:'可试用', zero_price:'0 元优惠', ineligible:'暂无优惠', active:'已有套餐', unknown:'资格未知', disabled:'检测关闭',
 };
 const ASSET_SCAN_PAGE_SIZE = 25;
 
@@ -513,6 +513,15 @@ function renderAssetScanTable(){
     appendAssetScanCell(row, ASSET_SCAN_PLATFORM_LABELS[item.platform] || item.platform, 'asset-scan-platform');
     const account = appendAssetScanCell(row, item.email || item.source, 'asset-scan-account');
     account.title = item.source || '';
+    const networkLabel = item.platform === 'chatgpt'
+      ? [item.registration_country, item.network_node].filter(Boolean).join(' · ')
+      : '';
+    const network = appendAssetScanCell(
+      row,
+      networkLabel || '--',
+      'asset-scan-network',
+    );
+    network.title = networkLabel;
     const statusCell = document.createElement('td');
     const badge = document.createElement('span');
     badge.className = `asset-status-badge ${item.status || 'unknown'}`;
@@ -959,8 +968,14 @@ function renderArgField(a){
     f.innerHTML = `<input type="checkbox" id="f_${label}" ${a.default?'checked':''}>
       <label for="f_${label}"><span>${label}</span>${a.help?`<small>${a.help}</small>`:''}</label>`;
   }else if(a.type==='choice'){
+    let displayNames = null;
+    if(a.countryNames && typeof Intl.DisplayNames === 'function'){
+      displayNames = new Intl.DisplayNames(['zh-CN'], {type:'region'});
+    }
+    const choiceLabel = c => (a.labels&&a.labels[c])
+      || (displayNames && c !== 'auto' ? `${displayNames.of(c)} (${c})` : c);
     f.innerHTML = `<label for="f_${label}">${label}</label>
-      <select id="f_${label}">${a.choices.map(c=>`<option value="${c}" ${c==a.default?'selected':''}>${(a.labels&&a.labels[c])||c}</option>`).join('')}</select>
+      <select id="f_${label}">${a.choices.map(c=>`<option value="${c}" ${c==a.default?'selected':''}>${choiceLabel(c)}</option>`).join('')}</select>
       ${a.help?`<div class="fhelp">${a.help}</div>`:''}`;
   }else if(a.type==='multi'){
     const def = a.default||[];
@@ -1424,7 +1439,7 @@ const GUIDE_STEPS = [
     body:`<p>资产 API 用于向本地程序或下游服务读取邮箱、Cookie 和登录凭据。需要人工复核时，可在号池状态区运行“扫描当前类型”或“一键扫描全部”；默认领取无需先扫描。</p>
       <p>同一平台账号始终低频串行扫描，近期结果会自动复用；遇到限流或连续风控响应时会暂停该平台，降低批量请求带来的风险。</p>
       <p>扫描会将资产分为正常、待解锁、封禁、过期、受限、凭据异常和检测异常。它依据检测时的官方接口响应作尽力判断；网络、出口或目标站风控可能造成受限或检测异常，不能作为账号永久状态的绝对结论。</p>
-      <p>正常 ChatGPT 账号会额外标注 Plus 免费试用资格。资格接口失败只显示“资格未知”，不会改变账号健康状态。</p>
+      <p>正常 ChatGPT 账号会额外标注 Plus 免费试用资格，或明确显示 0 元的优惠。资格接口失败只显示“资格未知”，不会改变账号健康状态，也不会发起支付或领取优惠。</p>
       <p>扫描仅供人工参考；只有邮箱领取勾选“仅领取最近一次扫描为正常”时，才会读取扫描缓存进行筛选。</p>`,
   },
   {

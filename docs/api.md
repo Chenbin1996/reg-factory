@@ -82,19 +82,22 @@ curl "http://127.0.0.1:8799/api/assets/cookies/kiro?format=session"
 
 响应中的 `index` 是本次在未领取列表中的下标，`total` 是领取前可用总数，`remaining` 是领取后的剩余数量，`claim_recorded=true` 表示领取记录已持久化。省略 `index` 时选择第一条；指定 `index` 时从当前未领取列表中选择。两种方式都会记录领取。同一平台账号按邮箱或来源文件识别，切换 `raw`、`cookies`、`session`、`sub2api`、`cpa`、`chatgpt2api` 等格式也不会重复返回。除邮箱显式设置 `normal_only=true` 外，领取接口不读取上次扫描结论；所有领取请求都不会在请求时联网检测。
 
-## ChatGPT Plus 试用资格
+## ChatGPT 注册国家与 Plus 优惠
 
-扫描 ChatGPT 账号时会额外调用优惠资格接口，并在号池扫描结果中写入 `plus_trial`、`plus_trial_detail`、`plus_trial_evidence`。该检测不绑卡、不扣款；失败只标记为 `unknown`，不会改变账号的健康状态。
+ChatGPT 注册可通过 `--country JP` 等两位 ISO 国家码约束出口。脚本会在浏览器启动前校验 Cloudflare `loc`，找不到匹配网络则停止；成功后在 session 和号池扫描结果中写入 `registration_country` 与 `network_node`。
+
+扫描 ChatGPT 账号时会额外调用只读优惠资格接口，并在号池扫描结果中写入 `plus_trial`、`plus_trial_detail`、`plus_trial_evidence`。该检测不创建结账单、不领取优惠、不绑卡、不扣款；失败只标记为 `unknown`，不会改变账号的健康状态。
 
 | `plus_trial` | 含义 |
 |---|---|
 | `eligible` | 活动接口明确返回可使用 Plus 免费试用 |
+| `zero_price` | 活动接口返回明确的应付 0 元或格式化 0 元价格 |
 | `ineligible` | 活动接口明确返回不符合、已领取或已过期 |
 | `active` | 本地会话表明账号已有 Plus 或其他付费套餐 |
 | `unknown` | 缺少 AT、网络失败或接口没有返回明确资格 |
 | `disabled` | 已通过配置关闭资格检测 |
 
-默认检测活动为 `plus-1-month-free`。可通过 `ASSET_SCAN_CHATGPT_PLUS_TRIAL=false` 关闭，或用 `ASSET_SCAN_CHATGPT_PLUS_CAMPAIGN` 修改活动标识。
+默认检测活动为 `plus-1-month-free`。可通过 `ASSET_SCAN_CHATGPT_PLUS_TRIAL=false` 关闭，或用 `ASSET_SCAN_CHATGPT_PLUS_CAMPAIGN` 修改活动标识。检测结果只用于标记，最终优惠仍以用户自行打开的官方结账页为准。
 
 ## 号池状态扫描
 

@@ -54,6 +54,7 @@ except Exception:
 # Outlook 注册和解锁共用同一套 PerimeterX 目标定位与拟人按压。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import outlook_press as _outlook_press
+from common.browser import react_fill
 from common.traffic_saver import install as install_traffic_saver
 
 # BitBrowser local API
@@ -212,7 +213,11 @@ class BitBrowserClient:
     """BitBrowser local API client with proxy support"""
 
     def __new__(cls, api_base=None):
-        if cls is BitBrowserClient and _fingerprint_provider() not in {"bitbrowser", "bit"}:
+        provider = _fingerprint_provider()
+        if cls is BitBrowserClient and provider in {"ruyipage", "ruyi", "firefox_bidi"}:
+            from common.ruyipage_browser import RuyiPageBrowser
+            return RuyiPageBrowser()
+        if cls is BitBrowserClient and provider not in {"bitbrowser", "bit"}:
             from bitbrowser import BitBrowser
             return BitBrowser(api_base=api_base)
         return super().__new__(cls)
@@ -699,6 +704,29 @@ async def _signup_domain_options(domain_dropdown):
     return _domains_from_values(values)
 
 
+async def _signup_email_suffix_domains(email_input):
+    """Read a suffix rendered next to the email field by newer signup forms."""
+    try:
+        field = await email_input.evaluate(r"""el => {
+            const fragments = [];
+            let node = el.parentElement;
+            for (let depth = 0; node && node !== document.body && depth < 5; depth++) {
+                const text = (node.innerText || node.textContent || '').trim();
+                if (text && text.length <= 2000) fragments.push(text);
+                node = node.parentElement;
+            }
+            return fragments.join('\n');
+        }""", timeout=1000)
+    except Exception:
+        field = ""
+    return _domains_from_values((field,))
+
+
+def _signup_email_entry_value(prefix, domain, page_manages_domain):
+    """Return the text the visible field expects, without duplicating its suffix."""
+    return prefix if page_manages_domain else f"{prefix}@{domain}"
+
+
 async def _select_signup_domain(domain_dropdown, preferred):
     """Select a domain option by value or label, including @-prefixed values."""
     try:
@@ -938,12 +966,52 @@ def _birthdate_field_kind(metadata):
     return ""
 
 
-async def _select_birthdate_combo_option(page, combo, value):
-    """Select a numeric month/day option without relying on translated names."""
-    await combo.click(force=True)
-    await asyncio.sleep(0.5)
+async def _birthdate_combo_state(combo):
     try:
-        clicked = await page.evaluate(r"""value => {
+        state = await combo.evaluate(r"""el => ({
+            text: String(el.innerText || el.textContent || '').trim(),
+            value: String(el.value || el.getAttribute('data-value') || '').trim(),
+            label: String(el.getAttribute('aria-label') || '').trim(),
+            active: String(el.getAttribute('aria-activedescendant') || '').trim(),
+            expanded: el.getAttribute('aria-expanded') === 'true'
+        })""", timeout=1500)
+        if isinstance(state, dict):
+            return state
+    except Exception:
+        pass
+    return {
+        "text": (await combo.text_content() or "").strip(),
+        "value": (await combo.get_attribute("value") or "").strip(),
+        "label": (await combo.get_attribute("aria-label") or "").strip(),
+        "active": "",
+        "expanded": False,
+    }
+
+
+def _birthdate_combo_selected(before, after, value, kind):
+    fields = ("text", "value", "label", "active")
+    before_values = tuple(str(before.get(field) or "").strip() for field in fields)
+    after_values = tuple(str(after.get(field) or "").strip() for field in fields)
+    combined = " ".join(after_values)
+    numbers = {
+        int(match)
+        for match in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", combined)
+    }
+    if int(value) in numbers:
+        return True
+    if kind != "month" or before_values == after_values:
+        return False
+    selected_text = str(after.get("text") or after.get("value") or "").strip()
+    placeholders = {
+        "", "month", "birth month", "select month", "choose month",
+        "mm", "--", "-",
+    }
+    return selected_text.lower() not in placeholders
+
+
+async def _click_birthdate_option(page, value, kind):
+    try:
+        return await page.evaluate(r"""payload => {
             const visible = el => {
                 const rect = el.getBoundingClientRect();
                 const style = getComputedStyle(el);
@@ -951,9 +1019,14 @@ async def _select_birthdate_combo_option(page, combo, value):
                     && style.display !== 'none' && style.visibility !== 'hidden'
                     && el.getAttribute('aria-disabled') !== 'true';
             };
-            const options = [...document.querySelectorAll(
+            const all = [...document.querySelectorAll(
                 '[role="option"], [role="menuitemradio"], option'
             )].filter(visible);
+            const usable = all.filter(el => {
+                const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                const text = String(el.textContent || el.getAttribute('aria-label') || '').trim();
+                return !disabled && text && !/^(month|day|select|choose|--|-)$/i.test(text);
+            });
             const numericValue = el => {
                 const candidates = [
                     el.getAttribute('data-value'), el.getAttribute('value'),
@@ -965,22 +1038,63 @@ async def _select_birthdate_combo_option(page, combo, value):
                 }
                 return null;
             };
-            let target = options.find(option => numericValue(option) === Number(value));
-            if (!target && options.length >= 12) {
-                // Text-only month lists still have a stable chronological order.
-                target = options[Number(value) - 1];
+            let target = usable.find(option => numericValue(option) === Number(payload.value));
+            if (!target && payload.kind === 'month' && usable.length >= 12) {
+                target = usable[Number(payload.value) - 1];
             }
             if (!target) return false;
+            target.scrollIntoView({block: 'nearest'});
+            target.focus();
+            for (const type of ['mousedown', 'mouseup']) {
+                target.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+            }
             target.click();
             return true;
-        }""", int(value))
+        }""", {"value": int(value), "kind": kind})
     except Exception:
-        clicked = False
-    if not clicked:
-        await page.keyboard.type(str(value))
-        await page.keyboard.press("Enter")
-    await asyncio.sleep(0.5)
-    return True
+        return False
+
+
+async def _select_birthdate_combo_option(page, combo, value, kind="month"):
+    """Select and verify a Microsoft ARIA month/day combobox."""
+    value = int(value)
+    if kind not in {"month", "day"}:
+        raise ValueError(f"unsupported birthdate combo kind: {kind}")
+    if value < 1 or value > (12 if kind == "month" else 31):
+        raise ValueError(f"invalid birthdate {kind}: {value}")
+
+    before = await _birthdate_combo_state(combo)
+    for attempt in range(3):
+        if attempt:
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+        try:
+            await combo.click(force=True)
+        except Exception:
+            await combo.evaluate("el => { el.focus(); el.click(); return true; }")
+        await asyncio.sleep(0.35)
+
+        clicked = (
+            await _click_birthdate_option(page, value, kind)
+            if attempt == 0
+            else False
+        )
+        if not clicked:
+            # Keyboard navigation remains reliable when the option portal is
+            # hidden from DOM queries by Microsoft's component implementation.
+            await page.keyboard.press("Home")
+            down_count = value - 1 + (1 if attempt == 2 else 0)
+            for _ in range(down_count):
+                await page.keyboard.press("ArrowDown")
+            await page.keyboard.press("Enter")
+        await asyncio.sleep(0.45)
+
+        after = await _birthdate_combo_state(combo)
+        if _birthdate_combo_selected(before, after, value, kind):
+            return True
+    raise RuntimeError(f"Microsoft {kind} dropdown did not commit value {value}")
 
 
 async def _select_native_numeric_option(select, value):
@@ -1948,6 +2062,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
 
         # Step 1: Enter email
         email_ok = False
+        force_prefix_only = False
         for retry in range(5):
             email_input = page.locator(
                 'input[type="email"], input[name="MemberName"], input[id="MemberName"], '
@@ -1962,9 +2077,11 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 'select[id="LiveDomainBoxList"], select[name="LiveDomainBoxList"], #LiveDomainBoxList'
             ).first
             has_domain_dropdown = await domain_dropdown.count() > 0
+            suffix_domains = await _signup_email_suffix_domains(email_input)
+            page_manages_domain = (
+                has_domain_dropdown or bool(suffix_domains) or force_prefix_only
+            )
 
-            await email_input.fill("")
-            await asyncio.sleep(0.3)
             if has_domain_dropdown:
                 available_domains = await _signup_domain_options(domain_dropdown)
                 selected_domain = _preferred_outlook_domain(
@@ -1973,17 +2090,58 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                         urllib.parse.urlsplit(page.url).query
                     ).get("mkt", [MICROSOFT_UI_LOCALE])[0],
                 )
-                await email_input.fill(prefix)
+                entry_value = _signup_email_entry_value(
+                    prefix, selected_domain, page_manages_domain
+                )
+                committed = await react_fill(
+                    page,
+                    'input[type="email"], input[name="MemberName"], input[id="MemberName"], '
+                    'input[id="usernameInput"], input[name="Username"]',
+                    entry_value,
+                    tries=3,
+                )
                 selected = await _select_signup_domain(domain_dropdown, selected_domain)
                 email = f"{prefix}@{selected_domain}"
                 print(f"  {tag} filled prefix: {prefix} ({selected_domain}, picker={selected})")
+            elif suffix_domains:
+                selected_domain = suffix_domains[0]
+                email = f"{prefix}@{selected_domain}"
+                entry_value = _signup_email_entry_value(
+                    prefix, selected_domain, page_manages_domain
+                )
+                committed = await react_fill(
+                    page,
+                    'input[type="email"], input[name="MemberName"], input[id="MemberName"], '
+                    'input[id="usernameInput"], input[name="Username"]',
+                    entry_value,
+                    tries=3,
+                )
+                print(f"  {tag} filled prefix: {prefix} ({selected_domain}, inline suffix)")
             else:
                 selected_domain = _preferred_outlook_domain()
                 email = f"{prefix}@{selected_domain}"
-                await email_input.fill(email)
-                print(f"  {tag} filled email: {email}")
+                entry_value = _signup_email_entry_value(
+                    prefix, selected_domain, page_manages_domain
+                )
+                committed = await react_fill(
+                    page,
+                    'input[type="email"], input[name="MemberName"], input[id="MemberName"], '
+                    'input[id="usernameInput"], input[name="Username"]',
+                    entry_value,
+                    tries=3,
+                )
+                input_kind = "prefix fallback" if force_prefix_only else "full email"
+                print(f"  {tag} filled {input_kind}: {entry_value}")
 
             await asyncio.sleep(0.5)
+            expected_value = entry_value
+            actual_value = (await email_input.input_value()).strip()
+            if not committed or actual_value != expected_value:
+                print(
+                    f"  {tag} email input did not commit "
+                    f"(expected={expected_value!r}, actual={actual_value!r}); retrying"
+                )
+                continue
             for sel in ['input[type="submit"]', 'button[type="submit"]', '#iSignupAction', 'button[id="iSignupAction"]']:
                 btn = page.locator(sel).first
                 if await btn.count() > 0:
@@ -2004,6 +2162,9 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 continue
 
             if rejection == "format" or "needs to start" in page_lower or "in the format" in page_lower or "enter a valid" in page_lower or "use letters" in page_lower:
+                if not page_manages_domain:
+                    force_prefix_only = True
+                    print(f"  {tag} Microsoft expects a page-managed suffix; switching to prefix-only input")
                 prefix = random.choice(string.ascii_lowercase) + "".join(
                     random.choices(string.ascii_lowercase + string.digits, k=9)
                 )
@@ -2151,18 +2312,25 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                         kind = inferred[ci] if ci < len(inferred) else ""
 
                     if kind == "month" and not month_filled:
-                        await _select_birthdate_combo_option(page, combo, month)
+                        await _select_birthdate_combo_option(
+                            page, combo, month, kind="month"
+                        )
                         month_filled = True
                         print(f"  {tag} month: {month}")
                     elif kind == "day" and not day_filled:
-                        await _select_birthdate_combo_option(page, combo, day)
+                        await _select_birthdate_combo_option(
+                            page, combo, day, kind="day"
+                        )
                         day_filled = True
                         print(f"  {tag} day: {day}")
                 except Exception as e:
                     print(f"  {tag} combo[{ci}] error: {e}")
 
             if not month_filled or not day_filled:
-                print(f"  {tag} WARNING: month_filled={month_filled}, day_filled={day_filled}")
+                raise RuntimeError(
+                    f"birthdate dropdown incomplete: month={month_filled}, "
+                    f"day={day_filled}"
+                )
 
             # Year input (text field)
             year_input = page.locator(
@@ -2986,9 +3154,11 @@ async def _register_one_browser(bb, idx, proxy_str, keep_profile=False):
         ts = datetime.now().strftime("%m%d_%H%M%S")
         name = f"outlook_{ts}_{idx}"
 
+        is_async_browser = hasattr(bb, "open_browser_async")
         for _retry in range(5):
             try:
-                profile_id = bb.create_browser(name=name, proxy_str=proxy_str)
+                browser_options = {"proxy_str": proxy_str} if proxy_str else {"proxyType": "noproxy"}
+                profile_id = bb.create_browser(name=name, **browser_options)
                 break
             except Exception as e:
                 err_msg = str(e)
@@ -3012,19 +3182,26 @@ async def _register_one_browser(bb, idx, proxy_str, keep_profile=False):
             print(f"  {tag} create browser failed")
             return _result(None, None)
 
-        info = bb.open_browser(profile_id)
-        ws = info.get("ws", "")
-        if not ws:
-            print(f"  {tag} no WebSocket URL")
-            return _result(None, None)
-
-        print(f"  {tag} BitBrowser connected")
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(ws)
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        if is_async_browser:
+            _browser, context, _page = await bb.open_browser_async(profile_id)
+            print(f"  {tag} RuyiPage Firefox connected (WebDriver BiDi)")
             page = await _browser_page(context, fresh=True)
             await install_traffic_saver(context)
             email, password = await register_outlook(page, context, idx)
+        else:
+            info = bb.open_browser(profile_id)
+            ws = info.get("ws", "")
+            if not ws:
+                print(f"  {tag} no WebSocket URL")
+                return _result(None, None)
+
+            print(f"  {tag} browser connected")
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(ws)
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = await _browser_page(context, fresh=True)
+                await install_traffic_saver(context)
+                email, password = await register_outlook(page, context, idx)
 
         if keep_profile and email and password:
             retained_id = profile_id
@@ -3039,9 +3216,13 @@ async def _register_one_browser(bb, idx, proxy_str, keep_profile=False):
     finally:
         if profile_id:
             try:
-                bb.close_browser(profile_id)
-                await asyncio.sleep(2)
-                bb.delete_browser(profile_id)
+                if hasattr(bb, "close_browser_async"):
+                    await bb.close_browser_async(profile_id)
+                    bb.delete_browser(profile_id)
+                else:
+                    bb.close_browser(profile_id)
+                    await asyncio.sleep(2)
+                    bb.delete_browser(profile_id)
                 print(f"  {tag} browser cleaned up")
             except Exception:
                 pass
@@ -3067,13 +3248,18 @@ async def extract_graph_token_browser(
                     await asyncio.sleep(3 + attempt)
             if not profile_id:
                 return None
+        print(f"  {tag} using {'registration' if reused_profile else 'new'} browser profile for Graph")
+        if hasattr(bb, "open_browser_async"):
+            _browser, context, _page = await bb.open_browser_async(profile_id)
+            page = await _browser_page(context)
+            await install_traffic_saver(context)
+            return await extract_graph_token(page, context, email, password, idx)
         if not ws:
             info = bb.open_browser(profile_id)
             ws = info.get("ws", "")
         if not ws:
             print(f"  {tag} no WebSocket URL")
             return None
-        print(f"  {tag} using {'registration' if reused_profile else 'new'} browser profile for Graph")
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(ws)
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
@@ -3086,9 +3272,13 @@ async def extract_graph_token_browser(
     finally:
         if profile_id:
             try:
-                bb.close_browser(profile_id)
-                await asyncio.sleep(2)
-                bb.delete_browser(profile_id)
+                if hasattr(bb, "close_browser_async"):
+                    await bb.close_browser_async(profile_id)
+                    bb.delete_browser(profile_id)
+                else:
+                    bb.close_browser(profile_id)
+                    await asyncio.sleep(2)
+                    bb.delete_browser(profile_id)
                 print(f"  {tag} browser cleaned up")
             except Exception:
                 pass
@@ -3138,7 +3328,7 @@ async def register_one(bb, idx, proxy_str, results, results_lock, live_fh=None, 
 
         # ── 3. Browser mode (BitBrowser, full GUI) ───────────────
         if not email and mode in ("auto", "browser"):
-            print(f"  {tag} [3/3] browser mode (BitBrowser)...")
+            print(f"  {tag} [3/3] fingerprint browser mode...")
             try:
                 browser_result = await asyncio.wait_for(
                     _register_one_browser(bb, idx, proxy_str, keep_profile=True),
@@ -3266,7 +3456,7 @@ async def main():
         "auto":     "protocol → headless → browser (fallback chain)",
         "protocol": "protocol only (pure HTTP, lowest traffic)",
         "headless": "headless only (no BitBrowser, -70% traffic)",
-        "browser":  "browser only (BitBrowser full GUI)",
+        "browser":  "selected fingerprint browser only (full GUI)",
     }
     print("=" * 60)
     print("  Outlook Registration - Multi-mode")

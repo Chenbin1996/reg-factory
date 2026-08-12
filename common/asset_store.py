@@ -380,6 +380,8 @@ def _verification_for(platform: str, email: str, source: str) -> dict | None:
                     "plus_trial": str(item.get("plus_trial") or "unknown"),
                     "plus_trial_detail": str(item.get("plus_trial_detail") or ""),
                     "plus_trial_evidence": str(item.get("plus_trial_evidence") or ""),
+                    "registration_country": str(item.get("registration_country") or ""),
+                    "network_node": str(item.get("network_node") or ""),
                 })
             return verification
         sources = {part.strip() for part in str(item.get("source") or "").split(",")}
@@ -394,6 +396,8 @@ def _verification_for(platform: str, email: str, source: str) -> dict | None:
                     "plus_trial": str(item.get("plus_trial") or "unknown"),
                     "plus_trial_detail": str(item.get("plus_trial_detail") or ""),
                     "plus_trial_evidence": str(item.get("plus_trial_evidence") or ""),
+                    "registration_country": str(item.get("registration_country") or ""),
+                    "network_node": str(item.get("network_node") or ""),
                 })
             return verification
     return None

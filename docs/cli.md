@@ -33,8 +33,9 @@ python mailbox_broker.py --port 8765
 ## 单个平台
 
 ```bash
-# ChatGPT
+# ChatGPT：自动选择国家，或只使用实际出口为日本的网络节点
 python register_chatgpt.py --count 1 --node auto
+python register_chatgpt.py --count 1 --node auto --country JP
 
 # 已开通 Plus 账号：手机号接码验证 -> Codex OAuth -> SUB2API
 python tools/import_plus_codex.py --accounts-file accounts.txt --sms-provider auto --phone-attempts 3

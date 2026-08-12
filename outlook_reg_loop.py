@@ -853,10 +853,18 @@ async def one_attempt(
                 # 130 makes BB return 502.
                 from common import proxy_switch
                 browser_proxy = proxy_str if proxy_switch.proxy_mode() == "residential" else None
-                profile_id = bb_create_for_outlook_reg(
-                    f"outlook_loop_{ts}_{idx}",
-                    proxy_str=browser_proxy,
-                )
+                name = f"outlook_loop_{ts}_{idx}"
+                if hasattr(bb, "open_browser_async"):
+                    profile_id = bb.create_browser(
+                        name=name,
+                        remark="outlook reg loop auto-deleted after use",
+                        **_bitbrowser_proxy_fields(browser_proxy),
+                    )
+                else:
+                    profile_id = bb_create_for_outlook_reg(
+                        name,
+                        proxy_str=browser_proxy,
+                    )
                 break
             except Exception as e:
                 m = str(e)
@@ -872,14 +880,9 @@ async def one_attempt(
                 await asyncio.sleep(3 + _r)
         if not profile_id:
             return None, None, [], None
-        info = bb_open_for_outlook_reg(bb, profile_id)
-        ws = info.get("ws", "")
-        if not ws:
-            return None, None, [], None
-        from playwright.async_api import async_playwright as _apw
-        async with _apw() as p:
-            browser = await p.chromium.connect_over_cdp(ws)
-            ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        if hasattr(bb, "open_browser_async"):
+            _browser, ctx, _page = await bb.open_browser_async(profile_id)
+            log("RuyiPage Firefox connected (WebDriver BiDi)")
             email, password, cookies, graph = await _run_outlook_on_ctx(
                 mod,
                 ctx,
@@ -887,13 +890,33 @@ async def one_attempt(
                 registration_timeout=registration_timeout,
                 graph_timeout=graph_timeout,
             )
+        else:
+            info = bb_open_for_outlook_reg(bb, profile_id)
+            ws = info.get("ws", "")
+            if not ws:
+                return None, None, [], None
+            from playwright.async_api import async_playwright as _apw
+            async with _apw() as p:
+                browser = await p.chromium.connect_over_cdp(ws)
+                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                email, password, cookies, graph = await _run_outlook_on_ctx(
+                    mod,
+                    ctx,
+                    idx,
+                    registration_timeout=registration_timeout,
+                    graph_timeout=graph_timeout,
+                )
         return email, password, cookies, graph
     finally:
         if profile_id:
             try:
-                bb.close_browser(profile_id)
-                await asyncio.sleep(2)
-                bb.delete_browser(profile_id)
+                if hasattr(bb, "close_browser_async"):
+                    await bb.close_browser_async(profile_id)
+                    bb.delete_browser(profile_id)
+                else:
+                    bb.close_browser(profile_id)
+                    await asyncio.sleep(2)
+                    bb.delete_browser(profile_id)
             except Exception:
                 pass
 
