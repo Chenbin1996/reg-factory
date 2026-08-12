@@ -1036,6 +1036,8 @@ def api_asset_email(
     index: int | None = None,
     format: str = "json",
     email_provider: str = "",
+    pristine_only: bool = False,
+    normal_only: bool = False,
 ):
     denied = _asset_api_denied(request)
     if denied:
@@ -1048,6 +1050,8 @@ def api_asset_email(
             output_format=format,
             claim_once=True,
             email_provider=email_provider,
+            pristine_only=pristine_only,
+            verified_only=normal_only,
         )
     )
 
@@ -1112,7 +1116,7 @@ def _set_asset_scan_progress(value):
     }
 
 
-def _scan_assets_sync(platforms, concurrency=4, timeout=15, progress=None):
+def _scan_assets_sync(platforms, concurrency=1, timeout=15, progress=None, force=False):
     from common import asset_scanner
 
     with ASSET_SCAN_LOCK:
@@ -1121,10 +1125,11 @@ def _scan_assets_sync(platforms, concurrency=4, timeout=15, progress=None):
             concurrency=concurrency,
             timeout=timeout,
             progress=progress,
+            force=force,
         )
 
 
-async def _run_asset_scan(platforms, concurrency, timeout):
+async def _run_asset_scan(platforms, concurrency, timeout, force=False):
     global ASSET_SCAN_TASK
     from common import asset_scanner
 
@@ -1140,6 +1145,7 @@ async def _run_asset_scan(platforms, concurrency, timeout):
             concurrency=concurrency,
             timeout=timeout,
             progress=progress,
+            force=force,
         )
         ASSET_SCAN_STATE["finished_at"] = report.get("finished_at", "")
         ASSET_SCAN_STATE["error"] = ""
@@ -1184,10 +1190,14 @@ async def api_asset_scan_start(request: Request):
     if invalid:
         return JSONResponse({"error": f"不支持的平台：{', '.join(invalid)}"}, status_code=400)
     try:
-        concurrency = min(12, max(1, int((data or {}).get("concurrency") or 4)))
+        concurrency = min(2, max(1, int((data or {}).get("concurrency") or 1)))
         timeout = min(60, max(5, int((data or {}).get("timeout") or 15)))
     except (TypeError, ValueError):
         return JSONResponse({"error": "concurrency 和 timeout 必须是整数"}, status_code=400)
+
+    force = (data or {}).get("force", False)
+    if not isinstance(force, bool):
+        return JSONResponse({"error": "force 必须是布尔值"}, status_code=400)
 
     current = asset_scanner.get_report()
     total = sum(1 for item in current["items"] if item.get("platform") in set(platforms))
@@ -1199,8 +1209,13 @@ async def api_asset_scan_start(request: Request):
         "error": "",
         "progress": {"completed": 0, "total": total, "current": ""},
     })
-    ASSET_SCAN_TASK = asyncio.create_task(_run_asset_scan(platforms, concurrency, timeout))
-    return {"ok": True, "platforms": platforms, "scan": dict(ASSET_SCAN_STATE)}
+    ASSET_SCAN_TASK = asyncio.create_task(_run_asset_scan(platforms, concurrency, timeout, force))
+    return {
+        "ok": True,
+        "platforms": platforms,
+        "safe_mode": {"platform_concurrency": concurrency, "account_concurrency": 1, "force": force},
+        "scan": dict(ASSET_SCAN_STATE),
+    }
 
 
 @app.get("/api/scripts")
@@ -1770,6 +1785,9 @@ _PROXY_ENV_KEYS = (
     "REG_FACTORY_PROXY_POOL",
     "REG_FACTORY_PROXY_ROTATE_URL",
     "REG_FACTORY_PROXY_ROTATE_METHOD",
+    "REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE",
+    "REG_FACTORY_MAX_CONCURRENCY",
+    "REG_FACTORY_ALLOW_SHARED_EGRESS",
     "CHATGPT_RESIDENTIAL_ROTATE_RETRIES",
 )
 
@@ -1785,6 +1803,9 @@ def _proxy_panel_data(include_nodes=False):
     config["CLASH_PROXY"] = config["CLASH_PROXY"] or "http://127.0.0.1:7897"
     config["CLASH_GROUP"] = config["CLASH_GROUP"] or "GLOBAL"
     config["REG_FACTORY_PROXY_ROTATE_METHOD"] = config["REG_FACTORY_PROXY_ROTATE_METHOD"] or "GET"
+    config["REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE"] = config["REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE"] or "balanced"
+    config["REG_FACTORY_MAX_CONCURRENCY"] = config["REG_FACTORY_MAX_CONCURRENCY"] or "10"
+    config["REG_FACTORY_ALLOW_SHARED_EGRESS"] = config["REG_FACTORY_ALLOW_SHARED_EGRESS"] or "false"
     config["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] = config["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] or "3"
     config["REG_FACTORY_PROXY_POOL"] = config["REG_FACTORY_PROXY_POOL"].replace(",", "\n")
     nodes = []
@@ -1892,6 +1913,23 @@ async def api_proxy_set(request: Request):
     if method.upper() not in {"GET", "POST"}:
         return JSONResponse({"ok": False, "error": "换 IP 接口方法只能是 GET 或 POST"}, status_code=400)
     updates["REG_FACTORY_PROXY_ROTATE_METHOD"] = method.upper()
+    traffic_mode = updates["REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE"] or "balanced"
+    if traffic_mode not in {"off", "balanced", "aggressive"}:
+        return JSONResponse({"ok": False, "error": "住宅流量模式无效"}, status_code=400)
+    updates["REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE"] = traffic_mode
+    try:
+        maximum = int(updates["REG_FACTORY_MAX_CONCURRENCY"] or "10")
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "最大并发数必须是整数"}, status_code=400)
+    if not 1 <= maximum <= 100:
+        return JSONResponse({"ok": False, "error": "最大并发数必须在 1 到 100 之间"}, status_code=400)
+    updates["REG_FACTORY_MAX_CONCURRENCY"] = str(maximum)
+    shared = updates["REG_FACTORY_ALLOW_SHARED_EGRESS"].lower()
+    if shared not in {"", "0", "1", "false", "true", "no", "yes", "off", "on"}:
+        return JSONResponse({"ok": False, "error": "允许共享出口的配置值无效"}, status_code=400)
+    updates["REG_FACTORY_ALLOW_SHARED_EGRESS"] = (
+        "true" if shared in {"1", "true", "yes", "on"} else "false"
+    )
     try:
         updates["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] = str(max(1, int(updates["CHATGPT_RESIDENTIAL_ROTATE_RETRIES"] or "3")))
     except ValueError:

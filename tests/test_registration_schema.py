@@ -88,6 +88,12 @@ class RegistrationSchemaTests(unittest.TestCase):
         )
         self.assertIn("RUYIPAGE_BROWSER_PATH", items)
 
+    def test_legacy_cdp_tasks_explain_ruyipage_chromium_fallback(self):
+        for script_id in ("outlook_reg_loop", "register_claude", "register_grok"):
+            warning = _script(script_id).get("warning", "")
+            self.assertIn("Chromium CDP", warning)
+            self.assertIn("RuyiPage", warning)
+
     def test_claude_defaults_to_latest_rt(self):
         args = {item["flag"]: item for item in _script("register_claude")["args"]}
         self.assertTrue(args["--latest-rt"]["default"])

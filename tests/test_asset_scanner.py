@@ -20,6 +20,9 @@ class AssetScannerTests(unittest.TestCase):
                 "REG_FACTORY_DATA_DIR": str(self.root),
                 "REG_FACTORY_ENV_FILE": str(self.root / ".env"),
                 "TOKEN_OUTPUT_DIR": "tokens",
+                "ASSET_SCAN_CACHE_SECONDS": "0",
+                "ASSET_SCAN_MIN_INTERVAL": "0",
+                "ASSET_SCAN_MAX_INTERVAL": "0",
             },
         )
         self.env.start()
@@ -110,7 +113,7 @@ class AssetScannerTests(unittest.TestCase):
                         "status": "expired", "detail": "new", "evidence": "test"
                     }
                 }, clear=True):
-                    report = asset_scanner.scan_pool(platforms=["chatgpt"])
+                    report = asset_scanner.scan_pool(platforms=["chatgpt"], force=True)
 
         by_platform = {item["platform"]: item["status"] for item in report["items"]}
         self.assertEqual(by_platform["chatgpt"], "expired")
@@ -130,6 +133,23 @@ class AssetScannerTests(unittest.TestCase):
         self.assertEqual(report["items"][0]["status"], "unlock")
         self.assertIn("手机验证", report["items"][0]["detail"])
 
+    def test_outlook_scan_reports_cross_platform_registration_usage(self):
+        (self.root / "emails.txt").write_text(
+            "used@outlook.com----pw1\nclean@outlook.com----pw2\n",
+            encoding="utf-8",
+        )
+        (self.root / "emails_used_chatgpt.txt").write_text(
+            "used@outlook.com----pw1----ok\n",
+            encoding="utf-8",
+        )
+
+        report = asset_scanner.get_report()
+        by_email = {item["email"]: item for item in report["items"]}
+
+        self.assertFalse(by_email["used@outlook.com"]["pristine"])
+        self.assertEqual(by_email["used@outlook.com"]["registered_platforms"], ["chatgpt"])
+        self.assertTrue(by_email["clean@outlook.com"]["pristine"])
+
     def test_failed_preflight_short_circuits_platform_accounts(self):
         self._write_assets()
         failure = {"status": "error", "detail": "route timeout", "evidence": "preflight:timeout"}
@@ -142,6 +162,41 @@ class AssetScannerTests(unittest.TestCase):
         chatgpt = next(item for item in report["items"] if item["platform"] == "chatgpt")
         self.assertEqual(chatgpt["status"], "error")
         self.assertEqual(chatgpt["evidence"], "preflight:timeout")
+
+    def test_recent_scan_result_is_reused_without_live_request(self):
+        self._write_assets()
+        scanner = MagicMock(return_value={
+            "status": "normal", "detail": "mail ok", "evidence": "test:200",
+        })
+        with patch.dict(os.environ, {"ASSET_SCAN_CACHE_SECONDS": "21600"}):
+            with patch.object(asset_scanner, "_platform_preflight", return_value=None):
+                with patch.dict(asset_scanner._SCANNERS, {"outlook": scanner}, clear=True):
+                    first = asset_scanner.scan_pool(platforms=["outlook"], force=True)
+                    scanner.reset_mock()
+                    second = asset_scanner.scan_pool(platforms=["outlook"])
+
+        scanner.assert_not_called()
+        self.assertEqual(second["summary"]["statuses"]["normal"], 1)
+        self.assertEqual(second["items"][0]["checked_at"], first["items"][0]["checked_at"])
+
+    def test_rate_limit_pauses_remaining_platform_records(self):
+        records = [
+            {"id": f"mail-{index}", "platform": "outlook", "email": f"mail{index}@example.com"}
+            for index in range(3)
+        ]
+        limited = {
+            **records[0],
+            "status": "restricted",
+            "detail": "rate limited",
+            "evidence": "microsoft_graph:429",
+            "checked_at": "2026-08-11T00:00:00Z",
+        }
+        with patch.object(asset_scanner, "_scan_record", return_value=limited) as scan_record:
+            results = asset_scanner._scan_platform_safely("outlook", records, 15, 0, 0)
+
+        scan_record.assert_called_once_with(records[0], 15)
+        self.assertEqual([item["status"] for item in results], ["restricted", "unknown", "unknown"])
+        self.assertIn("circuit_breaker:rate_limited", results[1]["evidence"])
 
     def test_plain_403_is_restricted_not_banned(self):
         response = SimpleNamespace(status_code=403, text="Cloudflare challenge")

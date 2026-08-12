@@ -331,6 +331,8 @@ class RuyiFrameElementLocator(RuyiLocator):
 
 
 class RuyiContext:
+    _reg_factory_route_support = False
+
     def __init__(self, root):
         self.root = root
         self.pages = []

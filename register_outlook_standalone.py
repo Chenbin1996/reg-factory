@@ -54,6 +54,7 @@ except Exception:
 # Outlook 注册和解锁共用同一套 PerimeterX 目标定位与拟人按压。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import outlook_press as _outlook_press
+from common.traffic_saver import install as install_traffic_saver
 
 # BitBrowser local API
 BITBROWSER_API = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
@@ -105,13 +106,85 @@ REGISTER_TIMEOUT = 300
 VERIFY_AFTER_REGISTER = True
 
 
+MICROSOFT_AUTH_TERMINAL_ERRORS = (
+    (
+        "account_not_found",
+        (
+            "we couldn't find a microsoft account",
+            "we could not find a microsoft account",
+            "that microsoft account doesn't exist",
+        ),
+    ),
+    (
+        "password_signin_unavailable",
+        (
+            "password sign-in isn't available",
+            "password sign in isn't available",
+            "password sign-in is not available",
+        ),
+    ),
+    (
+        "signin_rate_limited",
+        (
+            "you've tried to sign in too many times with an incorrect account or password",
+            "you have tried to sign in too many times with an incorrect account or password",
+        ),
+    ),
+)
+
+
+def microsoft_auth_terminal_error(text):
+    """Return a stable reason for Microsoft sign-in errors that must not be retried."""
+    normalized = " ".join((text or "").replace("’", "'").lower().split())
+    for reason, markers in MICROSOFT_AUTH_TERMINAL_ERRORS:
+        if any(marker in normalized for marker in markers):
+            return reason
+    return ""
+
+
+def outlook_registration_terminal_state(url, text=""):
+    """Classify browser state without treating a vanished captcha as success."""
+    reason = microsoft_auth_terminal_error(text)
+    if reason:
+        return "error", reason
+    current_url = (url or "").lower()
+    page_text = (text or "").lower()
+    if "privacynotice" in current_url:
+        return "pending", "privacy_notice"
+    if "signup.live.com" in current_url:
+        return "pending", "signup_form"
+    if any(host in current_url for host in (
+        "account.microsoft.com",
+        "account.live.com",
+        "outlook.live.com",
+        "outlook.office.com",
+        "login.live.com/oauth20",
+    )):
+        return "confirmed", "post_signup_url"
+    if any(marker in page_text for marker in (
+        "account has been created",
+        "your account is ready",
+        "welcome to outlook",
+    )):
+        return "confirmed", "post_signup_text"
+    return "pending", "unrecognized_page"
+
+
+async def _microsoft_page_terminal_error(page):
+    try:
+        body = await page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        body = ""
+    return microsoft_auth_terminal_error(body), " ".join((body or "").split())
+
+
 def verify_registered_outlook(email, password, tag=""):
     """Verify the saved password can actually log in before exporting the account."""
     if not VERIFY_AFTER_REGISTER:
         return True
     if check_account_api is None:
-        print(f"  {tag} verify skipped: check_outlook_status unavailable")
-        return True
+        print(f"  {tag} external verify unavailable; using confirmed browser state")
+        return None
     result = check_account_api(email, password)
     status = result.get("status")
     code = result.get("code") or ""
@@ -308,12 +381,13 @@ def generate_name():
     return random.choice(first_names), random.choice(last_names)
 
 
-def generate_email_password():
-    """Generate random Outlook email and password"""
+def generate_email_password(domain=None):
+    """Generate random Outlook email and password."""
     prefix = random.choice(string.ascii_lowercase) + "".join(
         random.choices(string.ascii_lowercase + string.digits, k=11)
     )
-    email = f"{prefix}@outlook.com"
+    domain = domain or _preferred_outlook_domain()
+    email = f"{prefix}@{domain}"
     password = "Aa1!" + "".join(random.choices(string.ascii_letters + string.digits, k=12))
     return email, password, prefix
 
@@ -541,6 +615,117 @@ GRAPH_DEVICE_CODE_URL = (
 GRAPH_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 MICROSOFT_UI_LOCALE = os.environ.get("OUTLOOK_UI_LOCALE", "en-US").strip() or "en-US"
 
+# Microsoft only exposes some regional aliases from selected exits.  Never
+# assume that a suffix such as outlook.jp or outlook.eu is universally open:
+# inspect the signup page's domain picker and choose from what it advertises.
+_OUTLOOK_DOMAIN_RE = re.compile(r"(?i)\b(?:outlook|hotmail|live|msn)\.[a-z0-9.-]+\b")
+_GLOBAL_OUTLOOK_DOMAINS = {"outlook.com", "hotmail.com", "live.com", "msn.com"}
+_OUTLOOK_SUFFIXES_BY_REGION = {
+    "gb": ("co.uk", "uk"),
+    "uk": ("co.uk", "uk"),
+    "au": ("com.au", "au"),
+    "nz": ("co.nz", "nz"),
+    "br": ("com.br", "br"),
+    "mx": ("com.mx", "mx"),
+    "ar": ("com.ar", "ar"),
+    "za": ("co.za", "za"),
+    "tr": ("com.tr", "tr"),
+}
+
+
+def _configured_outlook_domain():
+    """Return an optional explicit domain, or ``auto`` for page-driven choice."""
+    value = (os.environ.get("OUTLOOK_EMAIL_DOMAIN", "auto") or "auto").strip().lower()
+    if value in {"", "auto", "default", "随机", "自动"}:
+        return "auto"
+    value = value.lstrip("@").rstrip(".")
+    return value if _OUTLOOK_DOMAIN_RE.fullmatch(value) else "auto"
+
+
+def _domains_from_values(values):
+    """Extract Outlook-family domains from option values/text or signup HTML."""
+    found = []
+    for value in values:
+        for domain in _OUTLOOK_DOMAIN_RE.findall(str(value or "")):
+            domain = domain.lower().rstrip(".")
+            if domain not in found:
+                found.append(domain)
+    return found
+
+
+def _preferred_outlook_domain(available=(), locale=None):
+    """Choose a domain without inventing one absent from Microsoft's picker."""
+    available = [str(value).lower().lstrip("@").rstrip(".") for value in available if value]
+    available = [value for value in available if _OUTLOOK_DOMAIN_RE.fullmatch(value)]
+    configured = _configured_outlook_domain()
+    if configured != "auto" and (not available or configured in available):
+        return configured
+
+    locale = (locale or MICROSOFT_UI_LOCALE or "").strip().lower().replace("_", "-")
+    region = locale.rsplit("-", 1)[-1] if "-" in locale else ""
+    region_suffixes = _OUTLOOK_SUFFIXES_BY_REGION.get(region, (region,) if region else ())
+    for suffix in region_suffixes:
+        regional = next(
+            (domain for domain in available if domain.endswith(f".{suffix}")),
+            None,
+        )
+        if regional:
+            return regional
+
+    # The signup picker itself is network-sensitive. If it offers one regional
+    # suffix alongside the global aliases, prefer that suffix even when the
+    # page's mkt parameter was forced to en-US.
+    regional = next(
+        (domain for domain in available if domain not in _GLOBAL_OUTLOOK_DOMAINS),
+        None,
+    )
+    if regional:
+        return regional
+    if "outlook.com" in available:
+        return "outlook.com"
+    if available:
+        return available[0]
+    return configured if configured != "auto" else "outlook.com"
+
+
+async def _signup_domain_options(domain_dropdown):
+    """Read domain picker options while tolerating a custom React select."""
+    try:
+        values = await domain_dropdown.locator("option").evaluate_all(
+            "options => options.flatMap(option => [option.value, option.textContent])"
+        )
+    except Exception:
+        values = []
+    return _domains_from_values(values)
+
+
+async def _select_signup_domain(domain_dropdown, preferred):
+    """Select a domain option by value or label, including @-prefixed values."""
+    try:
+        options = await domain_dropdown.locator("option").evaluate_all(
+            "options => options.map(option => ({value: option.value, text: option.textContent}))"
+        )
+    except Exception:
+        options = []
+    for option in options:
+        if preferred not in _domains_from_values((option.get("value"), option.get("text"))):
+            continue
+        for selector in (option.get("value"), option.get("text")):
+            if not selector:
+                continue
+            try:
+                await domain_dropdown.select_option(
+                    selector if selector == option.get("value") else {"label": selector}
+                )
+                return True
+            except Exception:
+                continue
+    try:
+        await domain_dropdown.select_option(preferred)
+        return True
+    except Exception:
+        return False
+
 # Microsoft occasionally ignores mkt/ui_locales and renders according to the exit IP.
 # Keep text matching as a fallback, but prefer stable element IDs and field metadata.
 MS_POSITIVE_ACTION_LABELS = (
@@ -565,6 +750,12 @@ MS_POSITIVE_ACTION_LABELS = (
     "\u8a31\u53ef\u3059\u308b", "\u627f\u8a8d", "\u627f\u8a8d\u3059\u308b",
     "\u540c\u610f", "\u540c\u610f\u3057\u3066\u7d9a\u884c", "\u540c\u610f\u3057\u3066\u6b21\u3078", "\u78ba\u8a8d",
     "동의", "허용", "계속", "다음", "예", "확인",
+    # Hindi (India)
+    "स्वीकार करें", "अनुमति दें", "जारी रखें", "हाँ", "सहमत", "अगला", "ठीक है",
+    "सहमत होकर जारी रखें", "मैं सहमत हूँ",
+    # Bahasa Indonesia (Indonesia)
+    "terima", "izinkan", "lanjutkan", "ya", "setuju", "berikutnya", "oke",
+    "setujui dan lanjutkan", "saya setuju",
 )
 MS_NEGATIVE_ACTION_LABELS = (
     "deny", "decline", "cancel", "no", "back",
@@ -583,6 +774,10 @@ MS_NEGATIVE_ACTION_LABELS = (
     "拒绝", "拒絕", "取消", "否", "いいえ", "拒否", "\u62d2\u5426\u3059\u308b",
     "\u8a31\u53ef\u3057\u306a\u3044", "\u30ad\u30e3\u30f3\u30bb\u30eb", "\u623b\u308b",
     "취소", "거부", "아니요",
+    # Hindi (India)
+    "अस्वीकार करें", "अनुमति न दें", "रद्द करें", "नहीं", "वापस",
+    # Bahasa Indonesia (Indonesia)
+    "tolak", "jangan izinkan", "batalkan", "batal", "tidak", "kembali",
 )
 MS_SKIP_ACTION_LABELS = (
     "skip for now", "skip", "not now", "no thanks", "maybe later", "later",
@@ -600,6 +795,11 @@ MS_SKIP_ACTION_LABELS = (
     "暂时跳过", "跳过", "现在不", "以后再说", "不用了",
     "暫時略過", "略過", "現在不要", "稍後再說",
     "今はしない", "スキップ", "後で", "건너뛰기", "나중에", "지금은 안 함",
+    # Hindi (India)
+    "अभी के लिए छोड़ें", "अभी छोड़ें", "छोड़ें", "अभी नहीं", "नहीं धन्यवाद", "शायद बाद में", "बाद में",
+    # Bahasa Indonesia (Indonesia)
+    "lewati untuk saat ini", "lewati", "jangan sekarang", "tidak, terima kasih",
+    "mungkin nanti", "nanti",
 )
 
 
@@ -720,13 +920,14 @@ def _birthdate_field_kind(metadata):
             return kind
     tokens = {
         "month": ("birthmonth", "month", "mois", "mes", "monat", "mês", "mese",
-                  "maand", "miesiąc", "месяц", "月", "월"),
+                  "maand", "miesiąc", "месяц", "bulan", "महीना", "माह", "月", "월"),
         "day": ("birthday", "birthdate", "day", "jour", "día", "dia", "tag",
-                "giorno", "dag", "dzień", "день", "gün", "日", "일"),
+                "giorno", "dag", "dzień", "день", "gün", "hari", "दिन", "日", "일"),
         "year": ("birthyear", "year", "année", "año", "ano", "jahr", "anno",
-                 "jaar", "rok", "год", "yıl", "年", "년"),
+                 "jaar", "rok", "год", "yıl", "tahun", "वर्ष", "साल", "年", "년"),
         "country": ("country", "region", "pays", "país", "land", "paese",
-                    "kraj", "страна", "ülke", "国家", "國家", "国", "국가"),
+                    "kraj", "страна", "ülke", "negara", "wilayah", "देश", "क्षेत्र",
+                    "国家", "國家", "国", "국가"),
     }
     if value.strip() == "ay":
         return "month"
@@ -842,7 +1043,8 @@ async def _signup_email_rejected(page, email_input):
         format_markers = (
             "valid", "format", "letter", "caractère", "formato", "gültig",
             "válido", "valido", "corretto", "geldig", "prawidł", "допустим",
-            "geçerli", "格式", "有效", "文字", "올바른",
+            "geçerli", "मान्य", "अक्षर", "format", "valid", "huruf",
+            "格式", "有效", "文字", "올바른",
         )
         if any(marker in message for marker in format_markers):
             return "format"
@@ -935,6 +1137,10 @@ async def _skip_optional_recovery_email(page, idx=0):
         "帮助我们保护你的帐户", "協助我們保護您的帳戶",
         "復原電子郵件", "備用電子郵件", "セキュリティ情報",
         "回復用メール", "보안 정보", "복구 이메일",
+        "पुनर्प्राप्ति ईमेल", "वैकल्पिक ईमेल", "सुरक्षा जानकारी",
+        "खाता सुरक्षित रखने में हमारी मदद करें",
+        "email pemulihan", "email alternatif", "info keamanan",
+        "bantu kami melindungi akun anda", "tambahkan alamat email",
     )
     detected = "/proofs/add" in current_url or any(marker in body for marker in page_markers)
     if not detected:
@@ -1006,6 +1212,10 @@ async def _bind_required_recovery_email(page, state, idx=0):
         "/proofs/add", "recovery email", "alternate email", "add an email address",
         "security info", "help us protect your account", "security information",
         "杈呭姪閭", "鎭㈠閭", "澶囩敤閭", "娣诲姞鐢靛瓙閭欢",
+        "पुनर्प्राप्ति ईमेल", "वैकल्पिक ईमेल", "सुरक्षा जानकारी",
+        "खाता सुरक्षित रखने में हमारी मदद करें",
+        "email pemulihan", "email alternatif", "info keamanan",
+        "bantu kami melindungi akun anda", "tambahkan alamat email",
     )
     if not (
         state.get("email_submitted") or state.get("code_task")
@@ -1126,6 +1336,8 @@ async def _skip_optional_passkey(page, idx=0):
         "passschlüssel", "chave de acesso", "chiave di accesso",
         "wachtwoordsleutel", "klucz dostępu", "ключ доступа", "geçiş anahtarı",
         "通行密钥", "密碼金鑰", "パスキー", "패스키",
+        "पासकी", "सुरक्षा कुंजी", "कुंजी सेट अप करना",
+        "kunci sandi", "kunci keamanan", "buat kunci sandi",
     )
     detected = "passkey" in current_url or any(marker in body for marker in markers)
     if not detected:
@@ -1180,6 +1392,12 @@ async def _accept_microsoft_app_consent(page, idx=0):
         or "bu uygulamanın bilgilerinize erişmesine izin ver" in body
         or "هل تريد السماح لهذا التطبيق" in body
         or "يحتاج thunderbird للحصول على إذنك" in body
+        or "इस ऐप को आपकी जानकारी एक्सेस करने दें" in body
+        or "इस ऐप को आपकी जानकारी तक पहुंच की अनुमति दें" in body
+        or "आपकी अनुमति आवश्यक है" in body
+        or "izinkan aplikasi ini mengakses info anda" in body
+        or "izinkan aplikasi ini mengakses informasi anda" in body
+        or "aplikasi ini memerlukan izin anda" in body
     )
     if not detected:
         return False, False
@@ -1224,6 +1442,9 @@ async def _handle_microsoft_kmsi(page, idx=0):
         "\u30b5\u30a4\u30f3\u30a4\u30f3\u306e\u72b6\u614b\u3092\u7dad\u6301\u3057\u307e\u3059\u304b",
         "\u30b5\u30a4\u30f3\u30a4\u30f3\u306e\u72b6\u614b\u3092\u7dad\u6301",
         "로그인 상태를 유지",
+        "साइन इन रहने दें", "साइन इन बनाए रखें", "साइन इन रहें",
+        "क्या आप साइन इन रहना चाहते हैं",
+        "tetap masuk", "biarkan saya tetap masuk",
     )
     detected = "/kmsi" in current_url or any(marker in body for marker in markers)
     if not detected:
@@ -1268,6 +1489,8 @@ async def _extract_graph_token_device(page, email, password, idx=0):
 
     _, _, recovery_timeout, _ = _graph_recovery_settings()
     code_submitted = False
+    email_submitted = False
+    password_submitted = False
     recovery_state = {}
     idle_rounds = 0
     for _ in range(max(30, recovery_timeout // 2 + 15)):
@@ -1282,6 +1505,14 @@ async def _extract_graph_token_device(page, email, password, idx=0):
             error = token_data.get("error_description") or token_data.get("error") or ""
             print(f"  {tag} [graph] device authorization failed: {str(error)[:150]}")
             return None
+
+        terminal_error, terminal_body = await _microsoft_page_terminal_error(page)
+        if terminal_error:
+            print(
+                f"  {tag} [graph] terminal sign-in error ({terminal_error}): "
+                f"{terminal_body[:180]}"
+            )
+            return {"terminal_error": terminal_error}
 
         kmsi_page, kmsi_accepted = await _handle_microsoft_kmsi(page, idx)
         consent_page = consent_accepted = False
@@ -1305,22 +1536,24 @@ async def _extract_graph_token_device(page, email, password, idx=0):
                 )
         acted = kmsi_accepted or consent_accepted or passkey_skipped or recovery_bound
         optional_setup_page = kmsi_page or consent_page or passkey_page or recovery_page
-        if not acted and not optional_setup_page:
+        if not acted and not optional_setup_page and not email_submitted:
             email_input = page.locator('input[type="email"], input[name="loginfmt"]').first
             try:
                 if await email_input.count() > 0 and await email_input.is_visible():
                     await email_input.fill(email)
                     await page.keyboard.press("Enter")
+                    email_submitted = True
                     acted = True
             except Exception:
                 pass
 
-        if not acted and not optional_setup_page:
+        if not acted and not optional_setup_page and not password_submitted:
             password_input = page.locator('input[type="password"]').first
             try:
                 if await password_input.count() > 0 and await password_input.is_visible():
                     await password_input.fill(password)
                     await page.keyboard.press("Enter")
+                    password_submitted = True
                     acted = True
             except Exception:
                 pass
@@ -1378,15 +1611,15 @@ async def _extract_graph_token_device(page, email, password, idx=0):
     print(f"  {tag} [graph] device authorization timed out: {body[:180]}")
     try:
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-        await page.screenshot(
-            path=f"{SCREENSHOT_DIR}/outlook_{idx}_graph_device_timeout.png"
+        await _safe_screenshot(
+            page, f"{SCREENSHOT_DIR}/outlook_{idx}_graph_device_timeout.png"
         )
     except Exception:
         pass
     return None
 
 
-def extract_graph_token_http(email, password, idx=0, attempts=3):
+def extract_graph_token_http(email, password, idx=0, attempts=1):
     """Extract Graph refresh_token through the shared pure-HTTP OAuth flow."""
     try:
         from tools.extract_graph_tokens import get_graph_token
@@ -1438,19 +1671,35 @@ async def _extract_graph_token_authorization_code(page, context, email, password
                 raise
         await asyncio.sleep(3)
 
-        # May need to click accept/consent buttons
+        # May need to click accept/consent buttons. Submit each credential once;
+        # quickly retrying a rejected login triggers Microsoft's sign-in throttle.
+        email_submitted = False
+        password_submitted = False
         for attempt in range(15):
             current_url = page.url
             # Check if redirected with auth code
             if GRAPH_REDIRECT_URI in current_url and "code=" in current_url:
                 break
 
+            terminal_error, terminal_body = await _microsoft_page_terminal_error(page)
+            if terminal_error:
+                print(
+                    f"  {tag} [graph] terminal sign-in error ({terminal_error}): "
+                    f"{terminal_body[:180]}"
+                )
+                return {"terminal_error": terminal_error}
+
             # Login if needed (shouldn't be since we just registered)
             email_input = page.locator('input[type="email"], input[name="loginfmt"]').first
             try:
-                if await email_input.count() > 0 and await email_input.is_visible():
+                if (
+                    not email_submitted
+                    and await email_input.count() > 0
+                    and await email_input.is_visible()
+                ):
                     await email_input.fill(email)
                     await page.keyboard.press("Enter")
+                    email_submitted = True
                     await asyncio.sleep(3)
                     continue
             except Exception:
@@ -1458,9 +1707,14 @@ async def _extract_graph_token_authorization_code(page, context, email, password
 
             pwd_input = page.locator('input[type="password"]').first
             try:
-                if await pwd_input.count() > 0 and await pwd_input.is_visible():
+                if (
+                    not password_submitted
+                    and await pwd_input.count() > 0
+                    and await pwd_input.is_visible()
+                ):
                     await pwd_input.fill(password)
                     await page.keyboard.press("Enter")
+                    password_submitted = True
                     await asyncio.sleep(3)
                     continue
             except Exception:
@@ -1491,7 +1745,7 @@ async def _extract_graph_token_authorization_code(page, context, email, password
                 except Exception:
                     body = ""
                 print(f"  {tag} [graph] no auth code: {body[:160] or current_url[:120]}")
-            await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_graph_fail.png")
+            await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_graph_fail.png")
             return None
 
         # Extract authorization code
@@ -1543,6 +1797,8 @@ async def extract_graph_token(page, context, email, password, idx=0):
     """Prefer device-code OAuth; retain authorization-code flow as fallback."""
     result = await _extract_graph_token_device(page, email, password, idx)
     if result and result.get("refresh_token"):
+        return result
+    if result and result.get("terminal_error"):
         return result
     if result is not False:
         return None
@@ -1599,7 +1855,11 @@ async def _maybe_confirm_before_register(page, tag, captcha_early_abort=False):
                                     "přijmout a pokračovat", "souhlas", "export dat",
                                     "vaše data", "osobní údaje", "ochrana osobních údajů",
                                     "принять и продолжить", "согласие", "личные данные",
-                                    "kabul et ve devam et", "onay", "kişisel veriler"])
+                                    "kabul et ve devam et", "onay", "kişisel veriler",
+                                    "सहमत होकर जारी रखें", "सहमति", "व्यक्तिगत डेटा",
+                                    "डेटा निर्यात", "आपका डेटा",
+                                    "setujui dan lanjutkan", "persetujuan", "data pribadi",
+                                    "ekspor data", "data anda"])
         or "privacynotice" in curl
     )
     if not consent_hit:
@@ -1636,7 +1896,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
         signup_url = _microsoft_url_with_locale("https://signup.live.com/signup?lic=1")
         await page.goto(signup_url, timeout=60000, wait_until="domcontentloaded")
         await asyncio.sleep(3)
-        await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_start.png")
+        await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_start.png")
         await _maybe_confirm_before_register(page, tag, captcha_early_abort)
 
         # Handle privacy/consent pages (Chinese "个人数据导出许可", "同意并继续", etc.)
@@ -1660,6 +1920,8 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                     "zaakceptuj i kontynuuj", "přijmout a pokračovat",
                     "souhlas", "osobní údaje", "ochrana osobních údajů", "принять и продолжить",
                     "kabul et ve devam et",
+                    "सहमत होकर जारी रखें", "सहमति", "व्यक्तिगत डेटा", "डेटा निर्यात", "आपका डेटा",
+                    "setujui dan lanjutkan", "persetujuan", "data pribadi", "ekspor data", "data anda",
                 ]) or "privacynotice" in current_url
             ):
                 print(f"  {tag} privacy/consent page detected, clicking accept...")
@@ -1671,12 +1933,17 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 else:
                     print(f"  {tag} consent action not ready")
                 await asyncio.sleep(3)
-                await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_after_consent_{_consent_try}.png")
+                await _safe_screenshot(
+                    page,
+                    f"{SCREENSHOT_DIR}/outlook_{idx}_after_consent_{_consent_try}.png",
+                )
             else:
                 break
 
-        # Generate email and password
+        # Generate the alias after loading the page.  The network exit may
+        # expose a regional domain picker (for example outlook.jp).
         email, password, prefix = generate_email_password()
+        selected_domain = _preferred_outlook_domain()
         print(f"  {tag} registering: {email}")
 
         # Step 1: Enter email
@@ -1688,7 +1955,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
             ).first
             if await email_input.count() == 0:
                 print(f"  {tag} email input not found")
-                await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_no_email.png")
+                await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_no_email.png")
                 return None, None
 
             domain_dropdown = page.locator(
@@ -1699,13 +1966,20 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
             await email_input.fill("")
             await asyncio.sleep(0.3)
             if has_domain_dropdown:
+                available_domains = await _signup_domain_options(domain_dropdown)
+                selected_domain = _preferred_outlook_domain(
+                    available_domains,
+                    locale=urllib.parse.parse_qs(
+                        urllib.parse.urlsplit(page.url).query
+                    ).get("mkt", [MICROSOFT_UI_LOCALE])[0],
+                )
                 await email_input.fill(prefix)
-                try:
-                    await domain_dropdown.select_option("outlook.com")
-                except Exception:
-                    pass
-                print(f"  {tag} filled prefix: {prefix} (dropdown)")
+                selected = await _select_signup_domain(domain_dropdown, selected_domain)
+                email = f"{prefix}@{selected_domain}"
+                print(f"  {tag} filled prefix: {prefix} ({selected_domain}, picker={selected})")
             else:
+                selected_domain = _preferred_outlook_domain()
+                email = f"{prefix}@{selected_domain}"
                 await email_input.fill(email)
                 print(f"  {tag} filled email: {email}")
 
@@ -1725,7 +1999,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 prefix = random.choice(string.ascii_lowercase) + "".join(
                     random.choices(string.ascii_lowercase + string.digits, k=11)
                 )
-                email = f"{prefix}@outlook.com"
+                email = f"{prefix}@{selected_domain}"
                 print(f"  {tag} email taken, retry: {email}")
                 continue
 
@@ -1733,7 +2007,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 prefix = random.choice(string.ascii_lowercase) + "".join(
                     random.choices(string.ascii_lowercase + string.digits, k=9)
                 )
-                email = f"{prefix}@outlook.com"
+                email = f"{prefix}@{selected_domain}"
                 print(f"  {tag} format error, retry: {email}")
                 continue
 
@@ -1742,10 +2016,10 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
 
         if not email_ok:
             print(f"  {tag} all email attempts failed")
-            await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_email_fail.png")
+            await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_email_fail.png")
             return None, None
 
-        await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_after_email.png")
+        await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_after_email.png")
 
         # Step 2: Enter password
         await asyncio.sleep(2)
@@ -1771,7 +2045,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 await page.keyboard.press("Enter")
 
             await asyncio.sleep(3)
-            await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_after_pwd.png")
+            await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_after_pwd.png")
         else:
             print(f"  {tag} password input not found")
             return None, None
@@ -1790,7 +2064,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 break
             await asyncio.sleep(1)
 
-        await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_bday_page.png")
+        await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_bday_page.png")
 
         # Debug: dump all form elements
         form_debug = await page.evaluate("""() => {
@@ -1916,7 +2190,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
         if clicked:
             print(f"  {tag} clicked next (bday): {clicked}")
         await asyncio.sleep(3)
-        await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_after_bday.png")
+        await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_after_bday.png")
 
         # Step 4: Optional Username/Gamertag. Stable field attributes are locale-free.
         await asyncio.sleep(2)
@@ -1946,7 +2220,9 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 'input[aria-label*="prénom" i], input[placeholder*="prénom" i], '
                 'input[aria-label*="nombre" i], input[placeholder*="nombre" i], '
                 'input[aria-label*="vorname" i], input[placeholder*="vorname" i], '
-                'input[aria-label*="nome" i], input[placeholder*="nome" i]'
+                'input[aria-label*="nome" i], input[placeholder*="nome" i], '
+                'input[aria-label*="पहला नाम" i], input[placeholder*="पहला नाम" i], '
+                'input[aria-label*="nama depan" i], input[placeholder*="nama depan" i]'
             ).first
             lname_input = page.locator(
                 'input[name="LastName"], input[id="LastName"], input[name="lastNameInput"], '
@@ -1955,7 +2231,11 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 'input[aria-label*="nom de famille" i], input[placeholder*="nom de famille" i], '
                 'input[aria-label*="apellido" i], input[placeholder*="apellido" i], '
                 'input[aria-label*="nachname" i], input[placeholder*="nachname" i], '
-                'input[aria-label*="cognome" i], input[placeholder*="cognome" i]'
+                'input[aria-label*="cognome" i], input[placeholder*="cognome" i], '
+                'input[aria-label*="उपनाम" i], input[placeholder*="उपनाम" i], '
+                'input[aria-label*="अंतिम नाम" i], input[placeholder*="अंतिम नाम" i], '
+                'input[aria-label*="nama belakang" i], input[placeholder*="nama belakang" i], '
+                'input[aria-label*="nama keluarga" i], input[placeholder*="nama keluarga" i]'
             ).first
             if await fname_input.count() > 0 or await lname_input.count() > 0:
                 break
@@ -1994,7 +2274,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
         if clicked:
             print(f"  {tag} clicked next (name): {clicked}")
         await asyncio.sleep(3)
-        await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_after_name.png")
+        await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_after_name.png")
 
         # Step 6: CAPTCHA handling
         print(f"  {tag} checking for captcha...")
@@ -2014,6 +2294,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
         no_btn_rounds = 0
         had_captcha = False          # 是否真的出现过 captcha（避免一上来误判已通过）
         gone_rounds = 0              # captcha 消失后连续多少轮仍停在 signup（等跳转）
+        registration_confirmed = False
 
         async def _captcha_visible():
             return await _outlook_press.captcha_visible(page)
@@ -2041,27 +2322,22 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                         break
                     continue
 
-            # —— captcha 通过判定（精确按 host）——
-            # 坑：captcha 过后页面跳到 privacynotice.account.microsoft.com/notice?ru=...，
-            # 其 ru= 参数里带 "signup" 字样，旧的裸 "signup" 子串判定 -> 误以为还在 signup
-            # -> 一直 retrying presses 直到超时。改为按真实 host 判断是否已离开 signup 表单。
-            on_signup_form = ("signup.live.com" in current_url) and ("privacynotice" not in current_url)
-            if not on_signup_form and any(h in current_url for h in [
-                    "privacynotice", "account.microsoft.com", "account.live.com",
-                    "outlook.live.com", "outlook.office", "login.live.com/oauth20"]):
-                print(f"  {tag} captcha passed, left signup -> {current_url[:70]}")
+            terminal_state, terminal_reason = outlook_registration_terminal_state(
+                current_url, page_text
+            )
+            if terminal_state == "error":
+                print(f"  {tag} registration rejected by Microsoft: {terminal_reason}")
+                return None, None
+            if terminal_state == "confirmed":
+                registration_confirmed = True
+                print(f"  {tag} registration complete -> {current_url[:70]}")
                 break
-
-            # Success checks
-            if "outlook" in current_url and "signup" not in current_url and "login" not in current_url:
-                print(f"  {tag} registration complete!")
-                break
-            if "welcome" in page_text or "inbox" in page_text or "account has been created" in page_text:
-                print(f"  {tag} registration complete!")
-                break
-            if "signup" not in current_url and "live.com" in current_url:
-                print(f"  {tag} left signup: {current_url[:60]}")
-                break
+            if terminal_reason == "privacy_notice":
+                await _click_microsoft_action(
+                    page, preferred_ids=("acceptButton", "iAgree", "iNext", "idSIButton9"),
+                )
+                await asyncio.sleep(3)
+                continue
 
             # captcha 消失判定：过验证后页面变 "Loading..." 转圈、按住按钮/iframe 消失，
             # 但 URL 可能还没跳转（异步）。此时不该再按压/超时 —— 标记已过，进入等跳转模式。
@@ -2081,10 +2357,13 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                                     await b.click(timeout=3000); break
                             except Exception:
                                 pass
-                    # 等够 ~20 轮(≈60s)仍没跳转，去 post-captcha 收尾兜底（不再傻等超时）
+                    # Captcha disappearance is not an account-creation receipt.
                     if gone_rounds >= 20:
-                        print(f"  {tag} captcha 已过但久未跳转，进入收尾流程")
-                        break
+                        print(f"  {tag} captcha disappeared but signup never completed")
+                        await _safe_screenshot(
+                            page, f"{SCREENSHOT_DIR}/outlook_{idx}_signup_unconfirmed.png"
+                        )
+                        return None, None
                     await asyncio.sleep(3)
                     continue
 
@@ -2101,10 +2380,12 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 "tworzenie konta zostało zablokowane", "konto zablokowane",
                 "создание учетной записи заблокировано", "учетная запись заблокирована",
                 "hesap oluşturma engellendi", "hesap engellendi",
+                "खाता बनाने पर रोक लगा दी गई है", "खाता अवरुद्ध", "असामान्य गतिविधि",
+                "pembuatan akun telah diblokir", "akun diblokir", "aktivitas tidak biasa",
                 "unusual activity", "异常活动", "activité inhabituelle",
             ]):
                 print(f"  {tag} BLOCKED: account creation blocked by Microsoft")
-                await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_blocked.png")
+                await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_blocked.png")
                 return None, None
 
             # FIDO/passkey - skip
@@ -2135,7 +2416,9 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                     await asyncio.sleep(random.uniform(2, 4))
 
                     try:
-                        await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_hold_{press_count}.png")
+                        await _safe_screenshot(
+                            page, f"{SCREENSHOT_DIR}/outlook_{idx}_hold_{press_count}.png"
+                        )
                     except Exception:
                         pass
                 else:
@@ -2214,33 +2497,53 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
                 if await _captcha_visible():
                     if wait_round - arkose_wait_start >= 8:
                         print(f"  {tag} 按满仍未通过，快速放弃本号")
-                        await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_press_fail.png")
+                        await _safe_screenshot(
+                            page, f"{SCREENSHOT_DIR}/outlook_{idx}_press_fail.png"
+                        )
                         return None, None
 
             if wait_round % 5 == 0:
-                await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_wait_{wait_round}.png")
+                await _safe_screenshot(
+                    page, f"{SCREENSHOT_DIR}/outlook_{idx}_wait_{wait_round}.png"
+                )
                 print(f"  {tag} waiting... ({wait_round * 3}s)")
 
             await asyncio.sleep(3)
         else:
             print(f"  {tag} captcha timeout")
-            await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_timeout.png")
+            await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_timeout.png")
             return None, None
 
         # Post-captcha pages
         for retry in range(10):
             current_url = page.url.lower()
-            # 精确判断：已离开 signup 表单且不在隐私声明页 = 收尾完成（同样避免 ru= 里
-            # 的 "signup" 子串误伤）。
-            on_signup_form = ("signup.live.com" in current_url) and ("privacynotice" not in current_url)
-            if not on_signup_form and "privacynotice" not in current_url:
+            try:
+                page_text = await page.locator("body").inner_text(timeout=3000)
+            except Exception:
+                page_text = ""
+            terminal_state, terminal_reason = outlook_registration_terminal_state(
+                current_url, page_text
+            )
+            if terminal_state == "error":
+                print(f"  {tag} registration rejected by Microsoft: {terminal_reason}")
+                return None, None
+            if terminal_state == "confirmed":
+                registration_confirmed = True
                 break
             await _click_microsoft_action(
                 page, preferred_ids=("acceptButton", "iAgree", "iNext", "idSIButton9"),
             )
             await asyncio.sleep(3)
 
-        if not verify_registered_outlook(email, password, tag):
+        if not registration_confirmed:
+            print(f"  {tag} registration not confirmed; account will not be exported")
+            await _safe_screenshot(
+                page, f"{SCREENSHOT_DIR}/outlook_{idx}_signup_unconfirmed.png"
+            )
+            return None, None
+
+        verification = verify_registered_outlook(email, password, tag)
+        if verification is False:
             print(f"  {tag} verification failed, discarding account")
             return None, None
 
@@ -2250,7 +2553,7 @@ async def register_outlook(page, context, idx=0, captcha_early_abort=False):
     except Exception as e:
         print(f"  {tag} FAILED: {e}")
         try:
-            await page.screenshot(path=f"{SCREENSHOT_DIR}/outlook_{idx}_error.png")
+            await _safe_screenshot(page, f"{SCREENSHOT_DIR}/outlook_{idx}_error.png")
         except Exception:
             pass
         return None, None
@@ -2356,14 +2659,17 @@ def register_outlook_protocol(proxy_str=None, idx=0):
         canary_name = canary_name_m.group(1) if canary_name_m else ""
         canary_val = canary_val_m.group(1) if canary_val_m else ""
 
-        # Generate account details
-        email, password, prefix = generate_email_password()
+        # Server-rendered forms expose the same domain choices as the browser
+        # picker.  Restrict protocol mode to domains present in that response.
+        available_domains = _domains_from_values((html,))
+        selected_domain = _preferred_outlook_domain(available_domains)
+        email, password, prefix = generate_email_password(selected_domain)
         first_name, last_name = generate_name()
         year, month, day = generate_birthday()
         print(f"  {tag} trying: {email}")
 
         form_data = {
-            "MemberName": f"{prefix}@outlook.com",
+            "MemberName": email,
             "Password": password,
             "FirstName": first_name,
             "LastName": last_name,
@@ -2371,7 +2677,7 @@ def register_outlook_protocol(proxy_str=None, idx=0):
             "BirthMonth": str(month),
             "BirthYear": str(year),
             "Country": "US",
-            "LiveDomainBoxList": "outlook.com",
+            "LiveDomainBoxList": selected_domain,
             "LcId": "1033",
             "PPFT": ppft,
             "lic": "1",
@@ -2395,9 +2701,15 @@ def register_outlook_protocol(proxy_str=None, idx=0):
         final_url = resp2.url.lower()
         body = resp2.text.lower()
 
-        # Success: left signup domain
-        if "signup" not in final_url and any(kw in final_url for kw in ["outlook", "live.com", "microsoft"]):
-            if not verify_registered_outlook(email, password, tag):
+        terminal_state, terminal_reason = outlook_registration_terminal_state(final_url, body)
+        if terminal_state == "error":
+            print(f"  {tag} registration rejected by Microsoft: {terminal_reason}")
+            return None, None
+
+        # Success requires a recognized post-signup Microsoft destination.
+        if terminal_state == "confirmed":
+            verification = verify_registered_outlook(email, password, tag)
+            if verification is False:
                 print(f"  {tag} verification failed, discarding proto account")
                 return None, None
             print(f"  {tag} OK (proto): {email}")
@@ -2466,6 +2778,46 @@ _block_heavy_resources = _make_block_handler(_BLOCK_TYPES_HEADLESS)   # headless
 _block_browser_resources = _make_block_handler(_BLOCK_TYPES_BROWSER)   # browser: keep CSS
 
 
+async def _browser_page(context, fresh=False):
+    """Use one tab; registration gets a clean tab while Graph keeps its session tab."""
+    pages = list(getattr(context, "pages", []) or [])
+    live_pages = []
+    for page in pages:
+        try:
+            if page.is_closed() is True:
+                continue
+        except Exception:
+            pass
+        live_pages.append(page)
+    if fresh:
+        page = await context.new_page()
+        for extra in live_pages:
+            try:
+                await extra.close()
+            except Exception:
+                pass
+        return page
+    if not live_pages:
+        return await context.new_page()
+    page = live_pages[0]
+    for extra in live_pages[1:]:
+        try:
+            await extra.close()
+        except Exception:
+            pass
+    return page
+
+
+async def _safe_screenshot(page, path):
+    """Keep diagnostics from turning a healthy registration into a failure."""
+    try:
+        await page.screenshot(path=path, timeout=5000)
+        return True
+    except Exception as exc:
+        print(f"  [screenshot] skipped: {type(exc).__name__}: {str(exc)[:80]}")
+        return False
+
+
 async def _register_one_headless(idx, proxy_str):
     """
     Register via truly headless Chrome (no window shown to user).
@@ -2514,7 +2866,7 @@ async def _register_one_headless(idx, proxy_str):
                     "Chrome/136.0.0.0 Safari/537.36"
                 ),
             )
-            page = await context.new_page()
+            page = await _browser_page(context, fresh=True)
 
             # playwright-stealth: patches navigator.webdriver, plugins, languages, etc.
             if _HAS_STEALTH:
@@ -2670,10 +3022,8 @@ async def _register_one_browser(bb, idx, proxy_str, keep_profile=False):
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(ws)
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = await context.new_page()
-            # NOTE: resource blocking intentionally disabled in browser mode.
-            # PerimeterX behavioral analysis can detect modified network patterns.
-            # Bandwidth saving via resource blocking only applies in headless mode.
+            page = await _browser_page(context, fresh=True)
+            await install_traffic_saver(context)
             email, password = await register_outlook(page, context, idx)
 
         if keep_profile and email and password:
@@ -2727,7 +3077,8 @@ async def extract_graph_token_browser(
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(ws)
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = context.pages[0] if context.pages else await context.new_page()
+            page = await _browser_page(context)
+            await install_traffic_saver(context)
             return await extract_graph_token(page, context, email, password, idx)
     except Exception as e:
         print(f"  {tag} error: {str(e)[:140]}")
@@ -2812,7 +3163,8 @@ async def register_one(bb, idx, proxy_str, results, results_lock, live_fh=None, 
             )
         else:
             graph = await extract_graph_token_browser(bb, email, password, idx, proxy_str)
-        if not graph or not graph.get("refresh_token"):
+        terminal_graph_error = (graph or {}).get("terminal_error")
+        if not terminal_graph_error and (not graph or not graph.get("refresh_token")):
             print(f"  {tag} [graph] browser authorization failed; trying HTTP fallback")
             loop = asyncio.get_event_loop()
             graph = await loop.run_in_executor(
@@ -2838,8 +3190,15 @@ async def register_one(bb, idx, proxy_str, results, results_lock, live_fh=None, 
                 results.append({
                     "index": idx, "email": email, "password": password,
                     "status": "GRAPH_FAIL", "proxy": proxy_str, "mode": used_mode,
+                    "terminal_error": terminal_graph_error,
                 })
-                print(f"  {tag} REGISTERED but graph RT missing; not saved: {email}")
+                if terminal_graph_error:
+                    print(
+                        f"  {tag} graph stopped ({terminal_graph_error}); "
+                        f"credentials were not retried: {email}"
+                    )
+                else:
+                    print(f"  {tag} REGISTERED but graph RT missing; not saved: {email}")
         else:
             results.append({
                 "index": idx, "email": None, "password": None,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,6 +32,10 @@ STATUSES = (
 )
 PLUS_TRIAL_STATUSES = ("eligible", "ineligible", "active", "unknown", "disabled")
 
+SAFE_SCAN_DEFAULT_CACHE_SECONDS = 6 * 60 * 60
+SAFE_SCAN_DEFAULT_MIN_INTERVAL = 3.0
+SAFE_SCAN_DEFAULT_MAX_INTERVAL = 6.0
+
 _BANNED_MARKERS = (
     "account_deactivated",
     "account deactivated",
@@ -43,6 +49,24 @@ _BANNED_MARKERS = (
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _env_number(name: str, default, minimum, maximum, cast=float):
+    try:
+        value = cast(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = cast(default)
+    return min(maximum, max(minimum, value))
+
+
+def _checked_at_epoch(item: dict) -> float:
+    value = str(item.get("checked_at") or "").strip()
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _scan_path() -> Path:
@@ -171,6 +195,7 @@ def _merge_platform_records(platform: str) -> list[dict]:
 def _inventory_records() -> list[dict]:
     records = []
     history = _history_outcomes()
+    registered = asset_store.registered_mailbox_usage()
     seen_mailboxes = set()
     for index, mailbox in enumerate(asset_store._mailboxes()):
         email = mailbox.get("email", "").strip()
@@ -185,6 +210,8 @@ def _inventory_records() -> list[dict]:
             "kind": "mailbox",
             "email": email,
             "email_provider": mailbox.get("email_provider") or asset_store.classify_email_provider(email),
+            "pristine": identity not in registered,
+            "registered_platforms": list(registered.get(identity, ())),
             "source": source,
             "_mailbox": mailbox,
             "_history": history.get(identity),
@@ -256,12 +283,15 @@ def get_report() -> dict:
             public.setdefault("plus_trial_detail", "尚未检测 Plus 试用资格")
             public.setdefault("plus_trial_evidence", "none")
         items.append(public)
-    return {
+    report = {
         "schema_version": 2,
         "last_scan_at": cache.get("finished_at", ""),
         "items": items,
         "summary": _status_summary(items),
     }
+    if isinstance(cache.get("safe_mode"), dict):
+        report["safe_mode"] = dict(cache["safe_mode"])
+    return report
 
 
 def update_cached_outlook_statuses(outcomes: dict[str, dict]) -> int:
@@ -737,18 +767,94 @@ def _record_with_outcome(record: dict, outcome: dict) -> dict:
     return public
 
 
+def _scan_should_trip_breaker(result: dict) -> str:
+    evidence = str(result.get("evidence") or "").lower()
+    status = str(result.get("status") or "").lower()
+    if evidence.endswith(":429") or ":429:" in evidence:
+        return "rate_limited"
+    if status == "restricted" and (
+        evidence.endswith(":403") or evidence.endswith(":challenge")
+    ):
+        return "restricted"
+    if status == "error" and evidence.startswith(("network:", "preflight:")):
+        return "network"
+    return ""
+
+
+def _scan_platform_safely(
+    platform: str,
+    records: list[dict],
+    timeout: int,
+    min_interval: float,
+    max_interval: float,
+    on_result: Callable[[dict], None] | None = None,
+) -> list[dict]:
+    results = []
+    consecutive_risk = 0
+    breaker_reason = ""
+    for record in records:
+        if breaker_reason:
+            result = _record_with_outcome(record, {
+                "status": "unknown",
+                "detail": f"为降低风控，本次已暂停 {platform} 后续检测",
+                "evidence": f"safe_scan:circuit_breaker:{breaker_reason}",
+            })
+            results.append(result)
+            if on_result:
+                on_result(result)
+            continue
+        if max_interval > 0:
+            time.sleep(random.uniform(min_interval, max_interval))
+        result = _scan_record(record, timeout)
+        results.append(result)
+        if on_result:
+            on_result(result)
+        risk = _scan_should_trip_breaker(result)
+        if risk == "rate_limited":
+            breaker_reason = risk
+        elif risk:
+            consecutive_risk += 1
+            if consecutive_risk >= 2:
+                breaker_reason = risk
+        else:
+            consecutive_risk = 0
+    return results
+
+
 def scan_pool(
     platforms: list[str] | tuple[str, ...] | None = None,
-    concurrency: int = 4,
+    concurrency: int = 1,
     timeout: int = 15,
     progress: Callable[[dict], None] | None = None,
+    force: bool = False,
 ) -> dict:
     requested = {str(item).strip().lower() for item in (platforms or PLATFORMS)}
     invalid = requested.difference(PLATFORMS)
     if invalid:
         raise ValueError(f"不支持的平台：{', '.join(sorted(invalid))}")
-    concurrency = min(12, max(1, int(concurrency)))
+    # Concurrency controls independent platforms only. Accounts within one
+    # platform are always scanned serially to avoid a request burst.
+    concurrency = min(2, max(1, int(concurrency)))
     timeout = min(60, max(5, int(timeout)))
+    cache_seconds = int(_env_number(
+        "ASSET_SCAN_CACHE_SECONDS",
+        SAFE_SCAN_DEFAULT_CACHE_SECONDS,
+        0,
+        7 * 24 * 60 * 60,
+        int,
+    ))
+    min_interval = _env_number(
+        "ASSET_SCAN_MIN_INTERVAL",
+        SAFE_SCAN_DEFAULT_MIN_INTERVAL,
+        0.0,
+        60.0,
+    )
+    max_interval = _env_number(
+        "ASSET_SCAN_MAX_INTERVAL",
+        SAFE_SCAN_DEFAULT_MAX_INTERVAL,
+        min_interval,
+        120.0,
+    )
     started_at = _now_iso()
     records = _inventory_records()
     selected = [record for record in records if record["platform"] in requested]
@@ -758,15 +864,32 @@ def scan_pool(
         if isinstance(item, dict) and item.get("id")
     }
     scanned = {}
+    now = time.time()
+    selected_to_scan = []
+    for record in selected:
+        cached = previous.get(str(record.get("id")))
+        cache_age = now - _checked_at_epoch(cached or {})
+        if (
+            not force
+            and cache_seconds > 0
+            and cached
+            and 0 <= cache_age < cache_seconds
+        ):
+            scanned[str(record["id"])] = dict(cached)
+        else:
+            selected_to_scan.append(record)
     total = len(selected)
     if progress:
         progress({"completed": 0, "total": total, "current": ""})
     records_by_platform = {
-        platform: [record for record in selected if record["platform"] == platform]
+        platform: [record for record in selected_to_scan if record["platform"] == platform]
         for platform in requested
     }
     preflight_failures = {}
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(records_by_platform)))) as executor:
+    with ThreadPoolExecutor(
+        max_workers=min(concurrency, max(1, len(records_by_platform))),
+        thread_name_prefix="asset-scan-preflight",
+    ) as executor:
         future_map = {
             executor.submit(_platform_preflight, platform, timeout): platform
             for platform, platform_records in records_by_platform.items()
@@ -777,9 +900,11 @@ def scan_pool(
             if outcome:
                 preflight_failures[future_map[future]] = outcome
 
-    completed = 0
+    completed = len(scanned)
+    if progress and completed:
+        progress({"completed": completed, "total": total, "current": "复用近期扫描结果"})
     pending = []
-    for record in selected:
+    for record in selected_to_scan:
         outcome = preflight_failures.get(record["platform"])
         if outcome:
             result = _record_with_outcome(record, outcome)
@@ -793,10 +918,18 @@ def scan_pool(
                 })
         else:
             pending.append(record)
-    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="asset-scan") as executor:
-        future_map = {executor.submit(_scan_record, record, timeout): record for record in pending}
-        for future in as_completed(future_map):
-            result = future.result()
+    pending_by_platform = {
+        platform: [record for record in pending if record["platform"] == platform]
+        for platform in requested
+    }
+    pending_by_platform = {
+        platform: records for platform, records in pending_by_platform.items() if records
+    }
+    progress_lock = threading.Lock()
+
+    def collect_result(result: dict):
+        nonlocal completed
+        with progress_lock:
             scanned[result["id"]] = result
             completed += 1
             if progress:
@@ -805,6 +938,25 @@ def scan_pool(
                     "total": total,
                     "current": result.get("email") or result.get("source") or "",
                 })
+
+    with ThreadPoolExecutor(
+        max_workers=min(concurrency, max(1, len(pending_by_platform))),
+        thread_name_prefix="asset-scan-platform",
+    ) as executor:
+        future_map = {
+            executor.submit(
+                _scan_platform_safely,
+                platform,
+                records,
+                timeout,
+                min_interval,
+                max_interval,
+                collect_result,
+            ): platform
+            for platform, records in pending_by_platform.items()
+        }
+        for future in as_completed(future_map):
+            future.result()
 
     items = []
     for record in records:
@@ -832,6 +984,15 @@ def scan_pool(
         "started_at": started_at,
         "finished_at": finished_at,
         "platforms_scanned": sorted(requested),
+        "safe_mode": {
+            "enabled": True,
+            "platform_concurrency": concurrency,
+            "account_concurrency": 1,
+            "min_interval_seconds": min_interval,
+            "max_interval_seconds": max_interval,
+            "cache_seconds": cache_seconds,
+            "force": bool(force),
+        },
         "items": items,
         "summary": _status_summary(items),
     }

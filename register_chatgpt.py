@@ -12,6 +12,7 @@ ChatGPT (OpenAI) 自动注册
 
 import argparse
 import asyncio
+import contextvars
 import functools
 import json
 import os as _os
@@ -72,6 +73,25 @@ CODEX_SMS_PROVIDER = "auto"  # auto / smsman / firefox / hero
 CODEX_TIMEOUT = 120  # Codex 授权捕获超时秒
 CHATGPT_NODE = "auto"
 ACTIVE_CHATGPT_NODE = None
+_ACTIVE_CHATGPT_NODE_TASK = contextvars.ContextVar(
+    "chatgpt_active_node", default=None
+)
+
+
+def _set_active_chatgpt_node(value):
+    global ACTIVE_CHATGPT_NODE
+    from common.task_context import active_worker
+
+    if active_worker():
+        _ACTIVE_CHATGPT_NODE_TASK.set(value)
+    else:
+        ACTIVE_CHATGPT_NODE = value
+
+
+def _get_active_chatgpt_node():
+    from common.task_context import active_worker
+
+    return _ACTIVE_CHATGPT_NODE_TASK.get() if active_worker() else ACTIVE_CHATGPT_NODE
 
 
 def _env_int(name, default):
@@ -227,7 +247,6 @@ async def _click_turnstile(page):
 
 def _activate_cf_node(node):
     """切换 Clash 节点并断开旧连接，避免新注册会话沿用旧出口。"""
-    global ACTIVE_CHATGPT_NODE
     try:
         from common import proxy_switch
         import _clash_verge as cv
@@ -238,7 +257,7 @@ def _activate_cf_node(node):
         proxy_switch.set_node(active, group)
         client = cv.ClashClient(api, secret)
         client.close_connections()
-        ACTIVE_CHATGPT_NODE = active
+        _set_active_chatgpt_node(active)
         return active
     except Exception as e:
         print(f"  [cf] 切节点失败: {str(e)[:80]}")
@@ -251,9 +270,12 @@ def _switch_cf_node():
     if proxy_switch.proxy_mode() == "residential":
         result = proxy_switch.rotate_proxy()
         if result.get("ok"):
-            global ACTIVE_CHATGPT_NODE
-            ACTIVE_CHATGPT_NODE = proxy_switch.current_node()
-            return ACTIVE_CHATGPT_NODE
+            if result.get("requires_new_session"):
+                print("  [cf] 任务代理已轮换；当前浏览器仍绑定旧端点，需要新建 Profile")
+                return None
+            active = proxy_switch.current_node()
+            _set_active_chatgpt_node(active)
+            return active
         return None
     candidates = _chatgpt_node_candidates()
     node = candidates[_cf_node_idx[0] % len(candidates)]
@@ -301,11 +323,11 @@ def select_chatgpt_node(requested, allow_blocked=False):
     from common import proxy_switch
     mode = proxy_switch.proxy_mode()
     if mode in {"residential", "direct"} and value.lower() == "auto":
-        ACTIVE_CHATGPT_NODE = None
+        _set_active_chatgpt_node(None)
         print("  [node] ChatGPT 使用直连住宅代理，跳过 Clash 节点探测")
         return None
     if value.lower() in {"none", "off", "direct"}:
-        ACTIVE_CHATGPT_NODE = None
+        _set_active_chatgpt_node(None)
         print("  [node] ChatGPT 使用直连模式")
         return None
 
@@ -346,14 +368,15 @@ def select_chatgpt_node(requested, allow_blocked=False):
 
 def assert_chatgpt_node(stage):
     """检测其他任务是否在注册中途改了 GLOBAL 出口。"""
-    if not ACTIVE_CHATGPT_NODE:
+    expected = _get_active_chatgpt_node()
+    if not expected:
         return
     from common import proxy_switch
 
     current = proxy_switch.current_node()
-    if current != ACTIVE_CHATGPT_NODE:
+    if current != expected:
         raise RuntimeError(
-            f"chatgpt_node_changed:{stage}: expected={ACTIVE_CHATGPT_NODE}, current={current}"
+            f"chatgpt_node_changed:{stage}: expected={expected}, current={current}"
         )
 
 
@@ -2247,33 +2270,54 @@ async def main():
         print("  [codex][WARN] 已开 --codex 但未配置 SUB2API_URL/EMAIL/PASSWORD（.env），Codex 提取会被跳过")
 
     try:
-        select_chatgpt_node(CHATGPT_NODE)
+        selected_node = select_chatgpt_node(CHATGPT_NODE)
+        requested_node = str(CHATGPT_NODE or "auto").strip().lower()
+        if (
+            selected_node
+            and requested_node not in {"auto", "none", "off", "direct"}
+            and proxy_switch.proxy_mode() == "clash_auto"
+        ):
+            proxy_switch.pin_fixed_node(selected_node, "chatgpt")
+            print(f"  [node] 当前批次固定节点并发: {selected_node}")
     except Exception as e:
         print(f"  [node][FAIL] {e}")
         return 2
 
-    if args.concurrency > 1:
-        print("  [node] ChatGPT 使用全局 Clash 出口，为避免注册中途换 IP，并发强制为 1")
-        args.concurrency = 1
+    from common.concurrency import build_worker_plan
+    from common.task_context import activate_worker
+
+    worker_plan = build_worker_plan("chatgpt", args.count, args.concurrency)
+    worker_plan.log()
 
     print("=" * 50)
-    print(f"  ChatGPT Auto Register  count={args.count} concurrency={args.concurrency}")
+    print(
+        f"  ChatGPT Auto Register  count={args.count} "
+        f"concurrency={worker_plan.effective_concurrency}"
+    )
     print("=" * 50)
 
-    sem = asyncio.Semaphore(args.concurrency)
+    slot_locks = [asyncio.Lock() for _ in range(worker_plan.effective_concurrency)]
     results = []
 
     async def run_one(i):
-        async with sem:
-            if i > 1:
-                await asyncio.sleep(random.uniform(2, 6) * (i - 1))
-            async with async_playwright() as p:
-                try:
-                    sk = await register_one(i, args.count, p)
-                    results.append(sk)
-                except Exception as e:
-                    print(f"  #{i} fatal: {e}")
-                    results.append(None)
+        stagger_slot = (i - 1) % worker_plan.effective_concurrency
+        if stagger_slot:
+            await asyncio.sleep(random.uniform(1.5, 3.5) * stagger_slot)
+        worker_context = worker_plan.worker(i)
+        async with slot_locks[worker_context.slot - 1]:
+            with activate_worker(worker_context) as worker:
+                _set_active_chatgpt_node(ACTIVE_CHATGPT_NODE)
+                print(
+                    f"  [worker] {worker.worker_id} slot={worker.slot} "
+                    f"proxy={proxy_switch.current_node()}"
+                )
+                async with async_playwright() as p:
+                    try:
+                        sk = await register_one(i, args.count, p)
+                        results.append(sk)
+                    except Exception as e:
+                        print(f"  #{i} fatal: {e}")
+                        results.append(None)
 
     await asyncio.gather(*[run_one(i) for i in range(1, args.count + 1)])
 
