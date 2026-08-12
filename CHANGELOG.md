@@ -1,5 +1,14 @@
 ﻿# 更新日志
 
+## 2026-08-12 - 1.3.1
+
+**更新器住宅代理隔离热修复**
+- 修复 WebUI 在住宅模式下把注册代理继承给源码与便携更新器，导致 GitHub `git pull` 或 Release 下载出现 `Proxy CONNECT aborted` 的问题。
+- 更新子进程会移除大小写两套 `HTTP_PROXY`、`HTTPS_PROXY` 与 `ALL_PROXY`，GitHub 更新走机器直连，不消耗住宅代理流量；注册任务的网络设置不变。
+- 源码 `update.ps1` 与便携 `update-portable.ps1` 自身也执行同样隔离，覆盖 WebUI 一键更新和手动运行脚本两种入口。
+
+---
+
 ## 2026-08-12 - 1.3.0
 
 **并发注册、住宅流量控制与 Outlook 稳定性大更新**

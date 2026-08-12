@@ -11,6 +11,13 @@ $Port = if ($env:REG_FACTORY_PORT) { [int]$env:REG_FACTORY_PORT } else { 8799 }
 $StatusUrl = "http://127.0.0.1:$Port/api/status"
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 
+# Registration tasks may inject a residential proxy into the WebUI process.
+# Repository updates must use the machine's direct GitHub route instead.
+foreach ($name in @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")) {
+    Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+}
+$env:NO_PROXY = $env:no_proxy = "127.0.0.1,localhost,::1,github.com,api.github.com,uploads.github.com"
+
 function Get-PanelStatus {
     try {
         return Invoke-RestMethod -Uri $StatusUrl -TimeoutSec 5

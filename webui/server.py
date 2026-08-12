@@ -382,6 +382,31 @@ def _update_script(result_path=""):
     return ["bash", path, "--root", ROOT]
 
 
+def _update_child_env():
+    """Keep registration proxies out of GitHub update subprocesses."""
+    child_env = os.environ.copy()
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        child_env.pop(name, None)
+    bypass = [
+        value.strip()
+        for value in str(child_env.get("NO_PROXY") or child_env.get("no_proxy") or "").split(",")
+        if value.strip()
+    ]
+    for host in ("127.0.0.1", "localhost", "::1", "github.com", "api.github.com", "uploads.github.com"):
+        if host not in bypass:
+            bypass.append(host)
+    child_env["NO_PROXY"] = child_env["no_proxy"] = ",".join(bypass)
+    child_env["REG_FACTORY_NONINTERACTIVE"] = "1"
+    return child_env
+
+
 def _read_update_result():
     if not UPDATE_RESULT_PATH or not os.path.isfile(UPDATE_RESULT_PATH):
         return {}
@@ -1662,8 +1687,7 @@ def api_update():
     if UPDATE_LOG_HANDLE:
         UPDATE_LOG_HANDLE.close()
     UPDATE_LOG_HANDLE = open(log_path, "a", encoding="utf-8")
-    child_env = os.environ.copy()
-    child_env["REG_FACTORY_NONINTERACTIVE"] = "1"
+    child_env = _update_child_env()
     command = _update_script(UPDATE_RESULT_PATH)
     process_options = {
         "cwd": (
