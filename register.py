@@ -3358,12 +3358,12 @@ def _verify_claude_magic_link_http(magic_link, request_template=None, browser_co
 
 
 async def _open_claude_authenticated_app(page, source="magic"):
-    """Open Claude's app shell after sessionKey is installed."""
+    """Open Claude's required onboarding after sessionKey is installed."""
     if set_traffic_saver_bypass(page.context, True):
         print("  [traffic] bypass enabled for Claude authenticated bootstrap")
     try:
         await page.goto(
-            "https://claude.ai/new",
+            "https://claude.ai/",
             timeout=60000,
             wait_until="domcontentloaded",
         )
@@ -4457,13 +4457,23 @@ async def _claude_app_shell_state(page):
         return await page.evaluate("""() => {
             const body = document.body;
             if (!body) return {textLength: 0, htmlLength: 0, elements: 0, interactive: 0};
+            const isVisible = element => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && rect.width > 0
+                    && rect.height > 0;
+            };
+            const interactive = [...body.querySelectorAll(
+                'button, a[href], input, textarea, select, [role="button"]'
+            )];
             return {
                 textLength: (body.innerText || '').trim().length,
                 htmlLength: (body.innerHTML || '').length,
                 elements: body.querySelectorAll('*').length,
-                interactive: body.querySelectorAll(
-                    'button, a[href], input, textarea, select, [role="button"]'
-                ).length,
+                interactive: interactive.length,
+                visibleInteractive: interactive.filter(isVisible).length,
             };
         }""")
     except Exception:
@@ -4472,17 +4482,162 @@ async def _claude_app_shell_state(page):
 
 def _claude_app_shell_is_blank(state):
     state = state or {}
+    interactive = state.get("visibleInteractive")
+    if interactive is None:
+        interactive = state.get("interactive")
     return (
         int(state.get("textLength") or 0) == 0
-        and int(state.get("interactive") or 0) == 0
-        and int(state.get("elements") or 0) < 10
+        and int(interactive or 0) == 0
     )
 
 
-async def handle_onboarding(page, first_name, last_name, max_rounds=10):
+async def _claude_account_onboarding_state(page):
+    """Read the server-side account fields that prove onboarding completed."""
+    try:
+        state = await page.evaluate("""async () => {
+            try {
+                const response = await fetch('/api/account', {
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: {'accept': 'application/json'},
+                });
+                let account = {};
+                try { account = await response.json(); } catch (_) {}
+                const settings = account && typeof account.settings === 'object'
+                    ? account.settings : {};
+                return {
+                    status: response.status,
+                    full_name: account.full_name || '',
+                    display_name: account.display_name || '',
+                    accepted_clickwrap_versions:
+                        account.accepted_clickwrap_versions || {},
+                    has_started: settings.has_started_claudeai_onboarding === true,
+                    has_finished: settings.has_finished_claudeai_onboarding === true,
+                };
+            } catch (error) {
+                return {status: 0, error: String(error)};
+            }
+        }""")
+        return state if isinstance(state, dict) else {"status": 0}
+    except Exception as error:
+        return {"status": 0, "error": str(error)}
+
+
+def _claude_account_onboarding_is_complete(state):
+    state = state or {}
+    accepted = state.get("accepted_clickwrap_versions")
+    has_accepted_terms = bool(accepted) and isinstance(accepted, (dict, list, tuple))
+    has_name = bool(str(state.get("full_name") or state.get("display_name") or "").strip())
+    return (
+        int(state.get("status") or 0) == 200
+        and has_accepted_terms
+        and has_name
+        and state.get("has_finished") is True
+    )
+
+
+def _log_claude_account_onboarding_state(state):
+    state = state or {}
+    accepted = state.get("accepted_clickwrap_versions")
+    accepted_count = len(accepted) if isinstance(accepted, (dict, list, tuple)) else 0
+    print(
+        "  [onboarding] account state: "
+        f"HTTP {int(state.get('status') or 0)}, "
+        f"name={'yes' if str(state.get('full_name') or state.get('display_name') or '').strip() else 'no'}, "
+        f"terms={accepted_count}, finished={state.get('has_finished') is True}"
+    )
+
+
+async def _accept_claude_terms(page):
+    """Accept required terms and submit without opting into marketing."""
+    checkboxes = page.locator(
+        '[data-test-id="terms-acceptance"], '
+        'input[type="checkbox"][required], '
+        '[role="checkbox"][aria-required="true"]'
+    )
+    required = []
+    for index in range(await checkboxes.count()):
+        checkbox = checkboxes.nth(index)
+        required.append(checkbox)
+    if not required:
+        print("  [onboarding] required terms checkbox was not found")
+        return False
+
+    for checkbox in required:
+        try:
+            checked = await checkbox.is_checked(timeout=1500)
+        except Exception:
+            try:
+                checked = await checkbox.evaluate("""element => (
+                    element.checked === true
+                    || element.getAttribute('aria-checked') === 'true'
+                    || element.getAttribute('data-state') === 'checked'
+                )""")
+            except Exception:
+                checked = False
+        if not checked:
+            try:
+                checked = await checkbox.evaluate("""element => {
+                    if (!element.checked) element.click();
+                    return element.checked === true;
+                }""")
+            except Exception:
+                checked = False
+            if not checked:
+                print("  [onboarding] could not activate required terms checkbox")
+                return False
+
+    await asyncio.sleep(1)
+    for checkbox in required:
+        try:
+            checked = await checkbox.is_checked(timeout=1500)
+        except Exception:
+            try:
+                checked = await checkbox.evaluate("""element => (
+                    element.checked === true
+                    || element.getAttribute('aria-checked') === 'true'
+                    || element.getAttribute('data-state') === 'checked'
+                )""")
+            except Exception:
+                # The terms control is removed as soon as Claude advances.
+                if await page.locator(
+                    '[data-test-id="terms-acceptance"]'
+                ).count() == 0:
+                    continue
+                checked = False
+        if not checked:
+            print("  [onboarding] terms checkbox did not stay checked")
+            return False
+    print(f"  [onboarding] confirmed {len(required)} required terms checkbox(es)")
+    try:
+        submitted = await page.evaluate("""() => {
+            const required = document.querySelector(
+                '[data-test-id="terms-acceptance"], input[type="checkbox"][required], [role="checkbox"][aria-required="true"]'
+            );
+            const form = required?.closest('form');
+            const submit = form?.querySelector('button[type="submit"], input[type="submit"]')
+                || document.querySelector('button[type="submit"], input[type="submit"]');
+            if (!submit) return false;
+            submit.click();
+            return true;
+        }""")
+    except Exception:
+        submitted = False
+    if not submitted:
+        state = await _claude_account_onboarding_state(page)
+        if not state.get("accepted_clickwrap_versions"):
+            print("  [onboarding] required terms submit control was not found")
+            return False
+        print("  [onboarding] required terms persisted during UI transition")
+        return True
+    print("  [onboarding] submitted required terms form")
+    return True
+
+
+async def handle_onboarding(page, first_name, last_name, max_rounds=16):
     """Click through post-registration onboarding pages:
     personal use, display name, don't improve, etc.
-    Keeps clicking until we land on /chat or /new or no more buttons."""
+    Completion requires Claude's server-side terms, name and finished flags."""
     print("\n  [onboarding] checking for onboarding pages...")
 
     blank_recoveries = 0
@@ -4508,15 +4663,15 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
                 continue
             if blank_recoveries == 1:
                 blank_recoveries += 1
-                print("  [onboarding] reopening /new with cache bypass...")
+                print("  [onboarding] reopening Claude entry with cache bypass...")
                 try:
                     await page.goto(
-                        f"https://claude.ai/new?rf_bootstrap={int(time.time())}",
+                        f"https://claude.ai/onboarding?rf_bootstrap={int(time.time())}",
                         timeout=60000,
                         wait_until="domcontentloaded",
                     )
                 except Exception as error:
-                    print(f"  [onboarding] /new recovery warning: {str(error)[:100]}")
+                    print(f"  [onboarding] entry recovery warning: {str(error)[:100]}")
                 await asyncio.sleep(4)
                 continue
             print("  [onboarding] authenticated app stayed blank after recovery")
@@ -4582,8 +4737,19 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
         from urllib.parse import urlparse
         url_path = urlparse(current_url).path
         if any(k in url_path for k in ['/chat', '/new']):
-            print("  [onboarding] reached chat page, done!")
-            return True
+            account_state = await _claude_account_onboarding_state(page)
+            _log_claude_account_onboarding_state(account_state)
+            if _claude_account_onboarding_is_complete(account_state):
+                print("  [onboarding] reached chat with completed account, done!")
+                return True
+            print("  [onboarding] chat route reached before required onboarding; reopening it")
+            await page.goto(
+                "https://claude.ai/",
+                timeout=60000,
+                wait_until="domcontentloaded",
+            )
+            await asyncio.sleep(3)
+            continue
 
         try:
             page_text = await page.evaluate("() => document.body.innerText")
@@ -4592,8 +4758,10 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
             await asyncio.sleep(3)
             url_path = urlparse(page.url).path
             if any(k in url_path for k in ['/chat', '/new']):
-                print("  [onboarding] reached chat page during navigation!")
-                return True
+                account_state = await _claude_account_onboarding_state(page)
+                if _claude_account_onboarding_is_complete(account_state):
+                    print("  [onboarding] completed account reached chat during navigation!")
+                    return True
             print(f"  [onboarding] page navigating, URL: {page.url[:80]}")
             continue
         page_lower = page_text.lower()
@@ -4604,30 +4772,20 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
         need_continue = False  # whether we need to also click Continue after a selection
 
         # "Let's create your account" — check terms checkbox only, don't touch toggles
-        if not clicked and ("let's create your account" in page_lower or ('consumer terms' in page_lower and 'acceptable use' in page_lower)):
+        terms_control_present = await page.locator(
+            '[data-test-id="terms-acceptance"]'
+        ).count() > 0
+        if not clicked and (
+            terms_control_present
+            or "let's create your account" in page_lower
+            or ('consumer terms' in page_lower and 'acceptable use' in page_lower)
+        ):
             print("  [onboarding] terms page, checking agreement checkbox...")
-            cb_count = await page.evaluate("""
-                () => {
-                    let clicked = 0;
-                    document.querySelectorAll('input[type="checkbox"]').forEach(el => {
-                        if (!el.checked && el.offsetParent !== null) { el.click(); clicked++; }
-                    });
-                    return clicked;
-                }
-            """)
-            if cb_count:
-                print(f"  [onboarding] checked {cb_count} checkbox(es)")
-            await asyncio.sleep(1)
-            for label in ['Continue', 'Create account', 'Next', 'Get started']:
-                btn = page.locator(f'button:has-text("{label}")').first
-                if await btn.count() > 0:
-                    try:
-                        await btn.click(timeout=3000)
-                        print(f"  [onboarding] clicked: {label}")
-                        clicked = True
-                        break
-                    except Exception:
-                        pass
+            if not await _accept_claude_terms(page):
+                await asyncio.sleep(2)
+                continue
+            await asyncio.sleep(6)
+            continue
 
         # "Personal" use button / card
         if any(k in page_lower for k in ['personal', 'how will you', 'using claude', 'what brings you']):
@@ -4709,7 +4867,13 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
         # Plans / pricing page — select Free plan (优先于 Continue)
         # 排除营销首页（含 "contact sales"、"think fast" 等）
         is_marketing = any(kw in page_lower for kw in ['contact sales', 'think fast', 'platform solutions pricing'])
-        if not is_marketing and any(k in page_lower for k in ['pick a plan', 'plans that grow', 'meet claude', 'pricing']):
+        has_free_plan = "$0" in page_text and "free" in page_lower
+        if not is_marketing and (
+            has_free_plan
+            or any(k in page_lower for k in [
+                'pick a plan', 'plans that grow', 'meet claude', 'pricing'
+            ])
+        ):
             clicked = False  # 强制重新选择 plan
             # 截图看当前页面
             try:
@@ -4721,11 +4885,11 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
                 clicked_js = await page.evaluate("""
                     () => {
                         // 找包含 "$0" 或 "Meet Claude" 的卡片/按钮
-                        const allEls = document.querySelectorAll('button, [role="button"], [role="radio"], div[class*="card"], div[class*="plan"]');
+                        const allEls = document.querySelectorAll('button, [role="button"], [role="radio"]');
                         for (const el of allEls) {
                             if (el.offsetParent === null) continue;
                             const text = el.textContent || '';
-                            if ((text.includes('$0') || text.includes('S$0') || text.includes('Meet Claude')) && text.includes('Free')) {
+                            if (text.includes('$0') || (/free/i.test(text) && text.length < 120)) {
                                 el.click();
                                 return 'clicked: ' + text.substring(0, 60);
                             }
@@ -4799,14 +4963,25 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
                     print(f"  [onboarding] plan click failed: {e}")
 
         # "Before your first chat" page — 直接点 Continue（不动 toggle）
-        if not clicked and ('before your first' in page_lower or 'setting to review' in page_lower):
+        before_first_structure = await page.evaluate("""() => {
+            const switches = [...document.querySelectorAll('[role="switch"]')]
+                .filter(element => !element.disabled && element.getAttribute('aria-hidden') !== 'true');
+            const buttons = [...document.querySelectorAll('button')]
+                .filter(button => !button.disabled && button.getAttribute('aria-hidden') !== 'true');
+            return switches.length === 1 && buttons.length === 1;
+        }""")
+        if not clicked and (
+            before_first_structure
+            or 'before your first' in page_lower
+            or 'setting to review' in page_lower
+        ):
             print("  [onboarding] 'before your first chat' page")
             # 打印 toggle 状态
             try:
                 toggle_info = await page.evaluate("""
                     () => {
-                        const toggles = document.querySelectorAll('[role="switch"], button[role="switch"]');
-                        return Array.from(toggles).filter(t => t.offsetParent !== null).map(t => ({
+                        const toggles = document.querySelectorAll('[role="switch"]');
+                        return Array.from(toggles).map(t => ({
                             text: (t.closest('label') || t.parentElement)?.textContent?.trim()?.substring(0, 80) || '',
                             checked: t.getAttribute('aria-checked'),
                             state: t.getAttribute('data-state'),
@@ -4821,11 +4996,15 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
                 toggled = await page.evaluate("""
                     () => {
                         let count = 0;
-                        const toggles = document.querySelectorAll('[role="switch"], button[role="switch"]');
+                        const toggles = document.querySelectorAll('[role="switch"]');
                         for (const t of toggles) {
-                            if (t.offsetParent === null) continue;
-                            t.click();
-                            count++;
+                            const checked = t.checked === true
+                                || t.getAttribute('aria-checked') === 'true'
+                                || t.getAttribute('data-state') === 'checked';
+                            if (checked) {
+                                t.click();
+                                count++;
+                            }
                         }
                         return count;
                     }
@@ -4854,55 +5033,86 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
             except Exception:
                 pass
             # 点 Continue / Start 按钮（重试两轮）
-            for _attempt in range(3):
-                for label in ['Continue', 'Start', 'Next', 'Got it', 'OK']:
-                    btn = page.locator(f'button:has-text("{label}")').first
-                    if await btn.count() > 0:
-                        try:
-                            await btn.click(timeout=5000)
-                            print(f"  [onboarding] clicked: {label}")
-                            clicked = True
-                            break
-                        except Exception as e:
-                            print(f"  [onboarding] click {label} failed: {e}")
-                if clicked:
-                    break
-                print(f"  [onboarding] Continue not found, retrying ({_attempt+1}/3)...")
-                await asyncio.sleep(2)
+            if before_first_structure:
+                try:
+                    clicked = await page.evaluate("""() => {
+                        const buttons = [...document.querySelectorAll('button')]
+                            .filter(button => !button.disabled && button.getAttribute('aria-hidden') !== 'true');
+                        if (buttons.length !== 1) return false;
+                        buttons[0].click();
+                        return true;
+                    }""")
+                    if clicked:
+                        print("  [onboarding] clicked before-first-chat action")
+                except Exception:
+                    pass
+            if not clicked:
+                for _attempt in range(3):
+                    for label in ['Continue', 'Start', 'Next', 'Got it', 'OK']:
+                        btn = page.locator(f'button:has-text("{label}")').first
+                        if await btn.count() > 0:
+                            try:
+                                await btn.click(timeout=5000)
+                                print(f"  [onboarding] clicked: {label}")
+                                clicked = True
+                                break
+                            except Exception as e:
+                                print(f"  [onboarding] click {label} failed: {e}")
+                    if clicked:
+                        break
+                    print(f"  [onboarding] Continue not found, retrying ({_attempt+1}/3)...")
+                    await asyncio.sleep(2)
             if not clicked:
                 print(f"  [onboarding] WARNING: could not click Continue on 'before first chat' page!")
                 try:
                     await page.screenshot(path="screenshots/before_first_chat_stuck.png")
                 except Exception:
                     pass
-            # 点完 toggle + Continue 后直接返回，让主流程验证 sessionKey
-            # 200 保存，403 丢弃（跳登录页=封号）
-            print("  [onboarding] improve disabled, returning to validate sessionKey...")
+            # Continue to the next required onboarding page.
+            print("  [onboarding] preference saved; continuing required onboarding...")
             await asyncio.sleep(2)
-            return True
+            if clicked:
+                continue
 
-        # "Cowork lives in the desktop app" / 下载桌面端页面
-        # 先保存 cookies（因为 Skip 后可能丢 session），再点 Skip
-        if not clicked and any(kw in page_lower for kw in ['desktop app', 'cowork', 'download the app', 'download for']):
-            print("  [onboarding] desktop app download page, saving cookies first...")
-            try:
-                context = page.context
-                cookies = await context.cookies()
-                sk = next((c["value"] for c in cookies if c["name"] == "sessionKey"), None)
-                if sk:
-                    import json as _json
-                    os.makedirs(COOKIE_OUTPUT_DIR, exist_ok=True)
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    with open(os.path.join(COOKIE_OUTPUT_DIR, f"pre_skip_{ts}.json"), "w", encoding="utf-8") as _f:
-                        _json.dump(cookies, _f, indent=2, ensure_ascii=False)
-                    with open(os.path.join(COOKIE_OUTPUT_DIR, f"sk_pre_skip_{ts}.txt"), "w", encoding="utf-8") as _f:
-                        _f.write(sk)
-                    print(f"  [onboarding] pre-saved sessionKey: {sk[:60]}...")
-            except Exception as e:
-                print(f"  [onboarding] pre-save error: {e}")
+        # "Cowork lives in the desktop app" / desktop app recommendation page
+        desktop_structure = await page.evaluate("""() => {
+            const buttons = [...document.querySelectorAll('button')]
+                .filter(button => !button.disabled && button.getAttribute('aria-hidden') !== 'true');
+            const fields = [...document.querySelectorAll('input, textarea, select')]
+                .filter(field => field.type !== 'hidden' && !field.disabled);
+            return {
+                matches: buttons.length === 2 && fields.length === 0,
+                buttonCount: buttons.length,
+                fieldCount: fields.length,
+            };
+        }""")
+        is_desktop_app_page = (
+            desktop_structure.get('matches')
+            or
+            'cowork lives in the desktop app' in page_lower
+            or 'download the app' in page_lower
+            or 'download for windows' in page_lower
+            or 'download for mac' in page_lower
+            or 'デスクトップでclaudeを最大限に活用' in page_lower
+        )
+        if not clicked and is_desktop_app_page:
+            print("  [onboarding] desktop app download page, continuing required flow...")
+            if desktop_structure.get('matches'):
+                try:
+                    clicked = await page.evaluate("""() => {
+                        const buttons = [...document.querySelectorAll('button')]
+                            .filter(button => !button.disabled && button.getAttribute('aria-hidden') !== 'true');
+                        if (buttons.length !== 2) return false;
+                        buttons[1].click();
+                        return true;
+                    }""")
+                    if clicked:
+                        print("  [onboarding] clicked secondary desktop-app action")
+                except Exception:
+                    pass
             # 点 Skip
-            for label in ['Skip', 'Not now', 'Maybe later']:
-                btn = page.locator(f'button:has-text("{label}"), a:has-text("{label}")').first
+            for label in ['Skip', 'Not now', 'Maybe later', 'スキップ', '跳过', '略過']:
+                btn = page.get_by_text(label, exact=True).first
                 if await btn.count() > 0:
                     try:
                         await btn.click(timeout=3000)
@@ -4917,7 +5127,11 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
         # "Don't improve" / "No thanks" / privacy opt-out
         # 跳过 toggle 操作（会触发设置更新请求，可能影响 session）
         # 只点按钮
-        is_terms_page = "let's create your account" in page_lower or ('consumer terms' in page_lower and 'acceptable use' in page_lower)
+        is_terms_page = (
+            terms_control_present
+            or "let's create your account" in page_lower
+            or ('consumer terms' in page_lower and 'acceptable use' in page_lower)
+        )
         is_first_chat_page = 'before your first' in page_lower or 'setting to review' in page_lower
         if not is_terms_page and not is_first_chat_page and (not clicked or 'improve' in page_lower or 'help us' in page_lower):
             for label in [
@@ -5117,7 +5331,7 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
                                 break
                             except Exception:
                                 pass
-                return True
+                continue
             continue
 
         # Industry/role selection page — 这页是「Select your role」下拉框 + 「Set up later」链接，
@@ -5202,13 +5416,19 @@ async def handle_onboarding(page, first_name, last_name, max_rounds=10):
             print(f"  [onboarding] nothing to click on this page")
             screenshot_path = f"screenshots/stuck_{round_i}.png"
             os.makedirs("screenshots", exist_ok=True)
-            await page.screenshot(path=screenshot_path)
-            print(f"  [onboarding] screenshot saved: {screenshot_path}")
+            try:
+                await page.screenshot(path=screenshot_path)
+                print(f"  [onboarding] screenshot saved: {screenshot_path}")
+            except Exception as error:
+                print(f"  [onboarding] screenshot skipped: {str(error)[:100]}")
             # try one more wait
             await asyncio.sleep(2)
             if any(k in page.url for k in ['/chat', '/new']):
-                print("  [onboarding] reached chat page, done!")
-                return True
+                account_state = await _claude_account_onboarding_state(page)
+                _log_claude_account_onboarding_state(account_state)
+                if _claude_account_onboarding_is_complete(account_state):
+                    print("  [onboarding] reached chat with completed account, done!")
+                    return True
 
     print("  [onboarding] max rounds reached")
     return False
@@ -5416,6 +5636,12 @@ async def register(
             browser = await p.chromium.connect_over_cdp(ws_url)
             context = browser.contexts[0]
             await install_traffic_saver(context)
+            try:
+                await context.set_extra_http_headers({
+                    "Accept-Language": "en-US,en;q=0.9"
+                })
+            except Exception as error:
+                print(f"  set Accept-Language failed: {str(error)[:100]}")
             startup_pages = list(context.pages)
             page = await asyncio.wait_for(context.new_page(), timeout=20)
             for startup_page in startup_pages:
@@ -6047,11 +6273,27 @@ async def register(
 
                 from urllib.parse import urlparse as _urlparse
                 url_path = _urlparse(page.url).path
-                if '/chat' in url_path or '/new' in url_path:
+                account_state = await _claude_account_onboarding_state(page)
+                _log_claude_account_onboarding_state(account_state)
+                if (
+                    onboard_result is True
+                    and _claude_account_onboarding_is_complete(account_state)
+                    and ('/chat' in url_path or '/new' in url_path)
+                ):
                     break  # 成功进入聊天页
-                # 可能还在 onboarding 但 cookie 已有效，也算成功
+                # Claude can persist completion before the final route redirect.
                 if onboard_result is True and '/onboarding' in url_path:
-                    break
+                    if _claude_account_onboarding_is_complete(account_state):
+                        await page.goto(
+                            "https://claude.ai/new",
+                            timeout=60000,
+                            wait_until="domcontentloaded",
+                        )
+                        await asyncio.sleep(3)
+                        if '/new' in _urlparse(page.url).path or '/chat' in _urlparse(page.url).path:
+                            break
+                    else:
+                        print("  [onboarding] completion flags are not yet persisted")
 
                 if onboard_result == "session_lost" or '/login' in url_path:
                     if onboard_try >= MAX_ONBOARDING_RETRIES:
@@ -6118,11 +6360,16 @@ async def register(
                 else:
                     break  # 其他失败，不重试
 
-            # 最终检查
+            # Final server-side completion check.
+            account_state = await _claude_account_onboarding_state(page)
+            _log_claude_account_onboarding_state(account_state)
+            if not _claude_account_onboarding_is_complete(account_state):
+                print("  ERROR: Claude account API reports incomplete onboarding")
+                mark_email_error(email, email_password, "onboarding_incomplete")
+                return None
+
             url_path = _urlparse(page.url).path
             if not ('/chat' in url_path or '/new' in url_path):
-                # A sessionKey is issued before onboarding finishes. Treating that
-                # cookie alone as success leaves an unusable account stuck on DOB.
                 print("  ERROR: onboarding did not reach a chat route; not saving cookies")
                 mark_email_error(email, email_password, "onboarding_stuck")
                 return None

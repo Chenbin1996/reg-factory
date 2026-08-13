@@ -10,7 +10,8 @@
 - 任务日志输出计划并发、有效并发、代理隔离和节流统计，便于按流量成本调整并发窗口。
 
 **注册与接码**
-- Claude BitBrowser + Outlook 流程支持原生魔法链接验证、hCaptcha 时序恢复、`/new` 应用启动和 sessionKey 独立验证。
+- Claude BitBrowser + Outlook 流程支持原生魔法链接验证、hCaptcha 时序恢复和认证后白屏自动重载；onboarding 按控件结构兼容不同语言。
+- Claude 只有在必选条款、姓名和服务器 `finished` 状态全部落库并进入聊天路由后才保存 sessionKey，不再把提前出现的 `/new` 当作注册完成。
 - 自定义短信号码池支持 `手机号----短信记录 URL` 批量导入、文件锁、租用回收、过期租约恢复、验证码轮询和 WebUI 管理。
 - Codex OAuth、ChatGPT Plus 批量导入和 WebUI 接码平台均支持 `custom` 自定义号码池。
 - 增强 Outlook Graph 邮箱预检、健康邮箱替换和失败状态记录，减少无效住宅请求。

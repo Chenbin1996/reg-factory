@@ -11,6 +11,67 @@ from common import proxy_switch
 
 
 class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
+    def test_claude_account_requires_terms_name_and_finished_onboarding(self):
+        incomplete = {
+            "status": 200,
+            "full_name": "",
+            "display_name": "",
+            "accepted_clickwrap_versions": {},
+            "has_started": True,
+            "has_finished": False,
+        }
+        self.assertFalse(register._claude_account_onboarding_is_complete(incomplete))
+
+        complete = {
+            "status": 200,
+            "full_name": "Ada Lovelace",
+            "accepted_clickwrap_versions": {"consumer_terms": "2026-01-01"},
+            "has_finished": True,
+        }
+        self.assertTrue(register._claude_account_onboarding_is_complete(complete))
+
+    def test_claude_account_rejects_chat_route_session_without_terms(self):
+        state = {
+            "status": 200,
+            "full_name": "Ada Lovelace",
+            "accepted_clickwrap_versions": {},
+            "has_finished": True,
+        }
+        self.assertFalse(register._claude_account_onboarding_is_complete(state))
+
+    async def test_incomplete_account_on_new_route_reopens_onboarding(self):
+        page = MagicMock()
+        page.url = "https://claude.ai/new"
+        page.context = MagicMock()
+        page.goto = AsyncMock()
+        page.evaluate = AsyncMock(return_value={
+            "status": 200,
+            "full_name": "",
+            "accepted_clickwrap_versions": {},
+            "has_finished": False,
+        })
+
+        with (
+            patch.object(register, "dismiss_claude_cookie_banner", AsyncMock()),
+            patch.object(register, "_claude_app_shell_state", AsyncMock(return_value={
+                "textLength": 10,
+                "htmlLength": 100,
+                "elements": 10,
+                "interactive": 1,
+            })),
+            patch.object(register.asyncio, "sleep", AsyncMock()),
+        ):
+            result = await register.handle_onboarding(
+                page, "Ada", "Lovelace", max_rounds=1
+            )
+
+        self.assertFalse(result)
+        page.goto.assert_awaited_once_with(
+            "https://claude.ai/",
+            timeout=60000,
+            wait_until="domcontentloaded",
+        )
+
     def test_blank_claude_app_shell_requires_no_content_or_controls(self):
         self.assertTrue(register._claude_app_shell_is_blank({
             "textLength": 0,
@@ -18,11 +79,24 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
             "elements": 1,
             "interactive": 0,
         }))
+        self.assertTrue(register._claude_app_shell_is_blank({
+            "textLength": 0,
+            "htmlLength": 12000,
+            "elements": 80,
+            "interactive": 0,
+        }))
         self.assertFalse(register._claude_app_shell_is_blank({
             "textLength": 0,
             "htmlLength": 500,
             "elements": 20,
             "interactive": 1,
+        }))
+        self.assertTrue(register._claude_app_shell_is_blank({
+            "textLength": 0,
+            "htmlLength": 500,
+            "elements": 20,
+            "interactive": 6,
+            "visibleInteractive": 0,
         }))
         self.assertFalse(register._claude_app_shell_is_blank({
             "textLength": 12,
@@ -755,7 +829,7 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(prepared)
         present.assert_not_awaited()
         page.goto.assert_awaited_once_with(
-            "https://claude.ai/new", timeout=60000, wait_until="domcontentloaded"
+            "https://claude.ai/", timeout=60000, wait_until="domcontentloaded"
         )
 
     async def test_native_200_after_slow_captcha_beats_deadline(self):
@@ -1503,7 +1577,7 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
             "sessionKey", "activitySessionId"
         })
         page.goto.assert_awaited_once_with(
-            "https://claude.ai/new", timeout=60000, wait_until="domcontentloaded"
+            "https://claude.ai/", timeout=60000, wait_until="domcontentloaded"
         )
 
     def test_node_picker_excludes_failed_nodes(self):
@@ -2045,7 +2119,7 @@ class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
         script = page.evaluate.call_args.args[0]
         self.assertIn("fetch(endpoint", script)
         page.goto.assert_awaited_once_with(
-            "https://claude.ai/new", timeout=60000, wait_until="domcontentloaded"
+            "https://claude.ai/", timeout=60000, wait_until="domcontentloaded"
         )
 
     async def test_magic_link_verification_replays_captured_request_shape(self):
