@@ -109,6 +109,10 @@ def _outlook_sale_exclusion_path() -> Path:
     return _data_root() / "runtime" / "state" / "outlook_sale_emails.txt"
 
 
+def _outlook_registration_exclusion_path() -> Path:
+    return _data_root() / "runtime" / "state" / "outlook_registration_emails.txt"
+
+
 def _exclude_outlook_sale_from_registration(email: str) -> None:
     normalized = str(email or "").strip().lower()
     if "@" not in normalized:
@@ -334,11 +338,17 @@ def registered_mailbox_usage() -> dict[str, tuple[str, ...]]:
     usage: dict[str, set[str]] = {}
 
     def record(email: str, platform: str) -> None:
-        normalized = str(email or "").strip().lower()
+        normalized = str(email or "").lstrip("\ufeff").strip().lower()
         if "@" in normalized:
             usage.setdefault(normalized, set()).add(platform)
 
     root = _data_root()
+    registration_path = _outlook_registration_exclusion_path()
+    if registration_path.is_file():
+        for raw in registration_path.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines():
+            record(raw.strip(), "registration")
     for pattern, prefix in (
         ("emails_used_*.txt", "emails_used_"),
         ("emails_error_*.txt", "emails_error_"),
@@ -468,14 +478,13 @@ def get_email(
         ]
     if provider_filter:
         records = [record for record in records if record.get("email_provider") == provider_filter]
-    if pristine_only:
-        registered = registered_mailbox_usage()
-        records = [
-            record for record in records
-            if str(record.get("email") or "").strip().lower() not in registered
-        ]
-        if not records:
-            raise AssetNotFound("没有未被其他平台注册或尝试使用的邮箱")
+    registered = registered_mailbox_usage()
+    records = [
+        record for record in records
+        if str(record.get("email") or "").strip().lower() not in registered
+    ]
+    if not records and registered:
+        raise AssetNotFound("没有可单独售卖的邮箱；号池邮箱已被平台注册或尝试使用")
     if no_graph_only and verified_only:
         raise AssetError("no_graph_only 不能与 normal_only 同时使用")
     if verified_only:

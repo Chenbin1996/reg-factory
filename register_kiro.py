@@ -11,6 +11,7 @@ import random
 import secrets
 import string
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
@@ -36,6 +37,9 @@ DIRECTORY_ID = "d-9067642ac7"
 START_URL = f"{VIEW_BASE}/start"
 SCOPES = ["codewhisperer:completions", "codewhisperer:analysis", "codewhisperer:conversations",
           "codewhisperer:transformations", "codewhisperer:taskassist"]
+
+_APP_CONFIG_LOCK = threading.Lock()
+_APP_CONFIG_CACHE = None
 
 
 class KiroError(RuntimeError):
@@ -153,9 +157,24 @@ class KiroClient:
         print(f"  [kiro] device code ready: {self.user_code}")
 
     def fetch_app_config(self):
+        global _APP_CONFIG_CACHE
+
         try:
-            response = self.get(f"{SIGNIN_BASE}/assets/js/app.js", headers={"Accept": "*/*", "Referer": f"{SIGNIN_BASE}/"})
-            self.fp.update_app_js(response.text)
+            # app.js is large and identical for every account in one batch.
+            with _APP_CONFIG_LOCK:
+                if _APP_CONFIG_CACHE is None:
+                    response = self.get(
+                        f"{SIGNIN_BASE}/assets/js/app.js",
+                        headers={"Accept": "*/*", "Referer": f"{SIGNIN_BASE}/"},
+                    )
+                    self.fp.update_app_js(response.text)
+                    _APP_CONFIG_CACHE = (
+                        self.fp.key,
+                        self.fp.identifier,
+                        self.fp.version,
+                    )
+                else:
+                    self.fp.key, self.fp.identifier, self.fp.version = _APP_CONFIG_CACHE
         except Exception:
             pass
 

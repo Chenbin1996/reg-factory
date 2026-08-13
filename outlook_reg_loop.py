@@ -918,11 +918,9 @@ async def one_attempt(
 
 def _playwright_shutdown_exception_handler(loop, context):
     """Ignore only detached Playwright futures after a timed-out profile closes."""
-    error = context.get("exception")
-    message = str(error or context.get("message") or "")
-    if type(error).__name__ == "TargetClosedError" or (
-        "Target page, context or browser has been closed" in message
-    ):
+    from common.playwright_runtime import is_expected_shutdown_error
+
+    if is_expected_shutdown_error(context):
         return
     loop.default_exception_handler(context)
 

@@ -1,5 +1,26 @@
 ﻿# 更新日志
 
+## 2026-08-14 - 2.0.0
+
+**低成本并发与极致省流**
+- 默认支持端到端多邮箱并发，按并发槽隔离浏览器 Profile、Cookie、Session、指纹和住宅代理出口；代理池不足时自动降低有效并发，避免无提示地共享出口。
+- `REG_FACTORY_MAX_CONCURRENCY` 和各任务并发参数统一生效，WebUI 直接配置最大并发、共享出口策略和任务并行方式。
+- 新增住宅代理 `extreme` 极限节流：抑制 BitBrowser 后台联网，拦截图片、字体、媒体、清单、预取、源码映射和可选遥测，同时保留认证页、脚本、验证资源和必要样式。
+- 认证成功后自动暂时放行 Claude 等应用的关键启动请求，恢复白屏、挑战页和 SPA 导航，降低重试造成的重复流量。
+- 任务日志输出计划并发、有效并发、代理隔离和节流统计，便于按流量成本调整并发窗口。
+
+**注册与接码**
+- Claude BitBrowser + Outlook 流程支持原生魔法链接验证、hCaptcha 时序恢复、`/new` 应用启动和 sessionKey 独立验证。
+- 自定义短信号码池支持 `手机号----短信记录 URL` 批量导入、文件锁、租用回收、过期租约恢复、验证码轮询和 WebUI 管理。
+- Codex OAuth、ChatGPT Plus 批量导入和 WebUI 接码平台均支持 `custom` 自定义号码池。
+- 增强 Outlook Graph 邮箱预检、健康邮箱替换和失败状态记录，减少无效住宅请求。
+
+**验证**
+- Python 单元测试覆盖并发计划、流量节省、Claude challenge、邮箱池、短信池和 WebUI schema。
+- 完成 BitBrowser + Outlook 的 Claude 真实注册验证，成功进入 `/new` 并保存 sessionKey/Cookie。
+
+---
+
 ## 2026-08-13 - 1.3.3
 
 **浏览器与 Outlook 注册稳定性**

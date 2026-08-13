@@ -58,6 +58,18 @@ class KiroCryptoTests(unittest.TestCase):
 
 
 class KiroIntegrationTests(unittest.TestCase):
+    def test_app_config_is_downloaded_once_per_batch(self):
+        first = register_kiro.KiroClient()
+        second = register_kiro.KiroClient()
+        response = type("Response", (), {"text": ""})()
+        with patch.object(register_kiro, "_APP_CONFIG_CACHE", None):
+            with patch.object(first, "get", return_value=response) as first_get:
+                first.fetch_app_config()
+            with patch.object(second, "get", return_value=response) as second_get:
+                second.fetch_app_config()
+        first_get.assert_called_once()
+        second_get.assert_not_called()
+
     def test_orchestrator_builds_kiro_command(self):
         args = argparse.Namespace(timeout=600, node="auto", kiro_account_password="")
         command = register_three_platforms.build_command("kiro", args, ("user@example.com", "mail-pass", "rt", "cid"))

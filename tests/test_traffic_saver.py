@@ -107,6 +107,21 @@ class TrafficSaverTests(unittest.TestCase):
         self.assertFalse(traffic_saver.should_block(
             "https://login.microsoftonline.com/common/oauth.css", "stylesheet", "extreme"
         ))
+        self.assertFalse(traffic_saver.should_block(
+            "https://claude.ai/_next/static/app.css", "stylesheet", "extreme"
+        ))
+        self.assertFalse(traffic_saver.should_block(
+            "https://auth.openai.com/assets/login.css", "stylesheet", "extreme"
+        ))
+        self.assertFalse(traffic_saver.should_block(
+            "https://accounts.x.ai/_next/static/signup.css", "stylesheet", "extreme"
+        ))
+        self.assertFalse(traffic_saver.should_block(
+            "https://github.githubassets.com/assets/signup.css", "stylesheet", "extreme"
+        ))
+        self.assertTrue(traffic_saver.should_block(
+            "https://claude.ai/_next/static/hero.webp", "image", "extreme"
+        ))
 
     def test_extreme_bitbrowser_settings_only_apply_to_residential_mode(self):
         residential = {
@@ -144,6 +159,12 @@ class TrafficSaverTests(unittest.TestCase):
         asyncio.run(context.handler(script))
         self.assertEqual(image.action, "abort")
         self.assertEqual(script.action, "continue")
+        self.assertEqual(traffic_saver.stats(context), {"image": 1})
+
+        self.assertTrue(traffic_saver.set_bypass(context))
+        bypassed_image = _Route("https://cdn.example/second.jpg", "image")
+        asyncio.run(context.handler(bypassed_image))
+        self.assertEqual(bypassed_image.action, "continue")
         self.assertEqual(traffic_saver.stats(context), {"image": 1})
 
 

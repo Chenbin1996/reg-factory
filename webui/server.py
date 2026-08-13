@@ -970,11 +970,11 @@ def _test_outlook_recovery_mailbox():
     if not record:
         return False, "请先填写 OUTLOOK_GRAPH_RECOVERY_OUTLOOK_MAILBOX"
     try:
-        from common.mailbox import check_refresh_token, parse_outlook_recovery_mailbox
+        from common.mailbox import check_mailbox_access, parse_outlook_recovery_mailbox
 
         mailbox = parse_outlook_recovery_mailbox(record)
-        validation = check_refresh_token(
-            mailbox["refresh_token"], mailbox["client_id"]
+        validation = check_mailbox_access(
+            mailbox["email"], mailbox["refresh_token"], mailbox["client_id"]
         )
         if not validation.get("ok"):
             return False, "Graph API 验证失败: " + str(
@@ -1305,8 +1305,23 @@ async def api_chatgpt_plus_import_codex(request: Request):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     sms_provider = str((data or {}).get("sms_provider") or "auto").strip().lower()
-    if sms_provider not in {"auto", "smsman", "firefox", "hero"}:
+    if sms_provider not in {"auto", "custom", "smsman", "firefox", "hero"}:
         return JSONResponse({"error": "未知手机号接码平台"}, status_code=400)
+    if sms_provider == "custom":
+        from common import custom_sms
+
+        custom_pool = await asyncio.to_thread(custom_sms.summary)
+        required = min(concurrency, len(records))
+        if custom_pool["available"] < required:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"自定义号码池可用 {custom_pool['available']} 个，"
+                        f"当前并发启动至少需要 {required} 个"
+                    )
+                },
+                status_code=400,
+            )
     node = str((data or {}).get("node") or "auto").strip()[:120] or "auto"
     group = str(
         (data or {}).get("group")
@@ -1636,6 +1651,28 @@ def api_sms_rents():
                     "codes": rec["codes"], "elapsed": int(elapsed),
                     "remain": max(0, int(SMS_RENT_TTL - elapsed))})
     return {"rents": out, "ttl": SMS_RENT_TTL}
+
+
+@app.get("/api/sms/custom")
+async def api_custom_sms_get():
+    from common import custom_sms
+
+    return await asyncio.to_thread(custom_sms.summary)
+
+
+@app.post("/api/sms/custom")
+async def api_custom_sms_import(request: Request):
+    data = await request.json()
+    text = str((data or {}).get("text") or "")
+    if not text.strip():
+        return JSONResponse({"error": "请粘贴至少一个号码和记录 URL"}, status_code=400)
+    if len(text) > 1_000_000:
+        return JSONResponse({"error": "自定义号码批量内容不能超过 1 MB"}, status_code=413)
+    if len([line for line in text.splitlines() if line.strip()]) > 1000:
+        return JSONResponse({"error": "单批最多导入 1000 个号码"}, status_code=400)
+    from common import custom_sms
+
+    return await asyncio.to_thread(custom_sms.import_text, text)
 
 
 @app.get("/", response_class=HTMLResponse)

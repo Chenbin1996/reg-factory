@@ -87,6 +87,18 @@ class RegistrationSchemaTests(unittest.TestCase):
             self.assertIs(args[flag]["choices"], CHATGPT_COUNTRY_CHOICES)
             self.assertTrue(args[flag]["countryNames"])
 
+    def test_end_to_end_exposes_concurrent_parallel_pipeline(self):
+        args = {item["flag"]: item for item in _script("run_full_flow")["args"]}
+        self.assertEqual(args["--concurrency"]["default"], 1)
+        self.assertFalse(args["--sequential-platforms"]["default"])
+        self.assertIn("github", args["--platforms"]["choices"])
+        consumer_args = {
+            item["flag"]: item
+            for item in _script("register_three_platforms")["args"]
+        }
+        self.assertIn("--max-inflight", consumer_args)
+        self.assertIn("github", consumer_args["--platforms"]["choices"])
+
     def test_chatgpt_promotes_direct_sub2api_import(self):
         script = _script("register_chatgpt")
         primary_flags = [item["flag"] for item in script["args"][:6]]
@@ -96,6 +108,10 @@ class RegistrationSchemaTests(unittest.TestCase):
         self.assertIn("--codex", primary_flags)
         self.assertIn("SUB2API", args["--codex"]["help"])
         self.assertIn("--codex-group", args)
+        self.assertIn("custom", args["--codex-sms-provider"]["choices"])
+
+        oauth_args = {item["flag"]: item for item in _script("oauth_codex")["args"]}
+        self.assertIn("custom", oauth_args["--sms-provider"]["choices"])
 
     def test_bitbrowser_is_the_default_browser(self):
         browser_group = next(

@@ -802,7 +802,62 @@ function setPlusRunControls(running){
   $$('#view-plus input, #view-plus select').forEach(element=>{
     if(element.id !== 'plus-keep-on-fail') element.disabled = running;
   });
+  $('#custom-sms-input').disabled = running;
+  $('#btn-custom-sms-import').disabled = running;
 }
+
+function renderCustomSmsSummary(pool){
+  $('#custom-sms-summary').textContent = `可用 ${pool.available || 0} / 占用 ${pool.leased || 0} / 已用 ${pool.used || 0}`;
+}
+
+async function loadCustomSmsPool(){
+  try{
+    const response = await fetch('/api/sms/custom');
+    const pool = await readJsonResponse(response);
+    if(!response.ok) throw new Error(pool.error || `HTTP ${response.status}`);
+    renderCustomSmsSummary(pool);
+    return pool;
+  }catch(error){
+    $('#custom-sms-summary').textContent = '读取失败';
+    return null;
+  }
+}
+
+async function importCustomSmsPool(){
+  const text = $('#custom-sms-input').value.trim();
+  const message = $('#custom-sms-message');
+  message.className = '';
+  if(!text){
+    message.textContent = '请先粘贴号码与记录 URL';
+    message.className = 'bad';
+    return;
+  }
+  const button = $('#btn-custom-sms-import');
+  button.disabled = true;
+  try{
+    const response = await fetch('/api/sms/custom', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text}),
+    });
+    const result = await readJsonResponse(response);
+    if(!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    renderCustomSmsSummary(result);
+    message.textContent = `新增 ${result.added}，更新 ${result.updated}，跳过 ${result.skipped}，格式错误 ${result.bad}`;
+    message.className = result.bad ? 'bad' : '';
+    if(result.added || result.updated) $('#custom-sms-input').value = '';
+  }catch(error){
+    message.textContent = error.message || String(error);
+    message.className = 'bad';
+  }finally{
+    button.disabled = !!plusRun;
+  }
+}
+
+$('#btn-custom-sms-import').onclick = importCustomSmsPool;
+$('#custom-sms-import').addEventListener('toggle', event=>{
+  if(event.currentTarget.open) loadCustomSmsPool();
+});
 
 function monitorPlusRun(runId, accepted){
   if(plusEventSource) plusEventSource.close();
@@ -831,6 +886,7 @@ function monitorPlusRun(runId, accepted){
     plusRun = null;
     setPlusRunControls(false);
     loadPlusImportStatus();
+    loadCustomSmsPool();
   });
   plusEventSource.onerror = ()=>{
     if(plusRun) setPlusImportState('日志连接中断，正在等待任务状态', 'bad');
@@ -1747,3 +1803,4 @@ scriptsReady.then(()=>{
   if(!guideStorageCompleted()) setTimeout(()=>startGuide(0), 500);
 }).catch(()=>{});
 pollStatus();
+loadCustomSmsPool();

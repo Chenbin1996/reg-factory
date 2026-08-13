@@ -6,6 +6,7 @@ from collections import Counter
 import os
 from urllib.parse import urlparse
 
+from common.playwright_runtime import install_shutdown_guard
 from common.task_context import task_environment
 
 
@@ -18,14 +19,26 @@ _EXTREME_TYPES = _AGGRESSIVE_TYPES | {"manifest", "texttrack"}
 # visible. Keep styles there even in aggressive mode while still blocking the
 # heavier image/font/media classes.
 _STYLE_REQUIRED_DOMAINS = {
+    # Authentication pages need their layout CSS even in extreme mode. Without
+    # it BitBrowser can expose a zero-sized viewport and challenge iframes stay
+    # in a loading shell.
+    "anthropic.com",
     "cdn.office.net",
+    "claude.com",
+    "claude.ai",
     "live.com",
     "microsoft.com",
     "microsoftonline.com",
     "microsoftonline-p.com",
     "msauth.net",
     "msftauth.net",
+    "oaistatic.com",
+    "openai.com",
     "office.com",
+    "x.ai",
+    "auth.x.ai",
+    "github.com",
+    "githubassets.com",
 }
 
 # Challenge assets are intentionally exempt, including image challenges.
@@ -92,6 +105,7 @@ _EXTREME_BITBROWSER_ARGS = (
     "--disable-sync",
     "--no-default-browser-check",
     "--no-first-run",
+    "--window-size=1280,800",
     "--disable-features=AutofillServerCommunication,MediaRouter,OptimizationHints",
 )
 
@@ -125,10 +139,10 @@ def should_block(url: str, resource_type: str, mode: str, headers=None) -> bool:
     if _domain_matches(host, _ALLOW_DOMAINS):
         return False
     normalized_type = str(resource_type or "").lower()
-    microsoft_auth = _domain_matches(host, _STYLE_REQUIRED_DOMAINS)
-    if normalized_mode == "extreme" and not microsoft_auth:
+    style_required_auth = _domain_matches(host, _STYLE_REQUIRED_DOMAINS)
+    if normalized_mode == "extreme" and not style_required_auth:
         blocked_types = _EXTREME_TYPES
-    elif normalized_mode == "aggressive" and not microsoft_auth:
+    elif normalized_mode == "aggressive" and not style_required_auth:
         blocked_types = _AGGRESSIVE_TYPES
     else:
         blocked_types = _BALANCED_TYPES
@@ -170,6 +184,9 @@ def bitbrowser_open_payload(profile_id, environ=None) -> dict:
 
 async def install(context, environ=None) -> str:
     """Install one context-wide filter and return the active mode."""
+    # BitBrowser closes Chromium through its local API. Playwright can finish
+    # a detached protocol future one event-loop tick later.
+    install_shutdown_guard()
     mode = configured_mode(environ)
     if mode == "off" or getattr(context, "_reg_factory_traffic_saver", False):
         return mode
@@ -182,6 +199,9 @@ async def install(context, environ=None) -> str:
     async def _handle(route):
         request = route.request
         try:
+            if getattr(context, "_reg_factory_traffic_bypass", False):
+                await route.continue_()
+                return
             if should_block(
                 request.url,
                 request.resource_type,
@@ -215,6 +235,14 @@ async def install(context, environ=None) -> str:
         return "off"
     print(f"  [traffic] residential browser saver={mode}")
     return mode
+
+
+def set_bypass(context, enabled=True) -> bool:
+    """Temporarily let every request through without replacing the route."""
+    if not getattr(context, "_reg_factory_traffic_saver", False):
+        return False
+    setattr(context, "_reg_factory_traffic_bypass", bool(enabled))
+    return True
 
 
 def stats(context) -> dict[str, int]:

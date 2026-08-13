@@ -34,7 +34,10 @@ except Exception:
     direct_proxy = None
     proxy_switch = None
 from common import human_mouse as _hm
-from common.traffic_saver import install as install_traffic_saver
+from common.traffic_saver import (
+    install as install_traffic_saver,
+    set_bypass as set_traffic_saver_bypass,
+)
 try:
     from check_outlook_status import check_account_api
 except Exception:
@@ -157,6 +160,14 @@ CLAUDE_HTTP_BLOCK_MARKERS = (
     "正在验证",
     "验证您是否是真人",
     "人間であることを確認",
+)
+CLAUDE_NEW_USER_UNAVAILABLE_MARKERS = (
+    "claude is currently unavailable to new users",
+    "currently unavailable to new users",
+    "we are working to expand access",
+    "申し訳ありませんが、現在claudeは新規ユーザーにはご利用いただけません",
+    "現在claudeは新規ユーザーにはご利用いただけません",
+    "近日中にサービスを拡大できるよう努めています",
 )
 
 HCAPTCHA_HOOK_JS = r"""
@@ -343,6 +354,44 @@ class ClaudeEgressRejected(ClaudeChallengeError):
     """The residential egress failed before Claude accepted the email."""
 
 
+def _claude_challenge_requires_fresh_profile(error):
+    """Return whether a Claude challenge is worth retrying on fresh egress."""
+    message = str(error or "").strip().lower()
+    return any(marker in message for marker in (
+        "cloudflare",
+        "managed challenge",
+        "native magic-link verification rejected http 403",
+        "magic-link page stayed in loading state",
+        "magic-link navigation did not commit",
+        "hcaptcha was not solved",
+        "magic-link flow did not create an authenticated session",
+        "email form could not be submitted after verification",
+        "verification blocked magic-link resend",
+        "verification blocked re-login",
+    ))
+
+
+class ClaudeNewUserUnavailable(RuntimeError):
+    """Claude has explicitly paused signups for the current service capacity."""
+
+
+class ClaudeMailboxDeliveryError(RuntimeError):
+    """The selected mailbox was readable but Claude mail was not delivered."""
+
+    def __init__(self, message, *, reason="claude_no_delivery"):
+        self.reason = str(reason or "claude_no_delivery")
+        super().__init__(message)
+
+
+async def _claude_new_user_unavailable(page) -> bool:
+    """Detect Claude's first-party signup-capacity page in localized variants."""
+    try:
+        text = (await page.locator("body").inner_text(timeout=2000)).lower()
+    except Exception:
+        return False
+    return any(marker in text for marker in CLAUDE_NEW_USER_UNAVAILABLE_MARKERS)
+
+
 def probe_claude_residential_continuity(
     *, samples=2, attempts=4, timeout=12, request_get=None
 ):
@@ -426,6 +475,19 @@ def _claude_hcaptcha_grid_prompt(instruction):
             "response must be exactly FROM=(x1,y1) TO=(x2,y2)."
         )
     return ""
+
+
+def _claude_hcaptcha_inferred_grid_prompt():
+    """Fallback for DOM-tile challenges whose prompt is not exposed as text."""
+    return (
+        "The image is a numbered 3x3 hCaptcha grid. The page instruction was "
+        "not exposed to accessibility APIs. Infer the target as the same "
+        "semantic object repeated across multiple tiles, then select every "
+        "tile containing that object, including partial or blurred examples. "
+        "Treat singleton objects and scenes as distractors. Return exactly one "
+        "line and no explanation: PICK=[a,b,c]."
+    )
+
 
 # web2api 验证服务地址
 WEB2API_BASE = "http://127.0.0.1:9000"
@@ -1909,20 +1971,26 @@ def get_magic_link_by_token(
     received_after=None,
 ):
     """Use the shared direct Graph client to read a fresh Claude magic link."""
-    from common.mailbox import get_link_by_token
+    from common.mailbox import GraphMailboxAccessError, get_link_by_token
 
-    return get_link_by_token(
-        email,
-        refresh_token,
-        client_id=client_id,
-        link_regex=r"https://claude\.ai/magic-link#[A-Za-z0-9_\-:=+/]+",
-        sender_contains=("anthropic", "claude", "noreply", "no-reply"),
-        subject_contains=("magic", "verify", "sign in", "login", "登录", "验证"),
-        must_contain="claude.ai/magic-link",
-        max_wait=max_wait,
-        poll=5,
-        received_after=received_after,
-    )
+    try:
+        return get_link_by_token(
+            email,
+            refresh_token,
+            client_id=client_id,
+            link_regex=r"https://claude\.ai/magic-link#[A-Za-z0-9_\-:=+/]+",
+            sender_contains=("anthropic", "claude", "noreply", "no-reply"),
+            subject_contains=("magic", "verify", "sign in", "login", "登录", "验证"),
+            must_contain="claude.ai/magic-link",
+            max_wait=max_wait,
+            poll=5,
+            received_after=received_after,
+        )
+    except GraphMailboxAccessError as exc:
+        raise ClaudeMailboxDeliveryError(
+            f"Outlook inbox/junk access failed: {exc.reason}",
+            reason=exc.reason,
+        ) from exc
 
 
 async def get_magic_link_by_temp_email(mailbox, max_wait=90, poll_interval=5):
@@ -2042,7 +2110,10 @@ async def request_claude_magic_link(page, email):
                         email_address: email,
                         utc_offset: new Date().getTimezoneOffset(),
                         login_intent: null,
-                        locale: document.documentElement.lang || navigator.language || null,
+                        // Claude accepts a constrained locale enum. Browser
+                        // error pages and regional profiles can expose values
+                        // such as zh-CN that this endpoint rejects with 400.
+                        locale: 'en-US',
                         oauth_client_id: null,
                         return_to: null,
                         source: 'claude'
@@ -2273,7 +2344,26 @@ async def get_magic_link_outlook_pw(page, email, password, max_wait=90):
         while time.time() - start < max_wait:
             for fname, furl in folders:
                 # 切到目标文件夹(首轮 inbox 已打开，跳过重复跳转)
-                if not (fname == "inbox" and time.time() - start < 6):
+                if fname == "junk":
+                    try:
+                        from common.mailbox import _click_folder
+
+                        clicked_folder = await _click_folder(
+                            page,
+                            [
+                                "Junk Email", "Junk", "垃圾邮件", "垃圾郵件",
+                                "迷惑メール", "스팸 메일", "Courrier indésirable",
+                                "Correo no deseado", "Unerwünschte E-Mail",
+                            ],
+                        )
+                        if clicked_folder:
+                            await asyncio.sleep(3)
+                        else:
+                            await page.goto(furl, timeout=30000)
+                            await asyncio.sleep(3)
+                    except Exception:
+                        continue
+                elif not (fname == "inbox" and time.time() - start < 6):
                     try:
                         await page.goto(furl, timeout=30000)
                         await asyncio.sleep(3)
@@ -2590,7 +2680,7 @@ async def _claude_managed_challenge_present(page):
 
 
 def _find_turnstile_checkbox_center(image_bytes):
-    """Locate an explicit dark square checkbox without relying on page coordinates."""
+    """Locate a left-side empty square checkbox, rejecting centered loaders."""
     try:
         from PIL import Image
 
@@ -2601,7 +2691,7 @@ def _find_turnstile_checkbox_center(image_bytes):
     pixels = image.load()
     dark = set()
     for y in range(max(0, int(height * 0.2)), min(height, int(height * 0.8))):
-        for x in range(max(0, int(width * 0.05)), min(width, int(width * 0.5))):
+        for x in range(max(0, int(width * 0.05)), min(width, int(width * 0.55))):
             if pixels[x, y] < 90:
                 dark.add((x, y))
 
@@ -2626,6 +2716,13 @@ def _find_turnstile_checkbox_center(image_bytes):
             continue
         if not (0.75 <= box_width / box_height <= 1.25):
             continue
+        center_x = (left + right) / 2
+        center_y = (top + bottom) / 2
+        # Claude and Cloudflare both show square/circular loading glyphs around
+        # the viewport center. They are never safe click targets.
+        if (width * 0.42 <= center_x <= width * 0.58
+                and height * 0.35 <= center_y <= height * 0.65):
+            continue
         points = set(component)
         horizontal_edges = sum(
             (x, y) in points
@@ -2637,9 +2734,52 @@ def _find_turnstile_checkbox_center(image_bytes):
             for y in range(top, bottom + 1)
             for x in (left, right)
         )
-        if horizontal_edges >= box_width and vertical_edges >= box_height:
-            return ((left + right) / 2, (top + bottom) / 2)
+        inner_left, inner_right = left + 3, right - 3
+        inner_top, inner_bottom = top + 3, bottom - 3
+        inner_pixels = max(0, inner_right - inner_left + 1) * max(
+            0, inner_bottom - inner_top + 1
+        )
+        inner_dark = sum(
+            pixels[x, y] < 120
+            for y in range(inner_top, inner_bottom + 1)
+            for x in range(inner_left, inner_right + 1)
+        )
+        if (horizontal_edges >= box_width
+                and vertical_edges >= box_height
+                and inner_pixels > 0
+                and inner_dark / inner_pixels <= 0.2):
+            return (center_x, center_y)
     return None
+
+
+async def _click_explicit_challenge_checkbox(frame, *, timeout=3000):
+    """Click only a visible checkbox-sized DOM control inside a challenge frame."""
+    candidates = frame.locator(
+        'input[type="checkbox"], [role="checkbox"], '
+        'label.ctp-checkbox-label, .ctp-checkbox-label'
+    )
+    try:
+        count = min(await candidates.count(), 6)
+    except Exception:
+        return False
+    for index in range(count):
+        candidate = candidates.nth(index)
+        try:
+            if not await candidate.is_visible():
+                continue
+            box = await candidate.bounding_box()
+            if not box:
+                continue
+            if not (12 <= box.get("width", 0) <= 96
+                    and 12 <= box.get("height", 0) <= 96
+                    and box.get("x", -1) >= 0
+                    and box.get("y", -1) >= 0):
+                continue
+            await candidate.click(timeout=timeout)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 async def solve_turnstile(page, max_wait=60):
@@ -2718,11 +2858,7 @@ async def solve_turnstile(page, max_wait=60):
                     if "cloudflare" not in (frame.url or "").lower():
                         continue
                     try:
-                        checkbox = frame.locator(
-                            'input[type="checkbox"], label.ctp-checkbox-label, .ctp-checkbox-label'
-                        ).first
-                        if await checkbox.count() > 0 and await checkbox.is_visible():
-                            await checkbox.click()
+                        if await _click_explicit_challenge_checkbox(frame):
                             checkbox_clicked = True
                             print("  [cf] clicked explicit Cloudflare checkbox")
                             break
@@ -2738,8 +2874,8 @@ async def solve_turnstile(page, max_wait=60):
                             await page.mouse.click(*point)
                             checkbox_clicked = True
                             print(
-                                "  [cf] clicked screenshot-detected "
-                                "Cloudflare checkbox"
+                                "  [cf] clicked left-side screenshot-detected "
+                                f"Cloudflare checkbox at ({point[0]:.0f},{point[1]:.0f})"
                             )
                     except Exception as e:
                         print(f"  [cf] screenshot checkbox detection failed: {e}")
@@ -2758,78 +2894,15 @@ async def solve_turnstile(page, max_wait=60):
                     cf_frame = frame
                     break
 
-            # method 1: click checkbox/label inside CF iframe
+            # Click only a real checkbox-sized control in the CF frame. The
+            # iframe body/container is not a target and may contain a loader.
             if cf_frame:
                 try:
-                    cb = cf_frame.locator('input[type="checkbox"], label, .ctp-checkbox-label, .mark, #challenge-stage')
-                    if await cb.count() > 0:
-                        await cb.first.click()
-                        print("  [cf] method1: clicked checkbox in iframe")
+                    if await _click_explicit_challenge_checkbox(cf_frame):
+                        print("  [cf] clicked explicit checkbox in iframe")
                         clicked = True
                 except Exception as e:
-                    print(f"  [cf] method1 failed: {e}")
-
-            # method 2: click CF iframe body center
-            if not clicked and cf_frame:
-                try:
-                    body = cf_frame.locator('body')
-                    box = await body.bounding_box()
-                    if box and box['width'] > 0:
-                        cx = box['width'] / 2
-                        cy = box['height'] / 2
-                        await cf_frame.click('body', position={"x": cx, "y": cy})
-                        print(f"  [cf] method2: clicked iframe body ({cx:.0f},{cy:.0f})")
-                        clicked = True
-                except Exception as e:
-                    print(f"  [cf] method2 failed: {e}")
-
-            # method 3: click iframe element from parent page coords
-            if not clicked:
-                try:
-                    cf_iframe_el = page.locator(
-                        'iframe[src*="challenges.cloudflare.com"], '
-                        'iframe[src*="turnstile"], '
-                        'iframe[src*="cloudflare"]'
-                    )
-                    if await cf_iframe_el.count() > 0:
-                        box = await cf_iframe_el.first.bounding_box()
-                        if box and box['width'] > 0:
-                            await page.mouse.click(box["x"] + 30, box["y"] + box["height"] / 2)
-                            print(f"  [cf] method3: clicked iframe coords ({box['x']+30:.0f},{box['y']+box['height']/2:.0f})")
-                            clicked = True
-                except Exception as e:
-                    print(f"  [cf] method3 failed: {e}")
-
-            # method 4: click .cf-turnstile or [data-sitekey] container
-            if not clicked:
-                try:
-                    cf_div = page.locator('.cf-turnstile, [data-sitekey], [id*="turnstile"], [class*="turnstile"]')
-                    if await cf_div.count() > 0:
-                        box = await cf_div.first.bounding_box()
-                        if box and box['width'] > 0:
-                            await page.mouse.click(box["x"] + 30, box["y"] + box["height"] / 2)
-                            print(f"  [cf] method4: clicked turnstile container")
-                            clicked = True
-                except Exception as e:
-                    print(f"  [cf] method4 failed: {e}")
-
-            # method 5: find ANY iframe with cloudflare src
-            if not clicked:
-                try:
-                    all_iframes = page.locator('iframe')
-                    count = await all_iframes.count()
-                    for idx in range(count):
-                        iframe = all_iframes.nth(idx)
-                        src = (await iframe.get_attribute('src') or '').lower()
-                        if 'cloudflare' in src or 'turnstile' in src or 'challenge' in src:
-                            box = await iframe.bounding_box()
-                            if box and box['width'] > 0:
-                                await page.mouse.click(box["x"] + 30, box["y"] + box["height"] / 2)
-                                print(f"  [cf] method5: clicked iframe#{idx} by src match")
-                                clicked = True
-                                break
-                except Exception as e:
-                    print(f"  [cf] method5 failed: {e}")
+                    print(f"  [cf] explicit checkbox click failed: {e}")
 
         if clicked:
             await asyncio.sleep(3)
@@ -2915,10 +2988,18 @@ async def ensure_claude_login_form(
 
     for attempt in range(node_retries + 1):
         await dismiss_claude_cookie_banner(page)
+        if await _claude_new_user_unavailable(page):
+            raise ClaudeNewUserUnavailable(
+                "Claude has temporarily paused access for new users"
+            )
         if await _claude_email_form_ready(page):
             return True
 
         await solve_turnstile(page, max_wait=challenge_wait)
+        if await _claude_new_user_unavailable(page):
+            raise ClaudeNewUserUnavailable(
+                "Claude has temporarily paused access for new users"
+            )
         if await _claude_email_form_ready(page):
             return True
 
@@ -3276,6 +3357,22 @@ def _verify_claude_magic_link_http(magic_link, request_template=None, browser_co
     return None
 
 
+async def _open_claude_authenticated_app(page, source="magic"):
+    """Open Claude's app shell after sessionKey is installed."""
+    if set_traffic_saver_bypass(page.context, True):
+        print("  [traffic] bypass enabled for Claude authenticated bootstrap")
+    try:
+        await page.goto(
+            "https://claude.ai/new",
+            timeout=60000,
+            wait_until="domcontentloaded",
+        )
+        await asyncio.sleep(5)
+        await dismiss_claude_cookie_banner(page)
+    except Exception as error:
+        print(f"  [{source}] authenticated app navigation warning: {str(error)[:120]}")
+
+
 async def verify_claude_magic_link_http(page, magic_link):
     request_template = getattr(
         page, "__dict__", {}
@@ -3307,13 +3404,7 @@ async def verify_claude_magic_link_http(page, magic_link):
     if not cookies:
         return False
     await page.context.add_cookies(cookies)
-    try:
-        await page.goto("https://claude.ai/", timeout=60000)
-        await asyncio.sleep(5)
-        await dismiss_claude_cookie_banner(page)
-    except Exception as e:
-        print(f"  [magic-http] session cookies installed; browser navigation warning: "
-              f"{str(e)[:120]}")
+    await _open_claude_authenticated_app(page, "magic-http")
     return True
 
 
@@ -3482,11 +3573,7 @@ async def _verify_claude_magic_link_browser_api(page, solution, magic_link=None)
         page._rf_replaying_magic_verify = False
     if result.get("ok"):
         print("  [magic-browser] nonce verified in visible browser session")
-        try:
-            await page.goto("https://claude.ai/", timeout=60000)
-            await asyncio.sleep(4)
-        except Exception as e:
-            print(f"  [magic-browser] post-verify navigation warning: {str(e)[:100]}")
+        await _open_claude_authenticated_app(page, "magic-browser")
         return True
     print(f"  [magic-browser] verification failed: HTTP {result.get('status', 0)} "
           f"{str(result.get('error') or '')[:120]}")
@@ -3617,12 +3704,10 @@ async def _visible_claude_hcaptcha_frame(page, timeout=15):
             if not checkbox_clicked and "frame=checkbox" in url:
                 try:
                     checkbox = frame.locator('#checkbox, [role="checkbox"]').first
-                    if await checkbox.count():
+                    if await checkbox.count() and await checkbox.is_visible():
                         await checkbox.click(timeout=3000, force=True)
-                    else:
-                        await frame.locator("body").click(timeout=3000, force=True)
-                    checkbox_clicked = True
-                    print("  [vision] triggered the invisible hCaptcha widget")
+                        checkbox_clicked = True
+                        print("  [vision] triggered the hCaptcha checkbox")
                 except Exception:
                     try:
                         checkbox_clicked = bool(await frame.evaluate("""() => {
@@ -3698,14 +3783,7 @@ async def _solve_claude_hcaptcha_vision(page):
         "vision_solver", "presets", "hcaptcha.json",
     )
     spec = CaptchaSpec.from_json(preset)
-    try:
-        instruction = (
-            await challenge_frame.locator(
-                "#prompt-question, .prompt-text"
-            ).first.inner_text()
-        ).strip().lower()
-    except Exception:
-        instruction = ""
+    instruction = await _read_claude_hcaptcha_instruction(challenge_frame)
     try:
         dom_tile_count = await challenge_frame.locator(".task-image").count()
     except Exception:
@@ -3715,7 +3793,10 @@ async def _solve_claude_hcaptcha_vision(page):
         spec.mode = "grid_select"
         spec.tile_sel = ".task-image"
         spec.grid_image_sel = ""
-        spec.prompt = clarified_grid_prompt
+        spec.prompt = (
+            clarified_grid_prompt
+            or (_claude_hcaptcha_inferred_grid_prompt() if not instruction else "")
+        )
         print(f"  [vision] DOM-tile hCaptcha detected ({dom_tile_count} tiles)")
     elif any(marker in instruction for marker in CLAUDE_HCAPTCHA_DRAG_MARKERS):
         spec.mode = "canvas_drag"
@@ -3785,6 +3866,44 @@ async def _solve_claude_hcaptcha_vision(page):
     return bool(solved)
 
 
+async def _read_claude_hcaptcha_instruction(challenge_frame, timeout=8):
+    """Read hCaptcha's prompt across old and current challenge DOMs."""
+    selectors = (
+        "#prompt-question", ".prompt-text", "[data-testid*='prompt' i]",
+        "[class*='prompt' i]", "[class*='challenge-header' i]",
+        "[aria-live='polite']", "[role='heading']", "h2", "h3",
+    )
+    deadline = time.monotonic() + max(0, timeout)
+    first_pass = True
+    while first_pass or time.monotonic() < deadline:
+        first_pass = False
+        for selector in selectors:
+            try:
+                locator = challenge_frame.locator(selector)
+                candidates = [locator.first]
+                try:
+                    count = min(int(await locator.count()), 4)
+                    candidates = [locator.first] + [locator.nth(i) for i in range(1, count)]
+                except Exception:
+                    pass
+                for item in candidates:
+                    candidate = (await item.inner_text()).strip()
+                    normalized = " ".join(candidate.split())
+                    lowered = normalized.lower().strip(" .!…")
+                    loading_markers = (
+                        "loading", "読み込み中", "로딩 중", "chargement",
+                        "cargando", "wird geladen", "carregando", "загрузка",
+                    )
+                    if len(normalized) >= 5 and not any(
+                        marker in lowered for marker in loading_markers
+                    ):
+                        return normalized.lower()
+            except Exception:
+                pass
+        await asyncio.sleep(0.4)
+    return ""
+
+
 async def solve_claude_hcaptcha(page, manual_timeout=None):
     if not await _claude_hcaptcha_present(page):
         return True
@@ -3799,7 +3918,16 @@ async def solve_claude_hcaptcha(page, manual_timeout=None):
     os.makedirs("screenshots", exist_ok=True)
     await page.screenshot(path="screenshots/claude_hcaptcha_detected.png", full_page=True)
 
-    vision_result = await _solve_claude_hcaptcha_vision(page)
+    try:
+        vision_result = await _solve_claude_hcaptcha_vision(page)
+    except Exception as error:
+        if _native_claude_magic_verify_succeeded(page):
+            print(
+                "  [hcaptcha] page closed after successful native verification; "
+                "continuing with the authenticated context"
+            )
+            return True
+        raise
     if vision_result:
         return True
     if vision_result is None:
@@ -3956,10 +4084,24 @@ async def open_claude_magic_link(page, magic_link):
     """Arm hCaptcha capture before loading the magic-link document."""
     await _install_claude_hcaptcha_hook(page)
     try:
-        await page.goto(magic_link, timeout=60000)
-    except Exception:
-        await page.evaluate("(url) => { window.location.href = url; }", magic_link)
-        await page.wait_for_load_state("domcontentloaded", timeout=60000)
+        # The Claude SPA can commit the magic-link document and then spin
+        # indefinitely behind Cloudflare. Waiting for ``load`` turns that
+        # recoverable state into a raw Playwright timeout before the challenge
+        # detector can classify it.
+        await page.goto(magic_link, timeout=30000, wait_until="commit")
+    except Exception as error:
+        current = str(getattr(page, "url", "") or "")
+        if "/magic-link" not in current:
+            try:
+                await page.evaluate(
+                    "(url) => { window.location.href = url; }", magic_link
+                )
+                await page.wait_for_url("**/magic-link**", timeout=10000)
+            except Exception as fallback_error:
+                raise ClaudeChallengeError(
+                    "Claude magic-link navigation did not commit"
+                ) from fallback_error
+        print(f"  magic-link navigation committed without load: {str(error)[:100]}")
     await asyncio.sleep(1)
     try:
         hook_state = await page.evaluate("""() => ({
@@ -3993,14 +4135,7 @@ async def _finish_native_claude_magic_verify(page):
     if not _native_claude_magic_verify_succeeded(page):
         return False
     print("  [magic-browser] native magic-link verification succeeded")
-    try:
-        await page.goto("https://claude.ai/", timeout=60000)
-        await asyncio.sleep(3)
-    except Exception as error:
-        print(
-            "  [magic-browser] post-verify navigation warning: "
-            f"{str(error)[:100]}"
-        )
+    await _open_claude_authenticated_app(page, "magic-browser")
     return True
 
 
@@ -4022,6 +4157,12 @@ async def prepare_claude_post_magic(page, max_wait=25):
             )
         if await _claude_hcaptcha_present(page):
             solved = await solve_claude_hcaptcha(page)
+            # Native verification may complete while a visual solver is still
+            # unwinding (and may remove the challenge frame or close its tab).
+            # Its successful response is authoritative regardless of the
+            # solver's return value or the original loop deadline.
+            if await _finish_native_claude_magic_verify(page):
+                return True
             if solved is None:
                 await asyncio.sleep(1)
                 continue
@@ -4067,6 +4208,8 @@ async def prepare_claude_post_magic_with_http_fallback(page, magic_link, max_wai
     try:
         return await prepare_claude_post_magic(page, max_wait=max_wait)
     except ClaudeChallengeError as error:
+        if await _finish_native_claude_magic_verify(page):
+            return True
         native_headers = getattr(
             page, "_rf_magic_verify_response_headers", {}
         ) or {}
@@ -4309,15 +4452,77 @@ async def handle_birthday_page(page, birth_year, birth_month, birth_day):
     return False
 
 
+async def _claude_app_shell_state(page):
+    try:
+        return await page.evaluate("""() => {
+            const body = document.body;
+            if (!body) return {textLength: 0, htmlLength: 0, elements: 0, interactive: 0};
+            return {
+                textLength: (body.innerText || '').trim().length,
+                htmlLength: (body.innerHTML || '').length,
+                elements: body.querySelectorAll('*').length,
+                interactive: body.querySelectorAll(
+                    'button, a[href], input, textarea, select, [role="button"]'
+                ).length,
+            };
+        }""")
+    except Exception:
+        return {"textLength": 0, "htmlLength": 0, "elements": 0, "interactive": 0}
+
+
+def _claude_app_shell_is_blank(state):
+    state = state or {}
+    return (
+        int(state.get("textLength") or 0) == 0
+        and int(state.get("interactive") or 0) == 0
+        and int(state.get("elements") or 0) < 10
+    )
+
+
 async def handle_onboarding(page, first_name, last_name, max_rounds=10):
     """Click through post-registration onboarding pages:
     personal use, display name, don't improve, etc.
     Keeps clicking until we land on /chat or /new or no more buttons."""
     print("\n  [onboarding] checking for onboarding pages...")
 
+    blank_recoveries = 0
     for round_i in range(max_rounds):
         await asyncio.sleep(2)
         await dismiss_claude_cookie_banner(page)
+
+        shell_state = await _claude_app_shell_state(page)
+        if _claude_app_shell_is_blank(shell_state):
+            print(
+                "  [onboarding] blank Claude app shell "
+                f"(html={shell_state.get('htmlLength', 0)}, "
+                f"elements={shell_state.get('elements', 0)})"
+            )
+            if blank_recoveries == 0:
+                blank_recoveries += 1
+                print("  [onboarding] reloading authenticated app shell...")
+                try:
+                    await page.reload(timeout=60000, wait_until="domcontentloaded")
+                except Exception as error:
+                    print(f"  [onboarding] reload warning: {str(error)[:100]}")
+                await asyncio.sleep(4)
+                continue
+            if blank_recoveries == 1:
+                blank_recoveries += 1
+                print("  [onboarding] reopening /new with cache bypass...")
+                try:
+                    await page.goto(
+                        f"https://claude.ai/new?rf_bootstrap={int(time.time())}",
+                        timeout=60000,
+                        wait_until="domcontentloaded",
+                    )
+                except Exception as error:
+                    print(f"  [onboarding] /new recovery warning: {str(error)[:100]}")
+                await asyncio.sleep(4)
+                continue
+            print("  [onboarding] authenticated app stayed blank after recovery")
+            os.makedirs("screenshots", exist_ok=True)
+            await page.screenshot(path="screenshots/claude_blank_after_auth.png")
+            return False
 
         # 检测是否被 logout（排除 returnTo=onboarding 的情况）
         current_url = page.url.lower()
@@ -5210,8 +5415,14 @@ async def register(
             print("[2/6] connect Playwright...")
             browser = await p.chromium.connect_over_cdp(ws_url)
             context = browser.contexts[0]
-            page = context.pages[0] if context.pages else await context.new_page()
             await install_traffic_saver(context)
+            startup_pages = list(context.pages)
+            page = await asyncio.wait_for(context.new_page(), timeout=20)
+            for startup_page in startup_pages:
+                try:
+                    await asyncio.wait_for(startup_page.close(), timeout=5)
+                except Exception:
+                    pass
 
             # 注入反检测脚本（通过 CDP 在页面 JS 执行前注入）
             stealth_js = """
@@ -5352,6 +5563,27 @@ async def register(
 
             check_timeout()
 
+            if email_token:
+                from common.mailbox import check_mailbox_access
+
+                mailbox_health = await asyncio.to_thread(
+                    check_mailbox_access,
+                    email,
+                    email_token,
+                    email_client_id or "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+                )
+                if not mailbox_health.get("ok"):
+                    reason = mailbox_health.get("reason") or "graph_mailbox_unreadable"
+                    raise ClaudeMailboxDeliveryError(
+                        f"Outlook mailbox preflight failed: {reason}",
+                        reason=reason,
+                    )
+                folders = mailbox_health.get("folder_status") or {}
+                print(
+                    "  [mail] Outlook preflight passed: "
+                    + ", ".join(f"{name}={status}" for name, status in folders.items())
+                )
+
             # visit Claude.ai
             print(f"\n  goto Claude.ai...")
             # 等待之前的页面跳转完成
@@ -5385,7 +5617,15 @@ async def register(
                 await asyncio.sleep(5)
             else:
                 print("  Claude login page unavailable; continuing with HTTP magic-link flow")
+                if residential_login:
+                    raise ClaudeChallengeError(
+                        "Claude login navigation failed on residential egress"
+                    )
             print(f"  URL: {page.url}")
+            if await _claude_new_user_unavailable(page):
+                raise ClaudeNewUserUnavailable(
+                    "Claude has temporarily paused access for new users"
+                )
 
             # Enter and submit email only after the login page is stable. Claude
             # can redirect to another challenge after the first field appears.
@@ -5461,7 +5701,9 @@ async def register(
                     magic_link = await get_magic_link_outlook_pw(outlook_page, email, email_password, max_wait=60)
 
             if not magic_link:
-                raise Exception("magic link timeout, no email received")
+                raise ClaudeMailboxDeliveryError(
+                    "Claude magic link was not delivered to inbox or junkemail"
+                )
 
             if outlook_page:
                 await outlook_page.close()
@@ -5483,6 +5725,17 @@ async def register(
             check_timeout()
             await prepare_claude_post_magic_with_http_fallback(page, magic_link)
             check_timeout()
+            if page.is_closed():
+                print(
+                    "  [magic-browser] verification closed the challenge tab; "
+                    "opening the authenticated app in a fresh tab"
+                )
+                page = await context.new_page()
+                await _open_claude_authenticated_app(page, "magic-browser")
+            if await _claude_new_user_unavailable(page):
+                raise ClaudeNewUserUnavailable(
+                    "Claude has temporarily paused access for new users"
+                )
 
             # registration form
             print("\n[5/6] fill registration form")
@@ -5885,11 +6138,24 @@ async def register(
 
     except ClaudeEgressRejected:
         raise
+    except ClaudeNewUserUnavailable as e:
+        print(f"\n  CLAUDE NEW-USER ACCESS PAUSED: {e}")
+        if email:
+            print(f"  mailbox retained without an error mark: {email}")
+        raise
+    except ClaudeMailboxDeliveryError as e:
+        print(f"\n  CLAUDE MAILBOX DELIVERY: {e}")
+        if email:
+            mark_email_error(email, email_password, e.reason)
+        raise
     except ClaudeChallengeError as e:
         if (
-            not email_submitted
-            and proxy_switch is not None
+            proxy_switch is not None
             and proxy_switch.proxy_mode() == "residential"
+            and (
+                not email_submitted
+                or _claude_challenge_requires_fresh_profile(e)
+            )
         ):
             raise ClaudeEgressRejected(str(e)) from e
         print(f"\n  CLAUDE CHALLENGE: {e}")
@@ -5959,6 +6225,12 @@ async def main():
     parser.add_argument("--client-id", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--latest-rt", action="store_true",
                         help="use newest unused Outlook accounts with working Graph RT")
+    parser.add_argument(
+        "--mailbox-attempts",
+        type=int,
+        default=3,
+        help="healthy Outlook mailboxes to try when Claude mail is not delivered",
+    )
     parser.add_argument(
         "--provider",
         choices=("yyds", "gptmail", "cfmail", "moemail", "custom"),
@@ -6101,6 +6373,10 @@ async def main():
             print("  add a working Graph RT mailbox or select a configured temp-email provider")
             return 2
 
+    pool_mailboxes = bool(
+        args.latest_rt and not args.email and not args.emails and not use_temp_email
+    )
+
     results = []
     results_lock = asyncio.Lock()
 
@@ -6112,17 +6388,22 @@ async def main():
     worker_plan = build_worker_plan("claude", total, args.concurrency)
     worker_plan.log()
     slot_locks = [asyncio.Lock() for _ in range(worker_plan.effective_concurrency)]
+    new_user_access_paused = asyncio.Event()
 
     async def run_one(i):
         stagger_slot = (i - 1) % worker_plan.effective_concurrency
         if stagger_slot:
             await asyncio.sleep(random.uniform(1.5, 4.0) * stagger_slot)
+        if new_user_access_paused.is_set():
+            return
         worker_context = worker_plan.worker(i)
         async with slot_locks[worker_context.slot - 1]:
+            if new_user_access_paused.is_set():
+                return
             with activate_worker(worker_context) as worker:
                 return await run_worker(i, worker)
 
-    async def run_worker(i, worker):
+    async def run_worker(i, worker, account_override=None, mailbox_attempt=1):
             print(f"\n{'#' * 50}")
             print(f"  #{i}/{total} worker={worker.worker_id} slot={worker.slot}")
             print(f"{'#' * 50}")
@@ -6130,7 +6411,13 @@ async def main():
             bb = BitBrowser()
 
             email, email_password, email_token, email_client_id = "", "", "", ""
-            if email_list:
+            if account_override:
+                email, email_password, email_token, email_client_id = account_override
+                print(
+                    f"\n  replacement Outlook mailbox: {email} "
+                    f"({mailbox_attempt}/{max(1, args.mailbox_attempts)})"
+                )
+            elif email_list:
                 email, email_password, email_token, email_client_id = email_list[i - 1]
                 print(f"\n  email from file: {email}")
 
@@ -6157,6 +6444,11 @@ async def main():
                             "index": i, "profile": name, "status": "ERROR", "sk": None
                         })
                     return
+            try:
+                from common.emails import mark_registration_started
+                mark_registration_started("claude", email, email_password)
+            except Exception as exc:
+                print(f"  [email] sale exclusion warning for {email}: {str(exc)[:100]}")
             try:
                 configured_profile_attempts = int(
                     os.environ.get("CLAUDE_RESIDENTIAL_PROFILE_RETRIES", "3") or 3
@@ -6222,6 +6514,42 @@ async def main():
                     )
                     result_status = "OK" if sk else "FAIL"
                     break
+                except ClaudeNewUserUnavailable as e:
+                    new_user_access_paused.set()
+                    result_status = "UNAVAILABLE"
+                    print(
+                        "  [stop] Claude has paused new-user access; "
+                        "skipping remaining accounts in this batch"
+                    )
+                    break
+                except ClaudeMailboxDeliveryError as e:
+                    result_status = "MAILBOX"
+                    can_replace = (
+                        pool_mailboxes
+                        and mailbox_attempt < max(1, args.mailbox_attempts)
+                    )
+                    if can_replace:
+                        from common import emails as email_pool
+
+                        replacement = await asyncio.to_thread(
+                            email_pool.latest_email,
+                            "claude",
+                            require_token=True,
+                            validate_token=True,
+                        )
+                        if replacement:
+                            print(
+                                "  [mail] Claude mail was not delivered; "
+                                "switching to the next readable Outlook mailbox"
+                            )
+                            return await run_worker(
+                                i,
+                                worker,
+                                account_override=replacement,
+                                mailbox_attempt=mailbox_attempt + 1,
+                            )
+                    print(f"  FATAL: Outlook mailbox attempts exhausted: {e}")
+                    break
                 except ClaudeEgressRejected as e:
                     result_status = "ERROR"
                     if profile_attempt >= profile_attempts:
@@ -6239,7 +6567,7 @@ async def main():
                             f"endpoint: {rotation.get('error') or 'not configured'}"
                         )
                     print(
-                        f"  [proxy] residential profile rejected before email submit; "
+                        f"  [proxy] Claude challenge rejected the current profile; "
                         f"creating a fresh session ({profile_attempt + 1}/{profile_attempts})"
                     )
                 except Exception as e:
@@ -6266,6 +6594,12 @@ async def main():
                 })
 
     await asyncio.gather(*[run_one(i) for i in range(1, total + 1)])
+
+    if new_user_access_paused.is_set():
+        print(
+            "\n  Claude has temporarily paused new-user access. "
+            "No further accounts were submitted in this batch."
+        )
 
     # summary
     print(f"\n{'=' * 50}")

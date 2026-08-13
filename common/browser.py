@@ -24,6 +24,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bitbrowser import BitBrowser
 from common.fingerprint import browser_fingerprint
+from common.playwright_runtime import install_shutdown_guard
 from common.task_context import active_worker
 from common.traffic_saver import install as install_traffic_saver
 
@@ -155,6 +156,7 @@ NATIVE_STEALTH_JS = r"""
 
 async def inject_stealth(context, page):
     """Hide automation markers without replacing the native fingerprint."""
+    install_shutdown_guard()
     try:
         cdp = await context.new_cdp_session(page)
         await cdp.send("Page.addScriptToEvaluateOnNewDocument", {"source": NATIVE_STEALTH_JS})
@@ -235,7 +237,17 @@ async def open_and_connect(name, p=None, browser_options=None):
     print(f"  ws: {ws}")
     browser = await p.chromium.connect_over_cdp(ws)
     context = browser.contexts[0]
-    page = context.pages[0] if context.pages else await context.new_page()
+    # BitBrowser can expose a zero-sized startup/navigation tab while its
+    # profile window is still settling. Install routing before creating a clean
+    # registration tab and close only the stale startup pages.
+    await install_traffic_saver(context)
+    startup_pages = list(context.pages)
+    page = await asyncio.wait_for(context.new_page(), timeout=20)
+    for startup_page in startup_pages:
+        try:
+            await asyncio.wait_for(startup_page.close(), timeout=5)
+        except Exception:
+            pass
     # 强制英文界面：代理 IP 地区（如马来/法国）会让 OpenAI/x.ai 按 Accept-Language
     # 返回本地化 UI（马来语 'Teruskan'/'Selesaikan...'），导致按钮文本匹配失效。
     # stealth 只改 navigator.languages（页面内 JS），改不了 HTTP 请求头，故在此统一固定。
@@ -243,7 +255,6 @@ async def open_and_connect(name, p=None, browser_options=None):
         await context.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
     except Exception as e:
         print(f"  set Accept-Language failed: {e}")
-    await install_traffic_saver(context)
     await inject_stealth(context, page)
     return bb, pid, browser, context, page
 
