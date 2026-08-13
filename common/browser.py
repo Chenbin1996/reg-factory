@@ -23,7 +23,6 @@ import os
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bitbrowser import BitBrowser
-from bitbrowser import selected_browser_provider
 from common.fingerprint import browser_fingerprint
 from common.task_context import active_worker
 from common.traffic_saver import install as install_traffic_saver
@@ -212,22 +211,6 @@ async def open_and_connect(name, p=None, browser_options=None):
     返回 (bb, profile_id, browser, context, page)。
     注意：调用方需自行管理 async_playwright 生命周期，或传入 p。"""
     browser_options = _prepare_browser_options(browser_options)
-    if selected_browser_provider() in {"ruyipage", "ruyi", "firefox_bidi"}:
-        from common.ruyipage_browser import RuyiPageBrowser
-
-        bb = RuyiPageBrowser()
-        pid = create_browser_with_retry(bb, name, **(browser_options or {}))
-        if not pid:
-            raise RuntimeError("create RuyiPage browser failed after retries")
-        browser, context, page = await bb.open_browser_async(pid)
-        try:
-            await context.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
-        except Exception as e:
-            print(f"  set Accept-Language failed: {e}")
-        await install_traffic_saver(context)
-        print("  RuyiPage Firefox connected (WebDriver BiDi)")
-        return bb, pid, browser, context, page
-
     bb = BitBrowser()
     pid = create_browser_with_retry(bb, name, **(browser_options or {}))
     if not pid:

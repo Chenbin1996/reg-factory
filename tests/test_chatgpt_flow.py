@@ -44,7 +44,7 @@ class ChatGPTFlowTests(unittest.TestCase):
         self.assertEqual(result["plus_trial"], "zero_price")
         check.assert_called_once_with({"accessToken": "token"}, "trial@example.com", 15)
 
-    def test_expired_auth_entry_is_reopened_for_ruyipage(self):
+    def test_expired_auth_entry_is_reopened(self):
         async def exercise():
             field = MagicMock()
             field.first = field

@@ -9,9 +9,10 @@ from urllib.parse import urlparse
 from common.task_context import task_environment
 
 
-_MODES = {"off", "balanced", "aggressive"}
+_MODES = {"off", "balanced", "aggressive", "extreme"}
 _BALANCED_TYPES = {"image", "font", "media"}
 _AGGRESSIVE_TYPES = _BALANCED_TYPES | {"stylesheet"}
+_EXTREME_TYPES = _AGGRESSIVE_TYPES | {"manifest", "texttrack"}
 
 # Outlook's sign-up and OAuth pages use CSS to decide whether controls are
 # visible. Keep styles there even in aggressive mode while still blocking the
@@ -59,6 +60,41 @@ _TELEMETRY_DOMAINS = {
     "sentry.io",
 }
 
+_EXTREME_TELEMETRY_DOMAINS = _TELEMETRY_DOMAINS | {
+    "adnxs.com",
+    "ads-twitter.com",
+    "braze.com",
+    "facebook.net",
+    "googleadservices.com",
+    "googlesyndication.com",
+    "intercom.io",
+    "mixpanel.com",
+    "mouseflow.com",
+    "posthog.com",
+    "scorecardresearch.com",
+    "statcounter.com",
+}
+
+_EXTREME_OPTIONAL_SUFFIXES = (
+    ".map",
+    "/favicon.ico",
+    "/favicon.svg",
+    "/manifest.json",
+    "/site.webmanifest",
+)
+
+_EXTREME_BITBROWSER_ARGS = (
+    "--disable-background-networking",
+    "--disable-breakpad",
+    "--disable-component-update",
+    "--disable-default-apps",
+    "--disable-domain-reliability",
+    "--disable-sync",
+    "--no-default-browser-check",
+    "--no-first-run",
+    "--disable-features=AutofillServerCommunication,MediaRouter,OptimizationHints",
+)
+
 
 def _domain_matches(host: str, domains: set[str]) -> bool:
     normalized = str(host or "").strip(".").lower()
@@ -80,24 +116,56 @@ def configured_mode(environ=None) -> str:
     return mode
 
 
-def should_block(url: str, resource_type: str, mode: str) -> bool:
+def should_block(url: str, resource_type: str, mode: str, headers=None) -> bool:
     """Decide whether a browser request is safe to omit."""
     normalized_mode = str(mode or "off").lower()
-    if normalized_mode not in {"balanced", "aggressive"}:
+    if normalized_mode not in {"balanced", "aggressive", "extreme"}:
         return False
     host = (urlparse(str(url or "")).hostname or "").lower()
     if _domain_matches(host, _ALLOW_DOMAINS):
         return False
     normalized_type = str(resource_type or "").lower()
     microsoft_auth = _domain_matches(host, _STYLE_REQUIRED_DOMAINS)
-    blocked_types = (
-        _AGGRESSIVE_TYPES
-        if normalized_mode == "aggressive" and not microsoft_auth
-        else _BALANCED_TYPES
-    )
+    if normalized_mode == "extreme" and not microsoft_auth:
+        blocked_types = _EXTREME_TYPES
+    elif normalized_mode == "aggressive" and not microsoft_auth:
+        blocked_types = _AGGRESSIVE_TYPES
+    else:
+        blocked_types = _BALANCED_TYPES
     if normalized_type in blocked_types:
         return True
-    return normalized_mode == "aggressive" and _domain_matches(host, _TELEMETRY_DOMAINS)
+    if normalized_mode in {"aggressive", "extreme"} and _domain_matches(host, _TELEMETRY_DOMAINS):
+        return True
+    if normalized_mode != "extreme":
+        return False
+    if _domain_matches(host, _EXTREME_TELEMETRY_DOMAINS):
+        return True
+    path = (urlparse(str(url or "")).path or "").lower()
+    if path.endswith(_EXTREME_OPTIONAL_SUFFIXES):
+        return True
+    request_headers = {
+        str(key).lower(): str(value).lower()
+        for key, value in dict(headers or {}).items()
+    }
+    purpose = f"{request_headers.get('purpose', '')} {request_headers.get('sec-purpose', '')}"
+    return "prefetch" in purpose or "prerender" in purpose
+
+
+def bitbrowser_profile_defaults(environ=None) -> dict:
+    """Return profile defaults that do not override BitBrowser's startup page."""
+    # Forcing ``about:blank`` saved a small amount of startup traffic, but a
+    # delayed CDP connection could leave the profile parked there indefinitely.
+    # Request filtering and Chromium's background-network switches provide the
+    # material savings without changing the profile's startup URL.
+    return {}
+
+
+def bitbrowser_open_payload(profile_id, environ=None) -> dict:
+    """Suppress Chromium background traffic on metered BitBrowser profiles."""
+    payload = {"id": profile_id}
+    if configured_mode(environ) == "extreme":
+        payload["args"] = list(_EXTREME_BITBROWSER_ARGS)
+    return payload
 
 
 async def install(context, environ=None) -> str:
@@ -114,7 +182,12 @@ async def install(context, environ=None) -> str:
     async def _handle(route):
         request = route.request
         try:
-            if should_block(request.url, request.resource_type, mode):
+            if should_block(
+                request.url,
+                request.resource_type,
+                mode,
+                getattr(request, "headers", None),
+            ):
                 blocked[str(request.resource_type or "other").lower()] += 1
                 total = sum(blocked.values())
                 if total in {25, 100, 250, 500}:

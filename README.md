@@ -73,7 +73,7 @@
 运行前需要：
 
 - Python 3.10+
-- 默认使用 [RuyiPage](https://github.com/LoseNine/ruyipage) Firefox WebDriver BiDi 指纹浏览器，也支持内置 Chromium、自定义 Chrome/Chromium、BitBrowser 和 AdsPower
+- 默认使用 [BitBrowser](https://www.bitbrowser.cn/download)，也支持内置 Chromium、自定义 Chrome/Chromium 和 AdsPower
 - [Clash Verge 2.5.2 Windows x64](https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.5.2/Clash.Verge_2.5.2_x64-setup.exe)（自动/固定节点模式），或一个住宅代理服务
 - Node.js 20+（仅 Codex K12 控制台需要）
 
@@ -81,7 +81,7 @@ Windows：
 
 ```text
 1. 双击 install.bat
-2. 首次启动会在后台自动下载 RuyiPage Firefox；启动 Clash Verge
+2. 启动 BitBrowser；使用 Clash 网络模式时同时启动 Clash Verge
 3. 双击 start.bat
 4. 打开 http://127.0.0.1:8799/
 ```

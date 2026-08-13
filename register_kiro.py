@@ -24,7 +24,7 @@ from common import emails as email_pool
 from common import proxy_switch
 from common.kiro_crypto import FingerprintBuilder, _b64url, encrypt_password
 from common.mailbox import get_code_by_token
-from common.session_export import save_kiro_token
+from common.session_export import build_kiro_rs_credentials, save_kiro_token
 
 
 OIDC_BASE = "https://oidc.us-east-1.amazonaws.com"
@@ -518,12 +518,15 @@ def register_one(email, mailbox_password, mailbox_token, mailbox_client_id, args
         sso_token = client.sso_token()
         aws_token = client.device_token()
         kiro_token = client.kiro_authorize(sso_token)
-        record = {"email": email, "password": target_password, "provider": "BuilderId", "region": "us-east-1",
+        raw_record = {"email": email, "provider": "BuilderId", "region": "us-east-1",
                   "clientId": client.client_id, "clientSecret": client.client_secret,
                   "refreshToken": aws_token.get("refreshToken"), "accessToken": aws_token.get("accessToken"),
-                  "expiresIn": aws_token.get("expiresIn"), "kiro": kiro_token, "createdAt": int(time.time())}
-        if not save_kiro_token(record, email):
+                  "expiresIn": aws_token.get("expiresIn")}
+        if kiro_token.get("profileArn"):
+            raw_record["profileArn"] = kiro_token["profileArn"]
+        if not save_kiro_token(raw_record, email):
             raise KiroError("Kiro 凭据落盘失败")
+        record = build_kiro_rs_credentials(raw_record, email)
         return {"status": "success", "email": email, "record": record}
     except Exception as exc:
         return {"status": "failed", "email": email, "error": str(exc)[:300]}

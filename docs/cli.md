@@ -129,6 +129,10 @@ python tools/export_accounts.py claude chatgpt
 # 导出指定平台、指定账号的标准浏览器 Cookie JSON
 python tools/export_accounts.py --platform claude --format cookies --index 0
 
+# 聚合导出 hank9999/kiro.rs 可直接读取的 credentials.json
+python tools/export_kiro_credentials.py
+python tools/export_kiro_credentials.py --output D:\\kiro.rs\\credentials.json
+
 # 导出或上传普通 ChatGPT 网页号
 python tools/export_chatgpt2api.py
 python tools/export_chatgpt2api.py --json

@@ -82,11 +82,25 @@ def _success_rate_breaker(outcomes, minimum_rate, window):
 async def _new_registration_page(context):
     """Create a clean registration tab, then remove BitBrowser startup tabs."""
     startup_pages = list(getattr(context, "pages", []) or [])
-    page = await context.new_page()
-    closed = 0
-    for extra in startup_pages:
+    live_startup_pages = []
+    for startup_page in startup_pages:
         try:
-            await extra.close()
+            if startup_page.is_closed() is True:
+                continue
+        except Exception:
+            pass
+        live_startup_pages.append(startup_page)
+    try:
+        page = await asyncio.wait_for(context.new_page(), timeout=20)
+    except asyncio.TimeoutError:
+        if live_startup_pages:
+            log("new registration tab timed out; reusing the startup tab", "WARN")
+            return live_startup_pages[0]
+        raise RuntimeError("BitBrowser did not create a registration tab within 20 seconds")
+    closed = 0
+    for extra in live_startup_pages:
+        try:
+            await asyncio.wait_for(extra.close(), timeout=5)
             closed += 1
         except Exception:
             pass
@@ -499,10 +513,13 @@ def bb_create_for_outlook_reg(name, proxy_str=None):
             **proxy_fields,
             browserFingerPrint=fingerprint,
         )
+    from common.traffic_saver import bitbrowser_profile_defaults
+
     body = {
         "name": name,
         "remark": "outlook reg loop — auto-deleted after use",
         **proxy_fields,
+        **bitbrowser_profile_defaults(),
         "browserFingerPrint": fingerprint,
     }
     r = _bb_call("/browser/update", body)
@@ -854,17 +871,10 @@ async def one_attempt(
                 from common import proxy_switch
                 browser_proxy = proxy_str if proxy_switch.proxy_mode() == "residential" else None
                 name = f"outlook_loop_{ts}_{idx}"
-                if hasattr(bb, "open_browser_async"):
-                    profile_id = bb.create_browser(
-                        name=name,
-                        remark="outlook reg loop auto-deleted after use",
-                        **_bitbrowser_proxy_fields(browser_proxy),
-                    )
-                else:
-                    profile_id = bb_create_for_outlook_reg(
-                        name,
-                        proxy_str=browser_proxy,
-                    )
+                profile_id = bb_create_for_outlook_reg(
+                    name,
+                    proxy_str=browser_proxy,
+                )
                 break
             except Exception as e:
                 m = str(e)
@@ -880,9 +890,14 @@ async def one_attempt(
                 await asyncio.sleep(3 + _r)
         if not profile_id:
             return None, None, [], None
-        if hasattr(bb, "open_browser_async"):
-            _browser, ctx, _page = await bb.open_browser_async(profile_id)
-            log("RuyiPage Firefox connected (WebDriver BiDi)")
+        info = bb_open_for_outlook_reg(bb, profile_id)
+        ws = info.get("ws", "")
+        if not ws:
+            return None, None, [], None
+        from playwright.async_api import async_playwright as _apw
+        async with _apw() as p:
+            browser = await p.chromium.connect_over_cdp(ws)
+            ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
             email, password, cookies, graph = await _run_outlook_on_ctx(
                 mod,
                 ctx,
@@ -890,33 +905,13 @@ async def one_attempt(
                 registration_timeout=registration_timeout,
                 graph_timeout=graph_timeout,
             )
-        else:
-            info = bb_open_for_outlook_reg(bb, profile_id)
-            ws = info.get("ws", "")
-            if not ws:
-                return None, None, [], None
-            from playwright.async_api import async_playwright as _apw
-            async with _apw() as p:
-                browser = await p.chromium.connect_over_cdp(ws)
-                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-                email, password, cookies, graph = await _run_outlook_on_ctx(
-                    mod,
-                    ctx,
-                    idx,
-                    registration_timeout=registration_timeout,
-                    graph_timeout=graph_timeout,
-                )
         return email, password, cookies, graph
     finally:
         if profile_id:
             try:
-                if hasattr(bb, "close_browser_async"):
-                    await bb.close_browser_async(profile_id)
-                    bb.delete_browser(profile_id)
-                else:
-                    bb.close_browser(profile_id)
-                    await asyncio.sleep(2)
-                    bb.delete_browser(profile_id)
+                bb.close_browser(profile_id)
+                await asyncio.sleep(2)
+                bb.delete_browser(profile_id)
             except Exception:
                 pass
 

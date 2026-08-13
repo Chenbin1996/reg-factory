@@ -39,7 +39,7 @@ SCRIPTS = [
         "category": "主流程",
         "title": "端到端全流程",
         "desc": "注册 Outlook 邮箱 → 在所选平台注册账号。最常用入口。",
-        "warning": "浏览器兼容说明：ChatGPT 和 Outlook 使用已选择的 RuyiPage Firefox；Claude 和 Grok 当前依赖 Chromium CDP，选择 RuyiPage 时这些阶段会自动使用内置 Chromium。",
+        "warning": "浏览器流程统一使用所选 Chromium provider；推荐 BitBrowser 以获得独立 Profile、Cookie 和指纹。",
         "args": [
             {"flag": "--platforms", "type": "multi", "choices": ["claude", "chatgpt", "grok", "kiro"],
              "default": ["claude"], "help": "要注册的平台(可多选)"},
@@ -181,7 +181,7 @@ SCRIPTS = [
         "category": "单平台注册",
         "title": "Grok 注册",
         "desc": "使用指纹浏览器注册 Grok，支持 Outlook 或配置的临时邮箱，成功后可导入 SUB2API。",
-        "warning": "Grok 当前依赖 Chromium CDP；选择 RuyiPage 时本任务会使用内置 Chromium，不代表 RuyiPage 配置未保存。",
+        "warning": "Grok 使用 Chromium CDP；推荐 BitBrowser 或内置 Chromium。",
         "args": [
             {"flag": "--count", "type": "int", "default": 1, "help": "注册数量"},
             {"flag": "--concurrency", "type": "int", "default": 1,
@@ -208,7 +208,7 @@ SCRIPTS = [
         "category": "单平台注册",
         "title": "Claude 注册",
         "desc": "Claude 单平台注册；支持 YYDS 临时邮箱，自动处理节点预检、magic-link 原生验证和 hCaptcha，成功后保存 sessionKey。",
-        "warning": "运行前必须在“配置 (.env) → Claude 注册与验证”中填写视觉 API 地址和 key。Claude 当前依赖 Chromium CDP；选择 RuyiPage 时本任务会使用内置 Chromium。",
+        "warning": "运行前必须在“配置 (.env) → Claude 注册与验证”中填写视觉 API 地址和 key。Claude 使用 Chromium CDP。",
         "args": [
             {"flag": "--count", "type": "int", "default": 1, "help": "注册数量"},
             {"flag": "--concurrency", "type": "int", "default": 1,
@@ -277,7 +277,7 @@ SCRIPTS = [
         "category": "邮箱注册",
         "title": "Outlook 邮箱注册",
         "desc": "持续自注册 Outlook；最近窗口成功率低于阈值时自动停止，避免持续消耗住宅流量。",
-        "warning": "Outlook 浏览器注册、Graph 授权和账号恢复均使用当前选择的指纹浏览器；选择 RuyiPage 时会启动 Firefox WebDriver BiDi。",
+        "warning": "Outlook 浏览器注册、Graph 授权和账号恢复均使用当前选择的 Chromium provider；推荐 BitBrowser。",
         "args": [
             {"flag": "--count", "type": "int", "default": 0,
              "help": "可选硬上限（0=不限制总次数）"},
@@ -371,12 +371,14 @@ SCRIPTS = [
         ],
     },
     {
-        "id": "install_ruyipage",
-        "file": "tools/install_ruyipage.py",
-        "category": "配置工具",
-        "title": "安装 RuyiPage Firefox",
-        "desc": "自动安装失败时手动重试 RuyiPage Firefox runtime；安装成功后供 ChatGPT、Codex OAuth、GitHub 等已适配流程使用。",
-        "args": [],
+        "id": "export_kiro_credentials",
+        "file": "tools/export_kiro_credentials.py",
+        "category": "导出/上传",
+        "title": "导出 Kiro 凭证",
+        "desc": "把已保存的 Kiro 账号聚合成 hank9999/kiro.rs 可直接读取的 credentials.json。",
+        "args": [
+            {"flag": "--output", "type": "str", "default": "", "help": "可选输出 JSON 路径"},
+        ],
     },
 ]
 
@@ -402,12 +404,6 @@ EXTERNAL_LINKS = [
         "title": "下载 BitBrowser",
         "url": "https://www.bitbrowser.cn/download",
         "desc": "BitBrowser 官方下载页",
-    },
-    {
-        "id": "ruyipage_home",
-        "title": "RuyiPage 项目主页",
-        "url": "https://github.com/LoseNine/ruyipage",
-        "desc": "Firefox WebDriver BiDi 指纹浏览器",
     },
 ]
 
@@ -471,8 +467,8 @@ ENV_SCHEMA = [
         {"key": "REG_FACTORY_PROXY_ROTATE_METHOD", "type": "choice", "choices": ["GET", "POST"],
          "default": "GET", "help": "调用换 IP 接口时使用的方法。"},
         {"key": "REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE", "type": "choice",
-         "choices": ["balanced", "aggressive", "off"], "default": "balanced",
-         "help": "住宅代理浏览器节流：平衡模式拦图片、字体和音视频；激进模式额外拦样式表和常见统计请求。验证码域名始终放行。"},
+         "choices": ["extreme", "aggressive", "balanced", "off"], "default": "balanced",
+         "help": "住宅代理浏览器节流：极限模式还会压制 BitBrowser 后台联网、预取、清单和更多遥测；验证码域名始终放行。"},
         {"key": "OUTLOOK_GRAPH_AUTH_TIMEOUT", "type": "int", "default": 240,
          "help": "Outlook 注册完成后的 Graph 授权独立超时秒数，不计入注册阶段超时。"},
         {"key": "REG_FACTORY_MAX_CONCURRENCY", "type": "int", "default": 10,
@@ -483,9 +479,8 @@ ENV_SCHEMA = [
          "help": "ChatGPT 遇到 Cloudflare 拦截时最多轮换住宅 IP 的次数。"},
     ]},
     {"group": "指纹浏览器", "tests": [{"target": "bitbrowser", "label": "测试 指纹浏览器连通"}], "items": [
-        {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["ruyipage", "bundled", "custom", "bitbrowser", "adspower", "custom_api"],
-         "default": "ruyipage", "help": "ruyipage=默认 Firefox BiDi；旧 Chromium 专用流程会自动使用 bundled。"},
-        {"key": "RUYIPAGE_BROWSER_PATH", "help": "可选的 RuyiPage Firefox 可执行文件；留空使用一键安装的 runtime。"},
+        {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["bitbrowser", "bundled", "custom", "adspower", "custom_api"],
+         "default": "bitbrowser", "help": "默认使用 BitBrowser；也可选择内置或自定义 Chromium、AdsPower、兼容 API。"},
         {"key": "REG_FACTORY_BROWSER_PATH", "help": "内置 Chromium 可执行文件路径"},
         {"key": "CUSTOM_BROWSER_PATH", "help": "custom 模式的 Chrome/Chromium 可执行文件；留空会尝试自动查找。"},
         {"key": "CUSTOM_BROWSER_API", "help": "custom_api 模式的本地 API 地址，必须兼容 BitBrowser 的 browser/* 接口。"},
