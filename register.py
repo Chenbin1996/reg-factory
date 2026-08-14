@@ -172,6 +172,7 @@ CLAUDE_NEW_USER_UNAVAILABLE_MARKERS = (
 
 HCAPTCHA_HOOK_JS = r"""
 (() => {
+    if (!location.pathname.toLowerCase().includes('/magic-link')) return;
     if (window.__rfHcaptchaHookLoaded) return;
     window.__rfHcaptchaHookLoaded = true;
     window.__rfHcaptchaCaptured = window.__rfHcaptchaCaptured || [];
@@ -6504,6 +6505,11 @@ async def main():
         "--captcha-manual-timeout", type=int, default=CLAUDE_CAPTCHA_MANUAL_TIMEOUT,
         help="seconds to wait for manual verification in BitBrowser; 0 disables",
     )
+    parser.add_argument(
+        "--no-auto-validate",
+        action="store_true",
+        help="skip the post-batch validation scan of all saved Claude session keys",
+    )
     args = parser.parse_args()
 
     REGISTER_TIMEOUT = args.timeout
@@ -6862,7 +6868,7 @@ async def main():
     print(f"\n  success: {ok}/{len(results)}")
 
     # 注册完成后自动验证所有新保存的 sessionKey
-    if ok > 0:
+    if ok > 0 and not args.no_auto_validate:
         accounts_file = os.path.join(COOKIE_OUTPUT_DIR, "accounts.txt")
         if os.path.exists(accounts_file) and os.path.getsize(accounts_file) > 0:
             print(f"\n{'=' * 50}")

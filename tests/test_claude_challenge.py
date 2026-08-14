@@ -11,6 +11,12 @@ from common import proxy_switch
 
 
 class ClaudeChallengeTests(unittest.IsolatedAsyncioTestCase):
+    def test_hcaptcha_hook_only_runs_on_magic_link_documents(self):
+        self.assertIn(
+            "location.pathname.toLowerCase().includes('/magic-link')",
+            register.HCAPTCHA_HOOK_JS,
+        )
+
     def test_claude_account_requires_terms_name_and_finished_onboarding(self):
         incomplete = {
             "status": 200,
