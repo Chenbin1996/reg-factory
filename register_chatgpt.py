@@ -816,6 +816,29 @@ async def click_exact(page, label, timeout=5000):
     return False
 
 
+async def submit_chatgpt_email_form(page):
+    """Submit the current email form without reusing a detached locator."""
+    labels = ["Continue", "缍氳", "缁х画", "绻肩簩", "Next", "涓嬩竴姝?", "Teruskan", "Weiter"]
+    if await click_any_exact(page, labels):
+        return True
+    submit = page.locator('button[type="submit"]:not([disabled]):not([aria-disabled="true"])').first
+    try:
+        if await submit.count() > 0 and await submit.is_visible():
+            await submit.click(timeout=8000)
+            return True
+    except Exception:
+        pass
+    fresh_input = page.locator('input[type="email"], input[name="email"]').first
+    try:
+        if await fresh_input.count() > 0 and await fresh_input.is_visible():
+            await fresh_input.press("Enter", timeout=8000)
+            return True
+    except Exception:
+        pass
+    print(f"  [2] email Continue unavailable (url={page.url[:100]})")
+    return False
+
+
 async def click_any_exact(page, labels):
     """依次尝试精确点击一组候选标签，命中任一即返回 True。"""
     for label in labels:
@@ -1011,7 +1034,7 @@ async def recover_stuck_chatgpt_email_submit(page, email):
                 if await submit.count() > 0:
                     await submit.click()
                 else:
-                    await email_input.press("Enter")
+                    await submit_chatgpt_email_form(page)
             await asyncio.sleep(4)
             step = await wait_for_chatgpt_auth_step(page, timeout=15)
             if step not in {"email", "unknown"}:
@@ -1378,7 +1401,7 @@ async def register_one(index, total, p):
             if await sub.count() > 0:
                 await sub.first.click()
             else:
-                await email_input.press("Enter")
+                await submit_chatgpt_email_form(page)
         await asyncio.sleep(5)
         check_timeout()
         auth_step = await wait_for_chatgpt_auth_step(page)
@@ -1421,7 +1444,7 @@ async def register_one(index, total, p):
                     if await sub.count() > 0:
                         await sub.first.click()
                     else:
-                        await email_input.press("Enter")
+                        await submit_chatgpt_email_form(page)
                 await asyncio.sleep(5)
                 await dump_state(page, f"after-email-stuck-retry-{submit_retry + 1}")
             except Exception as exc:
