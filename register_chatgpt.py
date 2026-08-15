@@ -911,6 +911,25 @@ async def fill_email_verified(page, email_input, email, tries=4):
         # 2) 等横幅真正消失/页面稳定再填——横幅抢焦点会让键盘输入落空，必须等它落定
         await asyncio.sleep(0.8)
         await dismiss_cookie_banner(page)
+        # Do not clear a value that is already correct. react_fill resets the
+        # field on each attempt, which can create an empty React submission.
+        try:
+            current = page.locator(sel).first
+            if (
+                await current.count() > 0
+                and await current.is_visible()
+                and (await current.input_value()).strip() == email
+            ):
+                await asyncio.sleep(0.15)
+                fresh = page.locator(sel).first
+                if (
+                    await fresh.count() > 0
+                    and await fresh.is_visible()
+                    and (await fresh.input_value()).strip() == email
+                ):
+                    return True
+        except Exception:
+            pass
         # 3) 填邮箱（React 受控输入）
         if await react_fill(page, sel, email, tries=2, verbose=False):
             # 4) 填完立即确认：横幅若此刻才冒出来盖住，关掉它并回读校验，防 setter 误报
@@ -920,7 +939,7 @@ async def fill_email_verified(page, email_input, email, tries=4):
                 if (await page.locator(sel).first.input_value()).strip() == email:
                     return True
             except Exception:
-                return True
+                pass
         print(f"  [2] email not committed, retry {i+1}/{tries}")
         await asyncio.sleep(1)
     return False
@@ -1359,15 +1378,26 @@ async def register_one(index, total, p):
             return None
         # 填邮箱（内部：每轮先关横幅再填，填完回读确认；见 fill_email_verified）
         if not await fill_email_verified(page, email_input, email):
-            print("  [2] email fill failed after retries")
+            print("  [2][FAIL] email was not committed; refusing blank submit")
+            await page.screenshot(path=f"screenshots/chatgpt_email_not_committed_{index}.png")
+            email_pool.mark_error(PLATFORM, email, email_pw, "email_not_committed")
+            return None
         # 提交前最后一道：关横幅（可能此刻才弹），并回读确认邮箱真在框里，否则再补填一次
         await dismiss_cookie_banner(page)
+        current_email = page.locator(
+            'input[type="email"], input[name="email"]'
+        ).first
         try:
-            if (await email_input.input_value()).strip() != email:
-                print("  [2] email empty before submit, refilling once...")
-                await fill_email_verified(page, email_input, email, tries=2)
+            current_value = (await current_email.input_value()).strip()
         except Exception:
-            pass
+            current_value = ""
+        if current_value != email:
+            print("  [2] email empty before submit, refilling once...")
+            if not await fill_email_verified(page, current_email, email, tries=2):
+                print("  [2][FAIL] email remained empty; refusing blank submit")
+                await page.screenshot(path=f"screenshots/chatgpt_email_not_committed_{index}.png")
+                email_pool.mark_error(PLATFORM, email, email_pw, "email_not_committed")
+                return None
         # 关键优化：在提交邮箱（触发 OpenAI 发码）【之前】先把 Outlook 登录好、过隐私协议、
         # 停在收件箱。这样提交后码一到立刻能扫到，避免"发码后才登录、登录+过协议耗时错过码"。
         # 注意：必须用【独立 BitBrowser 窗口】预登录，绝不能在注册 ctx 里 new_page —— 同 context
@@ -1415,7 +1445,10 @@ async def register_one(index, total, p):
         if any(k in body_l for k in ["必須", "必填", "required", "is required"]):
             print("  [2] still on login (email required), refilling once...")
             await dismiss_cookie_banner(page)
-            await fill_email_verified(page, email_input, email)
+            if not await fill_email_verified(page, email_input, email):
+                print("  [2][FAIL] required retry could not commit email")
+                email_pool.mark_error(PLATFORM, email, email_pw, "email_not_committed")
+                return None
             if not await click_any_exact(page, ["Continue", "続行", "继续", "繼續", "Teruskan"]):
                 sub = page.locator('button[type="submit"]')
                 if await sub.count() > 0:
@@ -1435,7 +1468,9 @@ async def register_one(index, total, p):
                 email_input = page.locator(
                     'input[type="email"], input[name="email"]'
                 ).first
-                await fill_email_verified(page, email_input, email, tries=2)
+                if not await fill_email_verified(page, email_input, email, tries=2):
+                    print("  [2] retry email was not committed; skipping submit")
+                    continue
                 if not await click_any_exact(
                     page,
                     ["Continue", "続行", "继续", "繼續", "Next", "下一步", "Teruskan", "Weiter"],
@@ -1580,7 +1615,9 @@ async def register_one(index, total, p):
                     if await ei.count() == 0:
                         print("  [4] 回退后无邮箱框，放弃重发")
                         return
-                    await fill_email_verified(page, ei, email)
+                    if not await fill_email_verified(page, ei, email):
+                        print("  [4] resend email was not committed; skipping resend")
+                        return
                     await dismiss_cookie_banner(page)
                     if not await click_any_exact(page, ["Continue", "続行", "继续", "繼續", "Next", "下一步", "Teruskan"]):
                         sub = page.locator('button[type="submit"]')

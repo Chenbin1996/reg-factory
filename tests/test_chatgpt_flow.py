@@ -92,6 +92,55 @@ class ChatGPTFlowTests(unittest.TestCase):
         self.assertNotIn('input[type="number"]', register_chatgpt._AGE_SELECTOR)
         self.assertIn('name="age"', register_chatgpt._AGE_SELECTOR)
 
+    def test_email_retry_preserves_already_committed_value(self):
+        async def exercise():
+            current = MagicMock()
+            current.first = current
+            current.count = AsyncMock(return_value=1)
+            current.is_visible = AsyncMock(return_value=True)
+            current.input_value = AsyncMock(return_value="user@example.com")
+            fresh = MagicMock()
+            fresh.first = fresh
+            fresh.count = AsyncMock(return_value=1)
+            fresh.is_visible = AsyncMock(return_value=True)
+            fresh.input_value = AsyncMock(return_value="user@example.com")
+            page = MagicMock()
+            page.locator.side_effect = [current, fresh]
+            with (
+                patch.object(register_chatgpt, "dismiss_cookie_banner", AsyncMock()),
+                patch.object(register_chatgpt.asyncio, "sleep", AsyncMock()),
+                patch.object(register_chatgpt, "react_fill", AsyncMock()) as fill,
+            ):
+                result = await register_chatgpt.fill_email_verified(
+                    page, current, "user@example.com", tries=2
+                )
+            return result, fill
+
+        result, fill = asyncio.run(exercise())
+
+        self.assertTrue(result)
+        fill.assert_not_awaited()
+
+    def test_email_retry_does_not_treat_detached_field_as_success(self):
+        async def exercise():
+            field = MagicMock()
+            field.first = field
+            field.count = AsyncMock(return_value=1)
+            field.is_visible = AsyncMock(return_value=True)
+            field.input_value = AsyncMock(side_effect=RuntimeError("detached"))
+            page = MagicMock()
+            page.locator.return_value = field
+            with (
+                patch.object(register_chatgpt, "dismiss_cookie_banner", AsyncMock()),
+                patch.object(register_chatgpt.asyncio, "sleep", AsyncMock()),
+                patch.object(register_chatgpt, "react_fill", AsyncMock(return_value=False)),
+            ):
+                return await register_chatgpt.fill_email_verified(
+                    page, field, "user@example.com", tries=1
+                )
+
+        self.assertFalse(asyncio.run(exercise()))
+
     def test_birthday_part_handles_camel_case_without_misreading_birthday(self):
         self.assertIsNone(register_chatgpt._birthday_part("birthday"))
         self.assertEqual(
