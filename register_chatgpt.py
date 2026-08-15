@@ -792,14 +792,35 @@ async def dump_state(page, tag=""):
         print(f"  dump_state error: {e}")
 
 
+async def _click_locator(locator, timeout=5000):
+    """Click a ready locator, with a DOM fallback for transient overlays."""
+    try:
+        await locator.click(timeout=timeout, no_wait_after=True)
+        return True
+    except Exception:
+        pass
+    try:
+        await locator.evaluate(
+            """el => {
+                if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
+                    throw new Error('button disabled');
+                }
+                el.click();
+            }"""
+        )
+        return True
+    except Exception:
+        return False
+
+
 async def click_exact(page, label, timeout=5000):
     """精确点击文本完全等于 label 的按钮（避免 has-text 子串误匹配，
     如 'Continue' 误点 'Continue with Google'）。返回是否点击成功。"""
     try:
         btn = page.get_by_role("button", name=label, exact=True)
         if await btn.count() > 0:
-            await btn.first.click(timeout=timeout)
-            return True
+            if await _click_locator(btn.first, timeout=timeout):
+                return True
     except Exception:
         pass
     # 退化：用 CSS 但排除 "with" 字样
@@ -809,14 +830,14 @@ async def click_exact(page, label, timeout=5000):
         for i in range(n):
             t = (await cand.nth(i).inner_text()).strip()
             if t == label:
-                await cand.nth(i).click(timeout=timeout)
-                return True
+                if await _click_locator(cand.nth(i), timeout=timeout):
+                    return True
     except Exception:
         pass
     return False
 
 
-async def submit_chatgpt_email_form(page):
+async def _submit_chatgpt_email_form_once(page):
     """Submit the current email form without reusing a detached locator."""
     labels = ["Continue", "缍氳", "缁х画", "绻肩簩", "Next", "涓嬩竴姝?", "Teruskan", "Weiter"]
     if await click_any_exact(page, labels):
@@ -824,17 +845,32 @@ async def submit_chatgpt_email_form(page):
     submit = page.locator('button[type="submit"]:not([disabled]):not([aria-disabled="true"])').first
     try:
         if await submit.count() > 0 and await submit.is_visible():
-            await submit.click(timeout=8000)
-            return True
+            if await _click_locator(submit, timeout=8000):
+                return True
     except Exception:
         pass
     fresh_input = page.locator('input[type="email"], input[name="email"]').first
     try:
-        if await fresh_input.count() > 0 and await fresh_input.is_visible():
+        if (
+            await fresh_input.count() > 0
+            and await fresh_input.is_visible()
+            and (await fresh_input.input_value()).strip()
+        ):
             await fresh_input.press("Enter", timeout=8000)
             return True
     except Exception:
         pass
+    print(f"  [2] email Continue unavailable (url={page.url[:100]})")
+    return False
+
+
+async def submit_chatgpt_email_form(page, timeout=12000):
+    """Wait for the auth form to hydrate before submitting it."""
+    deadline = time.monotonic() + max(1, timeout) / 1000
+    while time.monotonic() < deadline:
+        if await _submit_chatgpt_email_form_once(page):
+            return True
+        await asyncio.sleep(0.4)
     print(f"  [2] email Continue unavailable (url={page.url[:100]})")
     return False
 
@@ -1426,12 +1462,8 @@ async def register_one(index, total, p):
             except Exception as e:
                 print(f"  [2.5] prelogin error: {str(e)[:60]}")
         # 提交：按钮文本中/英/日多语言精确匹配，避免点到 Continue with Google/Apple
-        if not await click_any_exact(page, ["Continue", "続行", "继续", "繼續", "Next", "下一步", "Teruskan"]):
-            sub = page.locator('button[type="submit"]')
-            if await sub.count() > 0:
-                await sub.first.click()
-            else:
-                await submit_chatgpt_email_form(page)
+        if not await submit_chatgpt_email_form(page):
+            print("  [2][FAIL] email Continue did not become actionable")
         await asyncio.sleep(5)
         check_timeout()
         auth_step = await wait_for_chatgpt_auth_step(page)
@@ -1449,10 +1481,8 @@ async def register_one(index, total, p):
                 print("  [2][FAIL] required retry could not commit email")
                 email_pool.mark_error(PLATFORM, email, email_pw, "email_not_committed")
                 return None
-            if not await click_any_exact(page, ["Continue", "続行", "继续", "繼續", "Teruskan"]):
-                sub = page.locator('button[type="submit"]')
-                if await sub.count() > 0:
-                    await sub.first.click()
+            if not await submit_chatgpt_email_form(page):
+                print("  [2][FAIL] email Continue retry did not become actionable")
             await asyncio.sleep(5)
             await dump_state(page, "after-email-retry")
 
@@ -1471,15 +1501,8 @@ async def register_one(index, total, p):
                 if not await fill_email_verified(page, email_input, email, tries=2):
                     print("  [2] retry email was not committed; skipping submit")
                     continue
-                if not await click_any_exact(
-                    page,
-                    ["Continue", "続行", "继续", "繼續", "Next", "下一步", "Teruskan", "Weiter"],
-                ):
-                    sub = page.locator('button[type="submit"]')
-                    if await sub.count() > 0:
-                        await sub.first.click()
-                    else:
-                        await submit_chatgpt_email_form(page)
+                if not await submit_chatgpt_email_form(page):
+                    print("  [2] email Continue retry did not become actionable")
                 await asyncio.sleep(5)
                 await dump_state(page, f"after-email-stuck-retry-{submit_retry + 1}")
             except Exception as exc:
