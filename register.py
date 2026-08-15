@@ -36,6 +36,7 @@ except Exception:
 from common import human_mouse as _hm
 from common.traffic_saver import (
     install as install_traffic_saver,
+    log_summary as log_traffic_summary,
     set_bypass as set_traffic_saver_bypass,
 )
 try:
@@ -3360,7 +3361,8 @@ def _verify_claude_magic_link_http(magic_link, request_template=None, browser_co
 
 async def _open_claude_authenticated_app(page, source="magic"):
     """Open Claude's required onboarding after sessionKey is installed."""
-    if set_traffic_saver_bypass(page.context, True):
+    bypassed = set_traffic_saver_bypass(page.context, True)
+    if bypassed:
         print("  [traffic] bypass enabled for Claude authenticated bootstrap")
     try:
         await page.goto(
@@ -3372,6 +3374,9 @@ async def _open_claude_authenticated_app(page, source="magic"):
         await dismiss_claude_cookie_banner(page)
     except Exception as error:
         print(f"  [{source}] authenticated app navigation warning: {str(error)[:120]}")
+    finally:
+        if bypassed and set_traffic_saver_bypass(page.context, False):
+            print("  [traffic] saver restored after Claude authenticated bootstrap")
 
 
 async def verify_claude_magic_link_http(page, magic_link):
@@ -5631,6 +5636,7 @@ async def register(
 
     session_key = None
     email_submitted = False
+    context = None
     try:
         async with async_playwright() as p:
             print("[2/6] connect Playwright...")
@@ -6432,6 +6438,8 @@ async def register(
         if email:
             mark_email_error(email, email_password, str(e)[:100])
     finally:
+        if context is not None:
+            log_traffic_summary(context)
         try:
             bb.close_browser(profile_id)
             print("  browser closed")

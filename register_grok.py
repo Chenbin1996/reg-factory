@@ -36,7 +36,10 @@ from common.mailbox import get_code_by_token, get_code_outlook_pw, prelogin_outl
 from common.cookies import save_platform_cookies
 from common import emails as email_pool
 from common import proxy_switch
-from common.traffic_saver import install as install_traffic_saver
+from common.traffic_saver import (
+    install as install_traffic_saver,
+    log_summary as log_traffic_summary,
+)
 
 # 打码平台 key（解 Cloudflare Turnstile）。config 顶部会加载 .env，真实环境变量优先。
 try:
@@ -1055,6 +1058,7 @@ async def register_one(index, total, p, node):
     name = f"grok_{time.strftime('%m%d_%H%M%S')}_{index}"
     bb = BitBrowser()
     pid = None
+    ctx = None
     success = False
 
     async def _protocol_fallback(reason):
@@ -1543,6 +1547,8 @@ async def register_one(index, total, p, node):
             _mark_error(str(e)[:50])
         return None
     finally:
+        if ctx is not None:
+            log_traffic_summary(ctx)
         if pid:
             keep = KEEP_ON_FAIL and not success
             try:
