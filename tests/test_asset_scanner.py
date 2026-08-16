@@ -1,6 +1,8 @@
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -198,6 +200,70 @@ class AssetScannerTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in results], ["restricted", "unknown", "unknown"])
         self.assertIn("circuit_breaker:rate_limited", results[1]["evidence"])
 
+    def test_account_concurrency_scans_one_platform_in_bounded_batches(self):
+        records = [
+            {"id": f"mail-{index}", "platform": "outlook", "email": f"mail{index}@example.com"}
+            for index in range(4)
+        ]
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+
+        def scan(record, _timeout):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.03)
+            with lock:
+                active -= 1
+            return {
+                **record,
+                "status": "normal",
+                "detail": "ok",
+                "evidence": "test:200",
+            }
+
+        with patch.object(asset_scanner, "_scan_record", side_effect=scan):
+            results = asset_scanner._scan_platform_safely(
+                "outlook", records, 15, 0, 0, account_concurrency=2
+            )
+
+        self.assertEqual(len(results), 4)
+        self.assertEqual(peak, 2)
+
+    def test_report_inventory_is_cached_between_webui_polls(self):
+        record = {
+            "id": "cached-one",
+            "platform": "outlook",
+            "kind": "mailbox",
+            "email": "cached@example.com",
+            "email_provider": "other",
+            "source": "emails.txt:1",
+        }
+        asset_scanner.invalidate_report_cache()
+        with patch.object(asset_scanner, "_inventory_records", return_value=[record]) as inventory:
+            first = asset_scanner.get_report()
+            second = asset_scanner.get_report()
+
+        self.assertEqual(first, second)
+        inventory.assert_called_once()
+
+    def test_fast_health_scan_skips_optional_plus_request(self):
+        record = {"id": "chat", "platform": "chatgpt", "email": "chat@example.com"}
+        health = {
+            "status": "normal",
+            "detail": "ok",
+            "evidence": "test:200",
+            "_access_token": "access-token",
+        }
+        with patch.dict(asset_scanner._SCANNERS, {"chatgpt": lambda *_args: health}, clear=True):
+            with patch.object(asset_scanner, "_scan_chatgpt_plus_trial") as plus:
+                result = asset_scanner._scan_record(record, 5, include_plus_trial=False)
+
+        plus.assert_not_called()
+        self.assertEqual(result["plus_trial"], "disabled")
+
     def test_plain_403_is_restricted_not_banned(self):
         response = SimpleNamespace(status_code=403, text="Cloudflare challenge")
 
@@ -230,6 +296,66 @@ class AssetScannerTests(unittest.TestCase):
         self.assertEqual(result["plus_trial"], "eligible")
         self.assertIn("免费试用", result["plus_trial_detail"])
         self.assertEqual(session.get.call_args.kwargs["params"]["coupon"], "plus-1-month-free")
+
+    def test_chatgpt_accounts_check_plus_campaign_is_eligible(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "accounts": {
+                "default": {
+                    "account": {"plan_type": "free"},
+                    "entitlement": {"subscription_plan": "chatgptfreeplan"},
+                    "eligible_promo_campaigns": {
+                        "plus": {
+                            "id": "plus-trial",
+                            "metadata": {
+                                "title": "Plus trial",
+                                "discount": {"percentage": 100},
+                                "duration": {"num_periods": 1, "period": "month"},
+                            },
+                        }
+                    },
+                }
+            }
+        }
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        record = {"email": "trial@example.com", "_token": {"planType": "free"}}
+
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            result = asset_scanner._scan_chatgpt_plus_trial(record, "access-token", 10)
+
+        self.assertEqual(result["plus_trial"], "eligible")
+        self.assertEqual(result["plus_trial_campaign_id"], "plus-trial")
+        self.assertEqual(result["plus_trial_evidence"], "accounts_check:200:eligible")
+        self.assertEqual(
+            session.get.call_args.kwargs["params"], {"timezone_offset_min": "-"}
+        )
+
+    def test_chatgpt_accounts_check_without_campaign_is_ineligible(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "accounts": {
+                "default": {
+                    "account": {"plan_type": "free"},
+                    "entitlement": {"subscription_plan": "chatgptfreeplan"},
+                    "eligible_promo_campaigns": {},
+                }
+            }
+        }
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        record = {"email": "free@example.com", "_token": {"planType": "free"}}
+
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            result = asset_scanner._scan_chatgpt_plus_trial(record, "access-token", 10)
+
+        self.assertEqual(result["plus_trial"], "ineligible")
+        self.assertEqual(result["plus_trial_evidence"], "accounts_check:200:no_plus_campaign")
+        session.get.assert_called_once()
 
     def test_chatgpt_explicit_zero_price_offer_is_labeled(self):
         response = MagicMock(status_code=200)

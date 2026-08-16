@@ -13,6 +13,45 @@ import oauth_codex
 
 
 class ChatGPTFlowTests(unittest.TestCase):
+    def test_chatgpt_registration_prefers_a_verified_graph_mailbox(self):
+        async def exercise():
+            mailbox = ("good@outlook.com", "pw", "rt", "client")
+            with patch.object(
+                register_chatgpt.email_pool,
+                "retryable_email",
+                return_value=None,
+            ) as retryable, patch.object(
+                register_chatgpt.email_pool,
+                "latest_email",
+                return_value=mailbox,
+            ) as latest, patch.object(
+                register_chatgpt.email_pool, "next_email"
+            ) as fallback, patch.object(
+                register_chatgpt.email_pool, "mark_error"
+            ), patch.dict(
+                os.environ, {"CHATGPT_GOTO_ATTEMPTS": "1"}, clear=False
+            ), patch.object(
+                register_chatgpt,
+                "open_and_connect",
+                AsyncMock(side_effect=RuntimeError("stop after mailbox selection")),
+            ):
+                await register_chatgpt.register_one(1, 1, MagicMock())
+            return retryable, latest, fallback
+
+        retryable, latest, fallback = asyncio.run(exercise())
+
+        latest.assert_called_once_with(
+            register_chatgpt.PLATFORM,
+            require_token=True,
+            validate_token=True,
+        )
+        retryable.assert_called_once_with(
+            register_chatgpt.PLATFORM,
+            require_token=True,
+            validate_token=True,
+        )
+        fallback.assert_not_called()
+
     def test_chatgpt_icloud_mailbox_is_service_filtered(self):
         with patch.object(
             register_chatgpt,
@@ -25,6 +64,46 @@ class ChatGPTFlowTests(unittest.TestCase):
         create.assert_called_once_with(
             provider="icloud", mail_type="icloud-code", service="openai"
         )
+
+    def test_exhausted_outlook_pool_falls_back_to_icloud(self):
+        mailbox = {
+            "id": "icloud-box",
+            "email": "fallback@icloud.com",
+            "provider": "icloud",
+        }
+        with patch.object(register_chatgpt, "EMAIL_PROVIDER", "pool"), patch.object(
+            register_chatgpt.email_pool, "retryable_email", return_value=None
+        ), patch.object(
+            register_chatgpt.email_pool, "latest_email", return_value=None
+        ), patch.object(
+            register_chatgpt.email_pool, "next_email", return_value=None
+        ), patch.object(
+            register_chatgpt, "create_chatgpt_icloud_mailbox", return_value=mailbox
+        ) as create, patch.dict(
+            os.environ, {"CHATGPT_POOL_ICLOUD_FALLBACK": "true"}, clear=False
+        ):
+            result = register_chatgpt.allocate_chatgpt_registration_mailbox()
+
+        self.assertEqual(result["email"], "fallback@icloud.com")
+        self.assertIs(result["mailbox"], mailbox)
+        create.assert_called_once_with()
+
+    def test_outlook_pool_fallback_can_be_disabled(self):
+        with patch.object(register_chatgpt, "EMAIL_PROVIDER", "pool"), patch.object(
+            register_chatgpt.email_pool, "retryable_email", return_value=None
+        ), patch.object(
+            register_chatgpt.email_pool, "latest_email", return_value=None
+        ), patch.object(
+            register_chatgpt.email_pool, "next_email", return_value=None
+        ), patch.object(
+            register_chatgpt, "create_chatgpt_icloud_mailbox"
+        ) as create, patch.dict(
+            os.environ, {"CHATGPT_POOL_ICLOUD_FALLBACK": "false"}, clear=False
+        ):
+            result = register_chatgpt.allocate_chatgpt_registration_mailbox()
+
+        self.assertIsNone(result)
+        create.assert_not_called()
 
     def test_registration_runs_targeted_plus_trial_check(self):
         async def exercise():
@@ -87,6 +166,142 @@ class ChatGPTFlowTests(unittest.TestCase):
 
         self.assertFalse(recovered)
         page.goto.assert_not_awaited()
+
+    def test_signup_timeout_accepts_an_already_committed_auth_document(self):
+        email = MagicMock()
+        email.count = AsyncMock(return_value=1)
+        page = MagicMock()
+        page.url = register_chatgpt.SIGNUP_URL
+        page.goto = AsyncMock(side_effect=TimeoutError("navigation timeout"))
+        page.locator.return_value = email
+        context = MagicMock()
+        context.new_page = AsyncMock()
+
+        result = asyncio.run(register_chatgpt.navigate_chatgpt_signup(context, page))
+
+        self.assertIs(result, page)
+        page.goto.assert_awaited_once_with(
+            register_chatgpt.SIGNUP_URL,
+            timeout=30000,
+            wait_until="domcontentloaded",
+        )
+        context.new_page.assert_not_awaited()
+
+    def test_signup_timeout_rotates_auto_node_and_replaces_wedged_tab(self):
+        old_page = MagicMock()
+        old_page.url = "about:blank"
+        old_page.goto = AsyncMock(side_effect=TimeoutError("navigation timeout"))
+        old_page.close = AsyncMock()
+        fresh_page = MagicMock()
+        fresh_page.goto = AsyncMock(return_value=None)
+        context = MagicMock()
+        context.new_page = AsyncMock(return_value=fresh_page)
+        observer = MagicMock()
+
+        with (
+            patch.dict(
+                os.environ,
+                {"CHATGPT_GOTO_TIMEOUT_SECONDS": "15", "CHATGPT_GOTO_ATTEMPTS": "2"},
+                clear=False,
+            ),
+            patch.object(register_chatgpt, "CHATGPT_NODE", "auto"),
+            patch.object(register_chatgpt.proxy_switch, "proxy_mode", return_value="clash_auto"),
+            patch.object(
+                register_chatgpt,
+                "_rotate_chatgpt_auto_node",
+                AsyncMock(return_value="next-node"),
+            ) as rotate,
+        ):
+            result = asyncio.run(
+                register_chatgpt.navigate_chatgpt_signup(context, old_page, observer)
+            )
+
+        self.assertIs(result, fresh_page)
+        rotate.assert_awaited_once_with()
+        context.new_page.assert_awaited_once_with()
+        old_page.close.assert_awaited_once_with()
+        fresh_page.on.assert_called_once_with("response", observer)
+        fresh_page.goto.assert_awaited_once_with(
+            register_chatgpt.SIGNUP_URL,
+            timeout=15000,
+            wait_until="domcontentloaded",
+        )
+
+    def test_auth_asset_monitor_tracks_success_and_connection_failures(self):
+        monitor = register_chatgpt.ChatGPTAuthAssetMonitor()
+        success = MagicMock(
+            url="https://chatgpt.com/cdn/assets/auth-entry.js", status=200
+        )
+        unrelated = MagicMock(url="https://example.com/app.js", status=200)
+        failed = MagicMock(
+            url="https://chatgpt.com/cdn/assets/auth-chunk.js",
+            failure="net::ERR_CONNECTION_CLOSED",
+        )
+
+        monitor.observe_response(success)
+        monitor.observe_response(unrelated)
+        monitor.observe_failure(failed)
+
+        self.assertEqual(monitor.loaded, {"/cdn/assets/auth-entry.js"})
+        self.assertEqual(monitor.failed, ["net::ERR_CONNECTION_CLOSED"])
+
+    def test_auth_assets_require_a_hydrated_email_form(self):
+        email = MagicMock()
+        email.first = email
+        email.count = AsyncMock(return_value=1)
+        email.is_visible = AsyncMock(return_value=True)
+        page = MagicMock()
+        page.locator.return_value = email
+        monitor = register_chatgpt.ChatGPTAuthAssetMonitor()
+        monitor.loaded.add("/cdn/assets/auth-entry.js")
+
+        with patch.object(
+            register_chatgpt,
+            "_chatgpt_email_form_hydrated",
+            AsyncMock(return_value=True),
+        ):
+            ready = asyncio.run(
+                register_chatgpt.wait_for_chatgpt_auth_assets(
+                    page, monitor, timeout=1
+                )
+            )
+
+        self.assertTrue(ready)
+
+    def test_auth_asset_failures_reject_the_server_rendered_shell(self):
+        monitor = register_chatgpt.ChatGPTAuthAssetMonitor()
+        monitor.failed.extend(["closed", "closed", "closed"])
+
+        ready = asyncio.run(
+            register_chatgpt.wait_for_chatgpt_auth_assets(
+                MagicMock(), monitor, timeout=1
+            )
+        )
+
+        self.assertFalse(ready)
+
+    def test_auth_assets_accept_visible_form_when_new_react_markers_are_hidden(self):
+        email = MagicMock()
+        email.first = email
+        email.count = AsyncMock(return_value=1)
+        email.is_visible = AsyncMock(return_value=True)
+        page = MagicMock()
+        page.locator.return_value = email
+        monitor = register_chatgpt.ChatGPTAuthAssetMonitor()
+        monitor.loaded.add("/cdn/assets/auth-entry.js")
+
+        with patch.object(
+            register_chatgpt,
+            "_chatgpt_email_form_hydrated",
+            AsyncMock(return_value=False),
+        ):
+            ready = asyncio.run(
+                register_chatgpt.wait_for_chatgpt_auth_assets(
+                    page, monitor, timeout=1, fallback_after=0
+                )
+            )
+
+        self.assertTrue(ready)
 
     def test_age_selector_does_not_capture_generic_number_inputs(self):
         self.assertNotIn('input[type="number"]', register_chatgpt._AGE_SELECTOR)
@@ -541,6 +756,12 @@ class ChatGPTFlowTests(unittest.TestCase):
         code_input.count = AsyncMock(side_effect=[1, 0])
         page.locator.return_value = code_input
 
+        async def click_retry(_page, labels, **_kwargs):
+            if "重试" in labels:
+                page.url = "https://chatgpt.com/"
+                return True
+            return False
+
         with (
             patch.object(
                 register_chatgpt,
@@ -555,12 +776,11 @@ class ChatGPTFlowTests(unittest.TestCase):
             patch.object(
                 register_chatgpt,
                 "click_any_exact",
-                AsyncMock(side_effect=lambda _page, labels, **_kwargs: "重试" in labels),
+                AsyncMock(side_effect=click_retry),
             ) as click,
             patch.object(register_chatgpt, "dump_state", AsyncMock()),
             patch.object(register_chatgpt.asyncio, "sleep", AsyncMock()),
         ):
-            page.url = "https://chatgpt.com/"
             asyncio.run(
                 register_chatgpt.submit_email_verification_code(
                     page, 'input[name="code"]', "519907"
@@ -568,6 +788,169 @@ class ChatGPTFlowTests(unittest.TestCase):
             )
 
         self.assertTrue(any("重试" in call.args[1] for call in click.await_args_list))
+
+    def test_email_verification_does_not_submit_an_uncommitted_code(self):
+        code_input = MagicMock()
+        code_input.first = code_input
+        code_input.count = AsyncMock(return_value=1)
+        page = MagicMock()
+        page.locator.return_value = code_input
+
+        with patch.object(
+            register_chatgpt, "react_fill", AsyncMock(return_value=False)
+        ), patch.object(
+            register_chatgpt, "click_any_exact", AsyncMock()
+        ) as click:
+            submitted = asyncio.run(
+                register_chatgpt._fill_and_submit_email_code(
+                    page, 'input[name="code"]', "134832"
+                )
+            )
+
+        self.assertFalse(submitted)
+        click.assert_not_awaited()
+
+    def test_stuck_verification_click_uses_native_form_submit(self):
+        code_input = MagicMock()
+        code_input.first = code_input
+        code_input.count = AsyncMock(return_value=1)
+        page = MagicMock()
+        page.url = "https://auth.openai.com/email-verification"
+        page.locator.return_value = code_input
+        page.reload = AsyncMock()
+
+        async def submit(_page, _selector, _code, **kwargs):
+            if kwargs.get("submit_method") == "request_submit":
+                page.url = "https://auth.openai.com/about-you"
+            return True
+
+        with patch.object(
+            register_chatgpt,
+            "_fill_and_submit_email_code",
+            AsyncMock(side_effect=submit),
+        ) as fill_submit, patch.object(
+            register_chatgpt,
+            "is_email_verification_route_error",
+            AsyncMock(return_value=False),
+        ), patch.object(
+            register_chatgpt, "dump_state", AsyncMock()
+        ), patch.object(
+            register_chatgpt.asyncio, "sleep", AsyncMock()
+        ):
+            asyncio.run(
+                register_chatgpt.submit_email_verification_code(
+                    page, 'input[name="code"]', "134832"
+                )
+            )
+
+        methods = [call.kwargs.get("submit_method", "click") for call in fill_submit.await_args_list]
+        self.assertEqual(methods, ["click", "request_submit"])
+        page.reload.assert_not_awaited()
+
+    def test_stuck_native_verification_submit_requests_a_fresh_code(self):
+        code_input = MagicMock()
+        code_input.first = code_input
+        code_input.count = AsyncMock(return_value=1)
+        page = MagicMock()
+        page.url = "https://auth.openai.com/email-verification"
+        page.locator.return_value = code_input
+        page.reload = AsyncMock()
+
+        async def submit(_page, _selector, _code, **kwargs):
+            return True
+
+        with patch.object(
+            register_chatgpt,
+            "_fill_and_submit_email_code",
+            AsyncMock(side_effect=submit),
+        ) as fill_submit, patch.object(
+            register_chatgpt,
+            "is_email_verification_route_error",
+            AsyncMock(return_value=False),
+        ), patch.object(
+            register_chatgpt, "dump_state", AsyncMock()
+        ), patch.object(
+            register_chatgpt.asyncio, "sleep", AsyncMock()
+        ):
+            with self.assertRaises(register_chatgpt.EmailVerificationRetryNeeded):
+                asyncio.run(
+                    register_chatgpt.submit_email_verification_code(
+                        page, 'input[name="code"]', "134832"
+                    )
+                )
+
+        methods = [call.kwargs.get("submit_method", "click") for call in fill_submit.await_args_list]
+        self.assertEqual(methods, ["click", "request_submit"])
+        page.reload.assert_not_awaited()
+
+    def test_email_verified_success_screen_is_not_treated_as_failure(self):
+        page = MagicMock()
+        page.url = "https://auth.openai.com/email-verification"
+        body = MagicMock()
+        body.inner_text = AsyncMock(
+            return_value=(
+                "Email verified Your email (user@example.com) "
+                "has already been verified"
+            )
+        )
+        page.locator.return_value = body
+
+        with patch.object(
+            register_chatgpt,
+            "_fill_and_submit_email_code",
+            AsyncMock(return_value=True),
+        ) as submit, patch.object(
+            register_chatgpt, "dump_state", AsyncMock()
+        ), patch.object(register_chatgpt.asyncio, "sleep", AsyncMock()):
+            asyncio.run(
+                register_chatgpt.submit_email_verification_code(
+                    page, 'input[name="code"]', "994250"
+                )
+            )
+
+        submit.assert_awaited_once()
+
+    def test_email_verification_reports_service_rejection(self):
+        page = MagicMock()
+        page.url = "https://auth.openai.com/email-verification"
+        code_input = MagicMock()
+        code_input.first = code_input
+        code_input.count = AsyncMock(return_value=1)
+        page.locator.return_value = code_input
+        monitor = MagicMock()
+        monitor.clear = AsyncMock()
+        monitor.latest = AsyncMock(return_value={
+            "code": "invalid_code",
+            "message": "Verification code is invalid or expired",
+            "status": 400,
+            "url": "/email-verification",
+        })
+
+        with patch.object(
+            register_chatgpt,
+            "_fill_and_submit_email_code",
+            AsyncMock(return_value=True),
+        ), patch.object(
+            register_chatgpt,
+            "is_email_verification_route_error",
+            AsyncMock(return_value=False),
+        ), patch.object(
+            register_chatgpt, "dump_state", AsyncMock()
+        ), patch.object(
+            register_chatgpt.asyncio, "sleep", AsyncMock()
+        ):
+            with self.assertRaisesRegex(RuntimeError, "invalid_code"):
+                asyncio.run(
+                    register_chatgpt.submit_email_verification_code(
+                        page,
+                        'input[name="code"]',
+                        "134832",
+                        auth_monitor=monitor,
+                    )
+                )
+
+        monitor.clear.assert_awaited_once_with()
+        monitor.latest.assert_awaited_once_with()
 
     def test_blank_codex_numeric_env_uses_default(self):
         with patch.dict(os.environ, {"CODEX_SMS_TIMEOUT": ""}):
@@ -715,6 +1098,22 @@ class ChatGPTFlowTests(unittest.TestCase):
         probe.assert_called_once_with(direct=False)
         rotate.assert_not_called()
 
+    def test_clash_worker_auto_country_defers_transient_http_403(self):
+        with patch.object(register_chatgpt, "CHATGPT_NODE", "auto"), patch.object(
+            register_chatgpt, "CHATGPT_COUNTRY", "auto"
+        ), patch.object(
+            register_chatgpt.proxy_switch,
+            "proxy_mode",
+            return_value="clash_auto",
+        ), patch.object(
+            register_chatgpt,
+            "_probe_chatgpt_node",
+            return_value=(False, "US", 403),
+        ):
+            country = register_chatgpt.ensure_chatgpt_worker_country()
+
+        self.assertEqual(country, "US")
+
     def test_worker_explicit_country_keeps_http_403_strict(self):
         with patch.object(register_chatgpt, "CHATGPT_NODE", "auto"), patch.object(
             register_chatgpt, "CHATGPT_COUNTRY", "US"
@@ -847,6 +1246,13 @@ class ChatGPTFlowTests(unittest.TestCase):
             ),
             0,
         )
+
+    def test_end_to_end_chatgpt_gets_one_same_mailbox_recovery_attempt(self):
+        args = argparse.Namespace(platform_retries=0)
+        self.assertEqual(register_three_platforms.platform_retry_count("chatgpt", args), 1)
+        self.assertEqual(register_three_platforms.platform_retry_count("claude", args), 0)
+        args.platform_retries = 2
+        self.assertEqual(register_three_platforms.platform_retry_count("chatgpt", args), 2)
 
     def test_full_flow_redacts_credentials(self):
         rendered = run_full_flow.redact_command(

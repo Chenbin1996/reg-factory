@@ -39,6 +39,68 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+
+def _terminate_process_tree(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    pid = int(getattr(proc, "pid", 0) or 0)
+    try:
+        if os.name == "nt" and pid > 0:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            proc.terminate()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
+def _cleanup_active_profiles(owner=None):
+    """Close/delete profiles created by this flow, including API-detached Chrome."""
+    try:
+        from common.browser_registry import active_profiles, unregister
+        from bitbrowser import BitBrowser
+        records = active_profiles(owner=owner)
+    except Exception:
+        return 0
+    cleaned = 0
+    for record in records:
+        profile_id = record.get("id")
+        if not profile_id:
+            continue
+        try:
+            bb = BitBrowser(api_base=record.get("api_base") or None)
+            try:
+                bb.close_browser(profile_id)
+            except Exception:
+                pass
+            try:
+                bb.delete_browser(profile_id)
+            except Exception:
+                pass
+            unregister(profile_id)
+            cleaned += 1
+        except Exception:
+            pass
+    if cleaned:
+        log(f"已回收 {cleaned} 个残留浏览器 profile", "OK")
+    return cleaned
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or ROOT
 EMAILS_FILE = os.path.join(DATA_ROOT, "emails.txt")
@@ -195,12 +257,8 @@ def stage_emails(args, env, target_count=1, concurrency=1):
             if not line:
                 time.sleep(0.2)
     finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        _terminate_process_tree(proc)
+        _cleanup_active_profiles(owner=outlook_env.get("REG_FACTORY_RUN_ID"))
     if not new_emails:
         fresh = [t for t in read_fresh_emails() if t[0] not in before]
         new_emails = fresh[:target_count]
@@ -277,7 +335,10 @@ def stage_platforms(args, env, email, password, token="", client_id=""):
     if args.dry_run:
         return 0
     proc = subprocess.Popen(cmd, cwd=DATA_ROOT, env=env)
-    return proc.wait()
+    try:
+        return proc.wait()
+    finally:
+        _terminate_process_tree(proc)
 
 
 def run_wave(args, env, target_count):
@@ -320,6 +381,7 @@ def run_wave(args, env, target_count):
             except Exception as exc:
                 log(f"管线异常 email={email}: {exc}", "ERR")
                 results.append((1, email))
+    _cleanup_active_profiles(owner=env.get("REG_FACTORY_RUN_ID"))
     return results
 
 
@@ -346,6 +408,7 @@ def run_once(args, env):
     # Stage B
     print("=" * 64)
     rc = stage_platforms(args, env, email, password, token, client_id)
+    _cleanup_active_profiles(owner=env.get("REG_FACTORY_RUN_ID"))
     print("=" * 64)
     dt = time.time() - t0
     log(f"本轮结束  email={email}  Stage B exit={rc}  用时 {dt:.0f}s",
@@ -456,6 +519,7 @@ def main():
         raise SystemExit("--skip-email 只能跑单轮，不能配合 --rounds")
 
     env = build_child_env(args)
+    env.setdefault("REG_FACTORY_RUN_ID", f"full-flow-{os.getpid()}-{int(time.time() * 1000)}")
     t_all = time.time()
     print("=" * 64)
     mode = "无限" if args.rounds == 0 else f"{args.rounds} 轮"
@@ -497,6 +561,8 @@ def main():
                 time.sleep(args.round_sleep)
     except KeyboardInterrupt:
         log("收到 Ctrl+C，停止循环", "WARN")
+    finally:
+        _cleanup_active_profiles(owner=env.get("REG_FACTORY_RUN_ID"))
 
     dt = time.time() - t_all
     print("=" * 64)

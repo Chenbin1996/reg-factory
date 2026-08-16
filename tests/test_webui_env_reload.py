@@ -314,7 +314,12 @@ class WebUIRunStreamTests(unittest.IsolatedAsyncioTestCase):
             return_value=[{"pid": 101}, {"pid": 202}],
         ):
             with patch.object(server, "_terminate_process_tree", return_value=True) as terminate:
-                result = await server.api_stop_all()
+                with patch.object(
+                    server,
+                    "_cleanup_registered_browser_profiles",
+                    return_value={"closed": 0, "failed": []},
+                ):
+                    result = await server.api_stop_all()
         self.assertTrue(result["ok"])
         self.assertEqual(result["stopped"], 2)
         self.assertEqual(result["tracked"], 1)
@@ -357,6 +362,7 @@ class WebUIAssetScanTests(unittest.IsolatedAsyncioTestCase):
             "finished_at": "",
             "error": "",
             "progress": {"completed": 0, "total": 0, "current": ""},
+            "quarantine": {"moved_accounts": 0, "moved_files": 0},
         })
 
     async def test_asset_scan_runs_in_background_and_exposes_progress(self):
@@ -391,7 +397,52 @@ class WebUIAssetScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current["scan"]["progress"]["completed"], 1)
         self.assertEqual(current["summary"]["statuses"]["normal"], 1)
         self.assertEqual(captured["concurrency"], 2)
-        self.assertFalse(captured["force"])
+        self.assertEqual(captured["account_concurrency"], 4)
+        self.assertFalse(captured["include_plus_trial"])
+        self.assertTrue(captured["force"])
+
+    async def test_progress_only_poll_does_not_rebuild_inventory(self):
+        from common import asset_scanner
+
+        server.ASSET_SCAN_STATE["running"] = True
+        server.ASSET_SCAN_STATE["progress"] = {"completed": 3, "total": 10, "current": "user"}
+        with patch.object(asset_scanner, "get_report", side_effect=AssertionError("inventory read")):
+            result = server.api_asset_scan_get(FakeJSONRequest(), progress_only=True)
+
+        self.assertTrue(result["scan"]["running"])
+        self.assertEqual(result["scan"]["progress"]["completed"], 3)
+
+    async def test_batch_export_returns_zip_and_archives_claimed_assets(self):
+        from common import asset_store
+
+        result = {
+            "kind": "email",
+            "email": "user@example.com",
+            "source": "emails.txt:1",
+            "format": "four",
+            "data": "user@example.com----pw----rt----cid",
+        }
+        with patch.object(asset_store, "export_batch", return_value=[result]) as export:
+            with patch.object(
+                asset_store,
+                "archive_asset_results",
+                return_value={"moved_accounts": 1, "moved_files": 1},
+            ) as archive:
+                response = await server.api_asset_export(FakeJSONRequest({
+                    "resource": "emails",
+                    "format": "four",
+                    "limit": 10,
+                    "consume": True,
+                }))
+
+        self.assertTrue(response.body.startswith(b"PK"))
+        self.assertEqual(response.headers["x-asset-count"], "1")
+        self.assertEqual(response.headers["x-asset-consumed"], "1")
+        self.assertTrue(export.call_args.kwargs["verified_only"])
+        self.assertTrue(export.call_args.kwargs["include_claimed"])
+        archive.assert_called_once_with(
+            [result], bucket="exported", reason="manual_batch_export"
+        )
 
     async def test_asset_scan_rejects_unknown_platform(self):
         response = await server.api_asset_scan_start(FakeJSONRequest({"platforms": ["unknown"]}))

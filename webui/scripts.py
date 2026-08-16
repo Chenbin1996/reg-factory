@@ -513,6 +513,10 @@ ENV_SCHEMA = [
         {"key": "ASSET_SCAN_CHATGPT_PLUS_CAMPAIGN", "default": "plus-1-month-free",
          "help": "ChatGPT Plus 试用资格检测使用的活动标识。"},
     ]},
+    {"group": "Plus 协议提链", "items": [
+        {"key": "REG_FACTORY_PROTOCOL_PAYMENT_ROOT",
+         "help": "可选；GPT-Register-Tool 本地目录。留空时自动查找同级目录，用于 Plus 导入后的批量协议提链。"},
+    ]},
     {"group": "网络出口", "tests": [{"target": "clash", "label": "测试 Clash 连通"}], "items": [
         {"key": "PROXY_MODE", "type": "choice", "choices": ["clash_auto", "clash_fixed", "residential"],
          "default": "clash_auto", "help": "Clash 自动轮换、固定节点，或动态住宅代理。建议在左侧“网络出口”页配置。"},
@@ -557,6 +561,10 @@ ENV_SCHEMA = [
          "help": "允许多个并发账号共享同一公网出口；默认关闭以降低关联和限流风险。"},
         {"key": "CHATGPT_RESIDENTIAL_ROTATE_RETRIES", "default": "3",
          "help": "ChatGPT 遇到 Cloudflare 拦截时最多轮换住宅 IP 的次数。"},
+        {"key": "CHATGPT_GOTO_TIMEOUT_SECONDS", "type": "int", "default": 30,
+         "help": "ChatGPT 登录页单次导航超时；超时后会检查已提交页面，否则换节点并新建标签页。"},
+        {"key": "CHATGPT_GOTO_ATTEMPTS", "type": "int", "default": 3,
+         "help": "ChatGPT 登录页最多导航次数，范围 1 到 4。"},
     ]},
     {"group": "指纹浏览器", "tests": [{"target": "bitbrowser", "label": "测试 指纹浏览器连通"}], "items": [
         {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["bitbrowser", "bundled", "custom", "adspower", "custom_api"],
