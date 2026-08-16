@@ -180,6 +180,28 @@ class WebUIEnvReloadTests(unittest.TestCase):
         self.assertIn("REG_FACTORY_RESIDENTIAL_TRAFFIC_MODE=balanced", saved)
         self.assertIn("REG_FACTORY_ALLOW_SHARED_EGRESS=true", saved)
 
+    def test_proxy_save_persists_protocol_link_and_payment_egress(self):
+        path = self._env_file("unchanged")
+
+        async def save():
+            with patch.object(server, "ENV_PATH", path):
+                with patch.object(server, "_proxy_panel_data", return_value={"config": {}}):
+                    with patch("common.proxy_switch.ensure_proxy_mode", return_value="test-node"):
+                        return await server.api_proxy_set(FakeJSONRequest({
+                            "config": {
+                                "PROXY_MODE": "clash_auto",
+                                "REG_FACTORY_PLUS_LINK_PROXY_OVERRIDE": "http://link.test:7901",
+                                "REG_FACTORY_PLUS_BIND_PROXY_OVERRIDE": "http://pay.test:7902",
+                            },
+                        }))
+
+        result = asyncio.run(save())
+        self.assertTrue(result["ok"])
+        with open(path, encoding="utf-8") as handle:
+            saved = handle.read()
+        self.assertIn("REG_FACTORY_PLUS_LINK_PROXY_OVERRIDE=http://link.test:7901", saved)
+        self.assertIn("REG_FACTORY_PLUS_BIND_PROXY_OVERRIDE=http://pay.test:7902", saved)
+
     def test_proxy_save_rejects_invalid_traffic_mode(self):
         response = asyncio.run(server.api_proxy_set(FakeJSONRequest({
             "config": {

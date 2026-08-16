@@ -221,15 +221,17 @@ class ChatGPTPlusTests(unittest.TestCase):
         self.assertNotIn("plusUrl", frontend)
         self.assertFalse((root / "webui" / "static" / "card-link-batch.js").exists())
 
-    def test_network_panel_keeps_protocol_routes_internal(self):
+    def test_network_panel_exposes_protocol_proxy_endpoints(self):
         root = Path(__file__).resolve().parents[1]
         index = (root / "webui" / "static" / "index.html").read_text(encoding="utf-8")
         frontend = (root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
         server = (root / "webui" / "server.py").read_text(encoding="utf-8")
         self.assertNotIn('id="proxy-plus-link-route"', index)
         self.assertNotIn('id="proxy-plus-bind-route"', index)
-        self.assertNotIn("REG_FACTORY_PLUS_LINK_PROXY_OVERRIDE", frontend)
-        self.assertNotIn("REG_FACTORY_PLUS_BIND_PROXY_OVERRIDE", frontend)
+        self.assertIn('id="proxy-plus-link-override"', index)
+        self.assertIn('id="proxy-plus-bind-override"', index)
+        self.assertIn("REG_FACTORY_PLUS_LINK_PROXY_OVERRIDE", frontend)
+        self.assertIn("REG_FACTORY_PLUS_BIND_PROXY_OVERRIDE", frontend)
         self.assertIn('id="plus-protocol-method"', index)
         self.assertNotIn('id="plus-workbench"', index)
         self.assertIn('"/standalone-flow/quick-checkout"', server)

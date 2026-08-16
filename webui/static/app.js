@@ -266,6 +266,8 @@ async function loadProxyPanel(includeNodes=false){
     $('#proxy-clash-group').value = config.CLASH_GROUP || '';
     $('#proxy-residential-url').value = config.REG_FACTORY_PROXY || '';
     $('#proxy-residential-pool').value = config.REG_FACTORY_PROXY_POOL || '';
+    $('#proxy-plus-link-override').value = config.REG_FACTORY_PLUS_LINK_PROXY_OVERRIDE || '';
+    $('#proxy-plus-bind-override').value = config.REG_FACTORY_PLUS_BIND_PROXY_OVERRIDE || '';
     $('#proxy-rotate-url').value = config.REG_FACTORY_PROXY_ROTATE_URL || '';
     $('#proxy-rotate-method').value = config.REG_FACTORY_PROXY_ROTATE_METHOD || 'GET';
     $('#proxy-chatgpt-retries').value = config.CHATGPT_RESIDENTIAL_ROTATE_RETRIES || '3';
@@ -305,6 +307,8 @@ function collectProxyConfig(){
     CLASH_FIXED_NODE: $('#proxy-fixed-node').value,
     REG_FACTORY_PROXY: $('#proxy-residential-url').value.trim(),
     REG_FACTORY_PROXY_POOL: $('#proxy-residential-pool').value.trim(),
+    REG_FACTORY_PLUS_LINK_PROXY_OVERRIDE: $('#proxy-plus-link-override').value.trim(),
+    REG_FACTORY_PLUS_BIND_PROXY_OVERRIDE: $('#proxy-plus-bind-override').value.trim(),
     REG_FACTORY_PROXY_ROTATE_URL: $('#proxy-rotate-url').value.trim(),
     REG_FACTORY_PROXY_ROTATE_METHOD: $('#proxy-rotate-method').value,
     CHATGPT_RESIDENTIAL_ROTATE_RETRIES: $('#proxy-chatgpt-retries').value,
