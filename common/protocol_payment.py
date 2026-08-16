@@ -27,13 +27,41 @@ PAYMENT_METHODS: tuple[dict[str, Any], ...] = (
     {"id": "momo", "label": "MoMo", "country": "VN", "currency": "VND", "batch_enabled": True},
 )
 
-_METHODS_BY_ID = {item["id"]: item for item in PAYMENT_METHODS}
+def _catalog_methods(engine_root: object = "") -> list[dict[str, Any]]:
+    root = resolve_protocol_engine_root(engine_root)
+    if root:
+        try:
+            payload = json.loads((root / "payment_methods.json").read_text(encoding="utf-8-sig"))
+            methods = payload.get("methods") if isinstance(payload, dict) else None
+            if isinstance(methods, list):
+                normalized = []
+                for raw in methods:
+                    if not isinstance(raw, dict) or not str(raw.get("id") or "").strip():
+                        continue
+                    item = dict(raw)
+                    item["id"] = str(item["id"]).strip().lower()
+                    item["label"] = str(item.get("display_name") or item["id"])
+                    item["batch_enabled"] = bool(item.get("batch_enabled", True))
+                    if item["id"] == "paypal":
+                        item["payment_execution"] = "paypal_auto"
+                    elif item["id"] == "blik":
+                        item["payment_execution"] = "single_code"
+                    normalized.append(item)
+                if normalized:
+                    return normalized
+        except (OSError, ValueError, TypeError):
+            pass
+    return [dict(item) for item in PAYMENT_METHODS]
 
 
-def payment_method(method: object) -> dict[str, Any] | None:
-    """Return a copy of one known method without accepting aliases implicitly."""
-    item = _METHODS_BY_ID.get(str(method or "").strip().lower())
-    return dict(item) if item else None
+def payment_method(method: object, engine_root: object = "") -> dict[str, Any] | None:
+    """Resolve one method using the installed engine's canonical catalog."""
+    requested = str(method or "").strip().lower()
+    for item in _catalog_methods(engine_root):
+        aliases = {str(value or "").strip().lower() for value in item.get("aliases") or []}
+        if requested == item["id"] or requested in aliases:
+            return dict(item)
+    return None
 
 
 def resolve_protocol_engine_root(value: object = "") -> Path | None:
@@ -90,7 +118,7 @@ def protocol_catalog(engine_root: object = "") -> list[dict[str, Any]]:
                 else ""
             ),
         }
-        for item in PAYMENT_METHODS
+        for item in _catalog_methods(root or engine_root)
     ]
 
 

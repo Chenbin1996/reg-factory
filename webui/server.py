@@ -2902,7 +2902,7 @@ def _terminate_process_tree(pid):
     return not _pid_exists(pid)
 
 
-def _cleanup_registered_browser_profiles():
+def _cleanup_registered_browser_profiles(owner=None):
     """Close and remove profiles created by reg-factory child tasks.
 
     BitBrowser launches Chrome outside the Python process tree, so taskkill on
@@ -2912,26 +2912,27 @@ def _cleanup_registered_browser_profiles():
     try:
         from bitbrowser import BitBrowser
         from common.browser_registry import active_profiles, unregister
-        records = active_profiles()
+        records = active_profiles(owner=owner)
     except Exception:
         return {"closed": 0, "failed": []}
-    # Profiles created before the registry was introduced are still safe to
-    # identify by the explicit names/remarks emitted by these workers.
-    try:
-        browser = BitBrowser()
-        listed = browser.list_browsers(page=0, page_size=200)
-        known = {str(item.get("id") or "") for item in records}
-        for item in (listed.get("data", {}).get("list") or []):
-            name = str(item.get("name") or "").strip().lower()
-            remark = str(item.get("remark") or "").strip().lower()
-            generated_name = name.startswith((
-                "outlook_loop_", "chatgpt_", "claude_", "grok_", "kiro_", "github_", "mail_",
-            ))
-            generated_remark = "outlook reg loop" in remark or "reg-factory" in remark
-            if (generated_name or generated_remark) and str(item.get("id") or "") not in known:
-                records.append({"id": item.get("id"), "api_base": getattr(browser, "api_base", "")})
-    except Exception:
-        pass
+    if owner is None:
+        # Global cleanup also adopts generated profiles created by older builds
+        # before the per-run registry was introduced.
+        try:
+            browser = BitBrowser()
+            listed = browser.list_browsers(page=0, page_size=200)
+            known = {str(item.get("id") or "") for item in records}
+            for item in (listed.get("data", {}).get("list") or []):
+                name = str(item.get("name") or "").strip().lower()
+                remark = str(item.get("remark") or "").strip().lower()
+                generated_name = name.startswith((
+                    "outlook_loop_", "chatgpt_", "claude_", "grok_", "kiro_", "github_", "mail_",
+                ))
+                generated_remark = "outlook reg loop" in remark or "reg-factory" in remark
+                if (generated_name or generated_remark) and str(item.get("id") or "") not in known:
+                    records.append({"id": item.get("id"), "api_base": getattr(browser, "api_base", "")})
+        except Exception:
+            pass
     closed = 0
     failed = []
     for record in records:
@@ -2954,6 +2955,8 @@ def _cleanup_registered_browser_profiles():
 
 async def _start_managed_run(cmd, sid, task_env, task_cwd):
     os.makedirs(task_cwd, exist_ok=True)
+    task_env = dict(task_env)
+    task_env.setdefault("REG_FACTORY_RUN_ID", f"webui-{uuid.uuid4().hex}")
     process_options = (
         {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
         if os.name == "nt"
@@ -2968,7 +2971,9 @@ async def _start_managed_run(cmd, sid, task_env, task_cwd):
     run_id = f"r{_run_seq[0]}"
     rec = {"proc": proc, "lines": [], "done": False, "stopped": False,
            "returncode": None, "script": sid,
-           "cmd": " ".join(cmd), "started": time.strftime("%H:%M:%S")}
+           "cmd": " ".join(cmd), "started": time.strftime("%H:%M:%S"),
+           "run_owner": task_env["REG_FACTORY_RUN_ID"],
+           "keep_on_fail": "--keep-on-fail" in cmd}
     RUNS[run_id] = rec
 
     def _sanitize_line(value):
@@ -2997,8 +3002,19 @@ async def _start_managed_run(cmd, sid, task_env, task_cwd):
         finally:
             await proc.wait()
             rec["returncode"] = proc.returncode
-            rec["done"] = True
             rec["lines"].append(f"[webui] 进程结束 exit={proc.returncode}")
+            keep_failed_profiles = (
+                rec["keep_on_fail"] and proc.returncode != 0 and not rec["stopped"]
+            )
+            if not keep_failed_profiles:
+                cleanup = await asyncio.to_thread(
+                    _cleanup_registered_browser_profiles, rec["run_owner"]
+                )
+                if cleanup["closed"] or cleanup["failed"]:
+                    rec["lines"].append(
+                        f"[webui] 浏览器环境清理 closed={cleanup['closed']} failed={len(cleanup['failed'])}"
+                    )
+            rec["done"] = True
             sensitive_input = rec.get("sensitive_input_path")
             if sensitive_input:
                 with contextlib.suppress(OSError):
@@ -3071,7 +3087,17 @@ async def api_stop(run_id: str):
     if not rec["done"]:
         rec["stopped"] = True
         stopped = await asyncio.to_thread(_terminate_process_tree, rec["proc"].pid)
-        return {"ok": stopped, "stopped": 1 if stopped else 0}
+        owner = rec.get("run_owner")
+        browser_cleanup = (
+            await asyncio.to_thread(_cleanup_registered_browser_profiles, owner)
+            if owner
+            else {"closed": 0, "failed": []}
+        )
+        return {
+            "ok": stopped and not browser_cleanup["failed"],
+            "stopped": 1 if stopped else 0,
+            "browser_profiles": browser_cleanup,
+        }
     return {"ok": True, "stopped": 0}
 
 
@@ -3131,6 +3157,7 @@ async def shutdown_local_services():
     K12_START_TASK = None
     await _stop_k12_service()
     await asyncio.to_thread(_stop_plus_service_sync)
+    await asyncio.to_thread(_cleanup_registered_browser_profiles)
 
 
 _ensure_proxy_env()

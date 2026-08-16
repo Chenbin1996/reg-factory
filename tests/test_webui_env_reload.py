@@ -327,6 +327,27 @@ class WebUIRunStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(server.RUNS[run_id]["stopped"])
         self.assertEqual({call.args[0] for call in terminate.call_args_list}, {101, 202})
 
+    async def test_stop_one_cleans_only_its_registered_browser_profiles(self):
+        run_id = "test-stop-one"
+        server.RUNS[run_id] = {
+            "proc": SimpleNamespace(pid=303),
+            "lines": [],
+            "done": False,
+            "stopped": False,
+            "run_owner": "webui-owner-303",
+        }
+        self.addCleanup(server.RUNS.pop, run_id, None)
+        with patch.object(server, "_terminate_process_tree", return_value=True), \
+                patch.object(
+                    server,
+                    "_cleanup_registered_browser_profiles",
+                    return_value={"closed": 2, "failed": []},
+                ) as cleanup:
+            result = await server.api_stop(run_id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["browser_profiles"]["closed"], 2)
+        cleanup.assert_called_once_with("webui-owner-303")
+
     async def test_done_event_exposes_exit_code_and_stop_state(self):
         run_id = "test-result-event"
         server.RUNS[run_id] = {

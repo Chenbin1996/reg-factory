@@ -313,6 +313,28 @@ class ChatGPTPlusTests(unittest.TestCase):
             self.assertEqual(len(index_paths), 2)
             self.assertNotIn("access_token", json.dumps(runtime_config))
 
+    def test_protocol_worker_uses_channel_countries_and_independent_proxy_pools(self):
+        from tools import run_protocol_payment_batch as worker
+
+        paypal = {"id": "paypal", "country": "US"}
+        paypal_route = worker._route_options(
+            paypal,
+            "http://checkout-1.test:8000,http://checkout-2.test:8000",
+            "http://approve.test:9000",
+            300,
+        )
+        self.assertEqual(paypal_route["target_country"], "US")
+        self.assertEqual(paypal_route["stage_proxy_countries"]["checkout"], "US")
+        self.assertEqual(len(paypal_route["checkout_proxy_pool"]), 2)
+        self.assertEqual(paypal_route["approve_proxy_pool"], ["http://approve.test:9000"])
+
+        gopay = worker._route_options(
+            {"id": "gopay", "country": "ID"}, "http://seed.test:8000", "", 300
+        )
+        self.assertEqual(gopay["stage_proxy_countries"]["promotion"], "TH")
+        self.assertEqual(gopay["stage_proxy_countries"]["approve"], "JP")
+        self.assertEqual(gopay["approve_proxy_pool"], gopay["checkout_proxy_pool"])
+
     def test_protocol_batch_rejects_malformed_json_before_execution(self):
         from starlette.requests import Request
 

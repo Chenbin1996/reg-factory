@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -68,25 +69,102 @@ def _load_task(path: Path) -> tuple[list[dict[str, str]], dict[str, Any]]:
     return accounts, payment_config
 
 
-def _runtime_config(root: Path, method_id: str, checkout_proxy: str, approve_proxy: str, timeout: int) -> dict[str, Any]:
-    stage_proxy = checkout_proxy or approve_proxy
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _load_engine_config(root: Path) -> dict[str, Any]:
+    config: dict[str, Any] = {}
+    for name in ("config.example.json", "config.json"):
+        try:
+            loaded = json.loads((root / name).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(loaded, dict):
+            config = _deep_merge(config, loaded)
+    return config
+
+
+def _proxy_pool(value: str) -> list[str]:
+    return list(dict.fromkeys(
+        item.strip()
+        for item in re.split(r"[\r\n,;]+", str(value or ""))
+        if item.strip()
+    ))
+
+
+def _stage_countries(spec: dict[str, Any]) -> dict[str, str]:
+    country = str(spec.get("country") or "").strip().upper()
+    promotion = "TH" if spec["id"] == "gopay" else "VN" if spec["id"] in {"ideal", "kakao", "twint"} else country
+    approve = "JP" if spec["id"] == "gopay" else country
     return {
-        "chatgpt": {"auth_base_url": "https://auth.openai.com", "chat_base_url": "https://chatgpt.com"},
-        "protocol_payments": {
-            "enabled_methods": [method_id],
-            "reference_root": str(root / "services" / "protocol-payment"),
-            "timeout_seconds": timeout,
-            "methods": {
-                method_id: {
-                    "checkout_proxy": checkout_proxy,
-                    "promotion_proxy": checkout_proxy,
-                    "provider_proxy": stage_proxy,
-                    "payment_method_proxy": approve_proxy or stage_proxy,
-                    "approve_proxy": approve_proxy or stage_proxy,
-                }
-            },
-        },
+        "auth_gate": country,
+        "checkout": country,
+        "promotion": promotion,
+        "stripe_init": country,
+        "payment_method": country,
+        "confirm": country,
+        "approve": approve,
+        "redirect": country,
+        "poll": country,
     }
+
+
+def _route_options(
+    spec: dict[str, Any], checkout_proxy: str, approve_proxy: str, timeout: int
+) -> dict[str, Any]:
+    country = str(spec.get("country") or "").strip().upper()
+    checkout_pool = _proxy_pool(checkout_proxy)
+    approve_pool = _proxy_pool(approve_proxy) or list(checkout_pool)
+    options: dict[str, Any] = {
+        "target_country": country,
+        "checkout_country": country,
+        "approve_country": "JP" if spec["id"] == "gopay" else country,
+        "stage_proxy_countries": _stage_countries(spec),
+        "timeout_seconds": timeout,
+    }
+    if checkout_pool:
+        options["checkout_proxy_pool"] = checkout_pool
+    if approve_pool:
+        options["approve_proxy_pool"] = approve_pool
+    return options
+
+
+def _runtime_config(root: Path, method_id: str, checkout_proxy: str, approve_proxy: str, timeout: int) -> dict[str, Any]:
+    spec = payment_method(method_id, root) or {"id": method_id, "country": "US"}
+    config = _load_engine_config(root)
+    chatgpt = config.get("chatgpt") if isinstance(config.get("chatgpt"), dict) else {}
+    chatgpt.setdefault("auth_base_url", "https://auth.openai.com")
+    chatgpt.setdefault("chat_base_url", "https://chatgpt.com")
+    config["chatgpt"] = chatgpt
+    protocol = config.get("protocol_payments") if isinstance(config.get("protocol_payments"), dict) else {}
+    protocol["enabled_methods"] = [method_id]
+    protocol["reference_root"] = str(root / "services" / "protocol-payment")
+    protocol["timeout_seconds"] = timeout
+    methods = protocol.get("methods") if isinstance(protocol.get("methods"), dict) else {}
+    method_config = methods.get(method_id) if isinstance(methods.get(method_id), dict) else {}
+    route = _route_options(spec, checkout_proxy, approve_proxy, timeout)
+    method_config = _deep_merge(method_config, {
+        "checkout_proxy_pool": route.get("checkout_proxy_pool", []),
+        "approve_proxy_pool": route.get("approve_proxy_pool", []),
+        "stage_proxy_countries": route["stage_proxy_countries"],
+        "timeout_seconds": timeout,
+    })
+    methods[method_id] = method_config
+    protocol["methods"] = methods
+    protocol["proxy_pools"] = {
+        **(protocol.get("proxy_pools") if isinstance(protocol.get("proxy_pools"), dict) else {}),
+        "checkout": route.get("checkout_proxy_pool", []),
+        "approve": route.get("approve_proxy_pool", []),
+    }
+    config["protocol_payments"] = protocol
+    return config
 
 
 def _public_result(email: str, result: object) -> dict[str, Any]:
@@ -111,6 +189,7 @@ def _execute_paypal_payment(
     item: dict[str, str],
     *,
     runtime_config: dict[str, Any],
+    paypal_link: dict[str, Any],
     proxy: str,
     timeout: int,
 ) -> dict[str, Any]:
@@ -128,6 +207,10 @@ def _execute_paypal_payment(
                     "account_id": item["account_id"],
                     "account": {"id": item["account_id"], "planType": "free"},
                     "user": {"email": item["email"]},
+                    "paypal": {
+                        "url": str(paypal_link.get("url") or ""),
+                        "link_type": str(paypal_link.get("link_type") or ""),
+                    },
                 },
                 handle,
                 ensure_ascii=False,
@@ -179,6 +262,27 @@ def _paypal_runtime_config(
     return base, (card_index, phone_index)
 
 
+def _paypal_config_for_route(
+    base: dict[str, Any], spec: dict[str, Any], routed: dict[str, Any]
+) -> dict[str, Any]:
+    config = deepcopy(base)
+    paypal = config.get("paypal") if isinstance(config.get("paypal"), dict) else {}
+    paypal["target_country"] = spec["country"]
+    paypal["checkout_country"] = spec["country"]
+    paypal["stage_proxy_countries"] = dict(routed.get("stage_proxy_countries") or {})
+    stage_proxies = paypal.get("stage_proxies") if isinstance(paypal.get("stage_proxies"), dict) else {}
+    for stage in (
+        "checkout", "promotion", "provider", "stripe_init", "payment_method",
+        "confirm", "approve", "redirect", "poll",
+    ):
+        value = str(routed.get(f"{stage}_proxy") or "").strip()
+        if value:
+            stage_proxies[stage] = value
+    paypal["stage_proxies"] = stage_proxies
+    config["paypal"] = paypal
+    return config
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="reg-factory batch protocol link extractor")
     parser.add_argument("--accounts-file", required=True)
@@ -192,14 +296,14 @@ def main() -> int:
     parser.add_argument("--delete-input", action="store_true")
     args = parser.parse_args()
 
-    spec = payment_method(args.method)
+    engine_root = resolve_protocol_engine_root(args.engine_root)
+    if not engine_root:
+        raise SystemExit("[protocol][FAIL] 未找到协议引擎；设置 REG_FACTORY_PROTOCOL_PAYMENT_ROOT 后重试")
+    spec = payment_method(args.method, engine_root)
     if not spec:
         raise SystemExit("[protocol][FAIL] 不支持的协议渠道")
     if not spec["batch_enabled"]:
         raise SystemExit(f"[protocol][FAIL] {spec['label']} 上游协议不支持批量")
-    engine_root = resolve_protocol_engine_root(args.engine_root)
-    if not engine_root:
-        raise SystemExit("[protocol][FAIL] 未找到协议引擎；设置 REG_FACTORY_PROTOCOL_PAYMENT_ROOT 后重试")
     if args.operation == "pay":
         if spec["id"] != "paypal":
             raise SystemExit("[protocol][FAIL] 当前只有 PayPal 支持批量协议直接支付")
@@ -222,8 +326,10 @@ def main() -> int:
         if str(engine_root) not in sys.path:
             sys.path.insert(0, str(engine_root))
         from sms_tool.payment_link_manager import generate_payment_link
+        from sms_tool.payment_routing import PaymentRoutePlanner
 
         config = _runtime_config(engine_root, spec["id"], checkout_proxy, approve_proxy, timeout)
+        route_options = _route_options(spec, checkout_proxy, approve_proxy, timeout)
         paypal_config: dict[str, Any] = {}
         if args.operation == "pay":
             paypal_config, index_paths = _paypal_runtime_config(engine_root, payment_config, input_path)
@@ -232,27 +338,51 @@ def main() -> int:
         if not checkout_proxy:
             print("[protocol][WARN] 未配置提链出口，协议引擎将自行判定可用路由", flush=True)
 
-        def extract(item: dict[str, str]) -> dict[str, Any]:
+        def extract(index: int, item: dict[str, str]) -> dict[str, Any]:
+            plan = PaymentRoutePlanner(config).plan(
+                spec["id"], options=route_options, pool_offset=index
+            )
+            routed = {
+                **route_options,
+                **plan.to_adapter_options(),
+                "payment_route_plan": plan,
+            }
+            routed.pop("checkout_proxy_pool", None)
+            routed.pop("approve_proxy_pool", None)
             if args.operation == "pay":
+                link = generate_payment_link(
+                    access_token=item["access_token"],
+                    payment_method=spec["id"],
+                    proxy=plan.checkout_proxy or None,
+                    runtime_config=config,
+                    **routed,
+                )
+                if not isinstance(link, dict) or not link.get("ok") or not link.get("url"):
+                    failed = _public_result(item["email"], link)
+                    failed["operation"] = "execute_payment"
+                    return failed
                 return _execute_paypal_payment(
                     item,
-                    runtime_config=paypal_config,
-                    proxy=checkout_proxy,
+                    runtime_config=_paypal_config_for_route(paypal_config, spec, routed),
+                    paypal_link=link,
+                    proxy=plan.proxy_for("approve", plan.checkout_proxy),
                     timeout=timeout,
                 )
             result = generate_payment_link(
                 access_token=item["access_token"],
                 payment_method=spec["id"],
-                proxy=checkout_proxy or None,
+                proxy=plan.checkout_proxy or None,
                 runtime_config=config,
-                timeout_seconds=timeout,
-                require_zero=True,
+                **routed,
             )
             return _public_result(item["email"], result)
 
         rows: list[dict[str, Any]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(extract, item): item["email"] for item in accounts}
+            futures = {
+                pool.submit(extract, index, item): item["email"]
+                for index, item in enumerate(accounts)
+            }
             for future in concurrent.futures.as_completed(futures):
                 email = futures[future]
                 try:

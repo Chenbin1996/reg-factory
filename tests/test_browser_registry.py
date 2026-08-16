@@ -1,10 +1,12 @@
+import asyncio
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from common import browser_registry
+from common import browser, browser_registry
 
 
 class BrowserRegistryTests(unittest.TestCase):
@@ -17,6 +19,28 @@ class BrowserRegistryTests(unittest.TestCase):
                 self.assertEqual(browser_registry.active_profiles(owner="test-run")[0]["name"], "chatgpt_test")
                 browser_registry.unregister("profile-1")
                 self.assertEqual(browser_registry.active_profiles(), [])
+
+    def test_open_and_connect_deletes_profile_when_cdp_connect_fails(self):
+        client = MagicMock()
+        client.open_browser.return_value = {"ws": "ws://fixture"}
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(
+                connect_over_cdp=AsyncMock(side_effect=RuntimeError("cdp failed"))
+            )
+        )
+        with patch.object(browser, "BitBrowser", return_value=client), \
+                patch.object(browser, "create_browser_with_retry", return_value="profile-1"):
+            with self.assertRaisesRegex(RuntimeError, "cdp failed"):
+                asyncio.run(browser.open_and_connect("fixture", p=playwright))
+        client.close_browser.assert_called_once_with("profile-1")
+        client.delete_browser.assert_called_once_with("profile-1")
+
+    def test_teardown_deletes_profile_when_async_close_is_cancelled(self):
+        client = MagicMock()
+        client.close_browser_async = AsyncMock(side_effect=asyncio.CancelledError())
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(browser.teardown(client, "profile-2"))
+        client.delete_browser.assert_called_once_with("profile-2")
 
 
 if __name__ == "__main__":
