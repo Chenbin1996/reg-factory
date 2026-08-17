@@ -1462,7 +1462,9 @@ function setRunState(state, label){
 async function runScript(){
   if(curRun && evtSrc){ evtSrc.close(); evtSrc = null; }
   const args = collectArgs(curSrc);
-  const selectedPlatforms = args['--platforms'] || [];
+  const selectedPlatforms = Array.isArray(args['--platforms'])
+    ? args['--platforms']
+    : (args['--platforms'] ? [args['--platforms']] : []);
   const plusRequested = !!args['--plus-subscription']
     && (curSrc.id === 'register_chatgpt' || selectedPlatforms.includes('chatgpt'));
   const log = $('#log'); log.textContent='';

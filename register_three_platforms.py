@@ -7,7 +7,7 @@ mailbox. Use --parallel only when debugging isolated browser/profile behavior.
 
 Examples:
     python register_three_platforms.py --email a@outlook.com --password xxx --token REFRESH --client-id CID
-    python register_three_platforms.py --from-pool --platforms claude chatgpt grok
+    python register_three_platforms.py --from-pool --platforms claude
     python register_three_platforms.py --from-pool --parallel --keep-on-fail
 """
 
@@ -343,14 +343,14 @@ async def process_account(account, args, child_env):
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Register one mailbox on the selected platforms (broker + loop)")
+    parser = argparse.ArgumentParser(description="Register one mailbox on one selected platform (broker + loop)")
     parser.add_argument("--email", default=None)
     parser.add_argument("--password", default="")
     parser.add_argument("--token", default="", help="Outlook refresh_token")
     parser.add_argument("--client-id", default="", help="Outlook OAuth client_id")
     parser.add_argument("--from-pool", action="store_true", help="reserve one mailbox from emails.txt")
-    parser.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok", "kiro", "github"], default=["claude", "chatgpt", "grok"])
-    parser.add_argument("--parallel", action="store_true", help="run platforms in parallel; default is sequential")
+    parser.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok", "kiro", "github"], default=["claude"])
+    parser.add_argument("--parallel", action="store_true", help="兼容旧参数；单邮箱仅运行一个平台")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--platform-retries", type=int, default=0,
                         help="extra retries after a platform process fails")
@@ -402,6 +402,8 @@ async def main():
     parser.add_argument("--max-inflight", type=int, default=1, help="同时在处理的邮箱数（每号峰值≈3注册窗口+1broker窗口）")
     parser.add_argument("--poll-wait", type=int, default=20, help="池空时等待产号的轮询秒数")
     args = parser.parse_args()
+    if len(args.platforms) != 1:
+        raise SystemExit("同一邮箱一次只能注册一个平台，请为每个平台分配不同邮箱")
     child_env = child_env_for(args)
 
     if args.loop:

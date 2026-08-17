@@ -303,7 +303,7 @@ def get_report() -> dict:
             cached = cached_items.get(public["id"], {})
             for key in (
                 "status", "detail", "evidence", "checked_at", "latency_ms",
-                "plus_trial", "plus_trial_detail", "plus_trial_evidence",
+                "plus_trial", "plus_trial_detail", "plus_trial_evidence", "plan_type",
             ):
                 if key in cached:
                     public[key] = cached[key]
@@ -323,6 +323,15 @@ def get_report() -> dict:
                     public["plus_trial_evidence"] = (
                         f"{public.get('plus_trial_evidence') or 'legacy'}:legacy_unconfirmed"
                     )
+            if public.get("platform") == "grok" and public.get("status") == "normal":
+                authorization = _grok_authorization_status(record)
+                if authorization in {"failed", "pending"}:
+                    public["status"] = "restricted" if authorization == "failed" else "unknown"
+                    public["detail"] = {
+                        "failed": "Grok SSO 正常，但 OAuth 授权失败",
+                        "pending": "Grok SSO 正常，OAuth 授权尚未完成",
+                    }.get(authorization, "Grok OAuth 授权状态未知")
+                    public["evidence"] = f"local:grok_oauth_{authorization}"
             items.append(public)
         report = {
             "schema_version": 2,
@@ -1143,6 +1152,49 @@ def check_chatgpt_plus_trial_for_session(
     return public
 
 
+def _claude_plan_type(payload: dict) -> str:
+    """Return a conservative plan label from Claude's account payload."""
+    if not isinstance(payload, dict):
+        return "unknown"
+
+    def normalize(value) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        if "free" in text:
+            return "free"
+        for plan in ("max", "pro", "team", "enterprise"):
+            if plan in text:
+                return plan
+        return text
+
+    for key in ("plan", "plan_type", "subscription_type", "seat_tier"):
+        plan = normalize(payload.get(key))
+        if plan:
+            return plan
+    memberships = payload.get("memberships")
+    memberships = memberships if isinstance(memberships, list) else []
+    for membership in memberships:
+        if not isinstance(membership, dict):
+            continue
+        plan = normalize(membership.get("seat_tier"))
+        if plan:
+            return plan
+        organization = membership.get("organization")
+        organization = organization if isinstance(organization, dict) else {}
+        for key in ("plan", "plan_type", "subscription_type", "billing_type"):
+            plan = normalize(organization.get(key))
+            if plan:
+                return plan
+        if (
+            str(organization.get("rate_limit_tier") or "").strip().lower()
+            == "default_claude_ai"
+            and not organization.get("billing_type")
+        ):
+            return "free"
+    return "unknown"
+
+
 def _scan_claude(record: dict, timeout: int) -> dict:
     cookies = record.get("_cookies") or []
     token = record.get("_token") or {}
@@ -1168,15 +1220,57 @@ def _scan_claude(record: dict, timeout: int) -> dict:
             payload = response.json()
         except Exception:
             payload = None
-        if isinstance(payload, dict) and (
-            "memberships" in payload or payload.get("uuid") or payload.get("email")
-        ):
-            return {"status": "normal", "detail": "Claude 登录会话正常", "evidence": "claude_account:200"}
+        if isinstance(payload, dict):
+            memberships = payload.get("memberships")
+            memberships = memberships if isinstance(memberships, list) else []
+            has_identity = bool(
+                payload.get("uuid") or payload.get("email") or payload.get("email_address")
+            )
+            if has_identity and memberships:
+                plan_type = _claude_plan_type(payload)
+                plan_label = "Free" if plan_type == "free" else plan_type.title()
+                detail = (
+                    f"Claude {plan_label} 登录会话正常"
+                    if plan_type != "unknown"
+                    else "Claude 登录会话正常（套餐未知）"
+                )
+                return {
+                    "status": "normal",
+                    "detail": detail,
+                    "evidence": "claude_account:200",
+                    "plan_type": plan_type,
+                }
+            if has_identity:
+                return {
+                    "status": "unknown",
+                    "detail": "Claude 会话有效，但账号没有可用组织成员关系",
+                    "evidence": "claude_account:no_membership",
+                    "plan_type": "unknown",
+                }
         text = (response.text or "").lower()
         if "just a moment" in text or "cf-chl" in text or "cloudflare" in text:
             return {"status": "restricted", "detail": "Claude 返回 Cloudflare 验证页", "evidence": "claude_account:challenge"}
         return {"status": "unknown", "detail": "Claude 未返回有效账号数据", "evidence": "claude_account:empty"}
     return {"status": "unknown", "detail": f"Claude HTTP {response.status_code}", "evidence": f"claude_account:{response.status_code}"}
+
+
+def _grok_authorization_status(record: dict) -> str:
+    """Resolve local Grok OAuth completion without exposing credentials."""
+    token = record.get("_token") if isinstance(record.get("_token"), dict) else {}
+    email = str(record.get("email") or token.get("email") or "").strip().lower()
+    marker = asset_store._token_root() / "grok" / "uploaded_sub2api.txt"
+    if email and marker.is_file():
+        uploaded = {
+            line.strip().lower()
+            for line in marker.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        }
+        if email in uploaded:
+            return "authorized"
+    status = str(token.get("authorization_status") or "").strip().lower()
+    if status in {"authorized", "failed", "pending", "not_requested"}:
+        return status
+    return "unverified"
 
 
 def _scan_grok(record: dict, timeout: int) -> dict:
@@ -1201,7 +1295,38 @@ def _scan_grok(record: dict, timeout: int) -> dict:
     if classified:
         return classified
     if 200 <= response.status_code < 400:
-        return {"status": "normal", "detail": "Grok SSO 登录正常", "evidence": f"xai_account:{response.status_code}"}
+        authorization = _grok_authorization_status(record)
+        if authorization == "authorized":
+            return {
+                "status": "normal",
+                "detail": "Grok SSO 与 OAuth 授权均正常",
+                "evidence": f"xai_account:{response.status_code}:oauth_authorized",
+            }
+        if authorization == "failed":
+            return {
+                "status": "restricted",
+                "detail": "Grok SSO 正常，但 OAuth 授权失败",
+                "evidence": "local:grok_oauth_failed",
+            }
+        if authorization == "pending":
+            return {
+                "status": "unknown",
+                "detail": "Grok SSO 正常，OAuth 授权尚未完成",
+                "evidence": "local:grok_oauth_pending",
+            }
+        return {
+            "status": "normal",
+            "detail": (
+                "Grok SSO 与 OAuth 授权均正常"
+                if authorization == "authorized"
+                else "Grok SSO 登录正常（未要求 OAuth 导入）"
+            ),
+            "evidence": (
+                f"xai_account:{response.status_code}:oauth_authorized"
+                if authorization == "authorized"
+                else f"xai_account:{response.status_code}:sso_only"
+            ),
+        }
     return {"status": "unknown", "detail": f"Grok HTTP {response.status_code}", "evidence": f"xai_account:{response.status_code}"}
 
 
@@ -1443,12 +1568,19 @@ def scan_pool(
             and cached
             and str(cached.get("plus_trial") or "") == "eligible"
         )
+        legacy_grok_result = (
+            record.get("platform") == "grok"
+            and cached
+            and str(cached.get("status") or "") == "normal"
+            and _grok_authorization_status(record) in {"failed", "pending"}
+        )
         if (
             not force
             and cache_seconds > 0
             and cached
             and 0 <= cache_age < cache_seconds
             and not legacy_plus_result
+            and not legacy_grok_result
         ):
             scanned[str(record["id"])] = dict(cached)
         else:
@@ -1544,7 +1676,7 @@ def scan_pool(
                 key: result[key]
                 for key in (
                     "status", "detail", "evidence", "checked_at", "latency_ms",
-                    "plus_trial", "plus_trial_detail", "plus_trial_evidence",
+                    "plus_trial", "plus_trial_detail", "plus_trial_evidence", "plan_type",
                 )
                 if key in result
             })

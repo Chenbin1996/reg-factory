@@ -1285,6 +1285,36 @@ class ChatGPTFlowTests(unittest.TestCase):
         command_line = " ".join(call.args[0] for call in logger.call_args_list)
         self.assertIn("--parallel", command_line)
 
+    def test_full_flow_assigns_one_platform_per_mailbox(self):
+        self.assertEqual(
+            [run_full_flow.platform_for_slot(["claude", "chatgpt", "grok"], i) for i in range(5)],
+            ["claude", "chatgpt", "grok", "claude", "chatgpt"],
+        )
+        args = argparse.Namespace(
+            concurrency=2,
+            password="fallback",
+            platforms=["claude", "chatgpt"],
+        )
+        accounts = [
+            ("one@example.com", "pass-1", "", ""),
+            ("two@example.com", "pass-2", "", ""),
+        ]
+        observed = {}
+
+        def capture(account_args, _env, email, *_credentials):
+            observed[email] = list(account_args.platforms)
+            return 0
+
+        with patch.object(run_full_flow, "stage_emails", return_value=accounts), \
+                patch.object(run_full_flow, "stage_platforms", side_effect=capture):
+            results = run_full_flow.run_wave(args, {}, 2)
+
+        self.assertEqual({result[0] for result in results}, {0})
+        self.assertEqual(observed, {
+            "one@example.com": ["claude"],
+            "two@example.com": ["chatgpt"],
+        })
+
     def test_full_flow_forwards_stage_retry_and_sms_configuration(self):
         args = argparse.Namespace(
             platforms=["claude", "chatgpt"],

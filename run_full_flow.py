@@ -5,7 +5,7 @@ run_full_flow.py — 端到端全流程编排（含邮箱注册）
 把项目原有的两个阶段串成一条龙，方便"跑一遍看看"：
 
   Stage A  邮箱注册   outlook_reg_loop.py        -> 产出新 outlook 号写进 emails.txt
-  Stage B  平台注册   register_three_platforms   -> 用该号去 claude/chatgpt/grok 注册
+  Stage B  平台注册   register_three_platforms   -> 每个邮箱只分配一个所选平台
 
 Stage A 本身是个常驻循环，这里把它当子进程拉起、盯着 emails.txt，**一旦冒出
 一个新的可用号就立刻杀掉循环**进入 Stage B，所以是"注册到一个邮箱就往下走"。
@@ -16,7 +16,7 @@ Stage A 本身是个常驻循环，这里把它当子进程拉起、盯着 email
 用法：
   python run_full_flow.py                          # 注册1个邮箱 -> 在 claude 上注册
   python run_full_flow.py --platforms claude chatgpt
-  python run_full_flow.py --rounds 12 --concurrency 3 --platforms claude chatgpt github
+  python run_full_flow.py --rounds 12 --concurrency 3 --platforms claude chatgpt github  # 按邮箱轮询分配
   python run_full_flow.py --platforms chatgpt --rounds 10   # 循环注册 10 个号
   python run_full_flow.py --platforms chatgpt --rounds 0    # 无限循环（Ctrl+C 停）
   python run_full_flow.py --skip-email --email a@outlook.com --password xxx   # 跳过邮箱注册
@@ -26,6 +26,7 @@ Stage A 本身是个常驻循环，这里把它当子进程拉起、盯着 email
 from __future__ import annotations
 
 import argparse
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import subprocess
@@ -341,7 +342,29 @@ def stage_platforms(args, env, email, password, token="", client_id=""):
         _terminate_process_tree(proc)
 
 
-def run_wave(args, env, target_count):
+def _normalized_platforms(platforms):
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    if not isinstance(platforms, (list, tuple)):
+        return ["claude"]
+    return list(dict.fromkeys(
+        str(platform).strip() for platform in platforms if str(platform).strip()
+    )) or ["claude"]
+
+
+def platform_for_slot(platforms, slot):
+    """Select exactly one platform for one newly registered mailbox."""
+    choices = _normalized_platforms(platforms)
+    return choices[int(slot or 0) % len(choices)]
+
+
+def _args_for_platform(args, platform):
+    account_args = copy.copy(args)
+    account_args.platforms = [platform]
+    return account_args
+
+
+def run_wave(args, env, target_count, platform_offset=0):
     """并发产出一批邮箱，再并发运行每个邮箱的平台注册管线。"""
     plan = build_worker_plan("full-flow", target_count, args.concurrency, env)
     plan.log()
@@ -353,9 +376,15 @@ def run_wave(args, env, target_count):
     def run_account(index, account):
         email, password, token, client_id = account
         account_env = plan.worker(index).merged_environment(env)
+        platform = platform_for_slot(
+            getattr(args, "platforms", ["claude"]),
+            int(platform_offset or 0) + index - 1,
+        )
+        account_args = _args_for_platform(args, platform)
+        log(f"邮箱 {email} 本轮只分配平台 {platform}", "B")
         started = time.time()
         rc = stage_platforms(
-            args,
+            account_args,
             account_env,
             email,
             password or args.password,
@@ -407,7 +436,10 @@ def run_once(args, env):
 
     # Stage B
     print("=" * 64)
-    rc = stage_platforms(args, env, email, password, token, client_id)
+    platform = platform_for_slot(getattr(args, "platforms", ["claude"]), 0)
+    account_args = _args_for_platform(args, platform)
+    log(f"邮箱 {email} 只分配平台 {platform}", "B")
+    rc = stage_platforms(account_args, env, email, password, token, client_id)
     _cleanup_active_profiles(owner=env.get("REG_FACTORY_RUN_ID"))
     print("=" * 64)
     dt = time.time() - t0
@@ -437,7 +469,7 @@ def main():
                     help="同时运行的端到端邮箱管线数")
     # Stage B
     ap.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok", "kiro", "github"],
-                    default=["claude"], help="默认只跑 claude（最稳）；grok 已知死结")
+                    default=["claude"], help="每个邮箱只注册一个平台；传多个平台时按邮箱轮询分配")
     ap.add_argument("--node", default="auto", help="claude/chatgpt/grok 走的 Clash 节点")
     ap.add_argument(
         "--chatgpt-country", default="auto",
@@ -451,7 +483,7 @@ def main():
                     help="Grok 共享邮箱 broker 取码超时(秒)")
     ap.add_argument("--keep-on-fail", action="store_true")
     ap.add_argument("--sequential-platforms", action="store_true",
-                    help="按顺序运行所选平台；默认各平台并行")
+                    help="兼容旧参数；每个邮箱只运行一个平台")
     ap.add_argument("--import-c2a", action="store_true",
                     help="chatgpt 注册成功后即时把 token 导入 chatgpt2api（透传到底层 register_chatgpt.py）")
     ap.add_argument("--plus-subscription", action="store_true",
@@ -517,6 +549,8 @@ def main():
     if args.skip_email and args.rounds != 1:
         # --skip-email 每轮都用同一个固定邮箱，循环没意义（甚至会重复注册同号）
         raise SystemExit("--skip-email 只能跑单轮，不能配合 --rounds")
+    if args.skip_email and len(_normalized_platforms(args.platforms)) > 1:
+        raise SystemExit("--skip-email 使用固定邮箱时只能选择一个平台")
 
     env = build_child_env(args)
     env.setdefault("REG_FACTORY_RUN_ID", f"full-flow-{os.getpid()}-{int(time.time() * 1000)}")
@@ -546,7 +580,7 @@ def main():
             print("#" * 64)
             log(f"===== 并发波次开始 completed={rnd} target={wave_target} =====")
             print("#" * 64)
-            results = run_wave(args, env, wave_target)
+            results = run_wave(args, env, wave_target, platform_offset=rnd)
             for rc, _email in results:
                 rnd += 1
                 last_rc = rc

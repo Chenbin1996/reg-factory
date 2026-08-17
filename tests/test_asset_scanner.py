@@ -278,6 +278,103 @@ class AssetScannerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "banned")
 
+    def test_claude_free_account_is_normal_and_labeled(self):
+        payload = {
+            "uuid": "account-id",
+            "email_address": "free@example.com",
+            "is_verified": True,
+            "memberships": [{
+                "role": "admin",
+                "seat_tier": None,
+                "organization": {
+                    "uuid": "organization-id",
+                    "billing_type": None,
+                    "rate_limit_tier": "default_claude_ai",
+                    "capabilities": ["chat"],
+                },
+            }],
+        }
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://claude.ai/api/account",
+            text="",
+            json=lambda: payload,
+        )
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            result = asset_scanner._scan_claude(
+                {"email": "free@example.com", "_token": {"sessionKey": "secret"}},
+                10,
+            )
+
+        self.assertEqual(result["status"], "normal")
+        self.assertEqual(result["plan_type"], "free")
+        self.assertIn("Claude Free", result["detail"])
+
+    def test_claude_account_without_membership_is_not_normal(self):
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://claude.ai/api/account",
+            text="",
+            json=lambda: {"uuid": "account-id", "memberships": []},
+        )
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            result = asset_scanner._scan_claude(
+                {"email": "incomplete@example.com", "_token": {"sessionKey": "secret"}},
+                10,
+            )
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["evidence"], "claude_account:no_membership")
+
+    def test_grok_sso_does_not_require_optional_oauth_import(self):
+        response = SimpleNamespace(
+            status_code=200,
+            url="https://accounts.x.ai/",
+            text="",
+        )
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        base = {"email": "grok@example.com", "_token": {"sso": "secret"}}
+
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            unverified = asset_scanner._scan_grok(base, 10)
+            failed = asset_scanner._scan_grok(
+                {
+                    **base,
+                    "_token": {
+                        "sso": "secret",
+                        "authorization_status": "failed",
+                    },
+                },
+                10,
+            )
+
+        self.assertEqual(unverified["status"], "normal")
+        self.assertEqual(unverified["evidence"], "xai_account:200:sso_only")
+        self.assertEqual(failed["status"], "restricted")
+        self.assertEqual(failed["evidence"], "local:grok_oauth_failed")
+
+        marker = self.root / "tokens" / "grok" / "uploaded_sub2api.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("grok@example.com\n", encoding="utf-8")
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            authorized = asset_scanner._scan_grok(base, 10)
+
+        self.assertEqual(authorized["status"], "normal")
+        self.assertIn("oauth_authorized", authorized["evidence"])
+
     def test_chatgpt_plus_campaign_without_price_is_not_called_zero_price(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {
