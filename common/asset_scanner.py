@@ -37,6 +37,7 @@ STATUSES = (
 PLUS_TRIAL_STATUSES = (
     "eligible",
     "zero_price",
+    "discount",
     "ineligible",
     "active",
     "unknown",
@@ -314,6 +315,14 @@ def get_report() -> dict:
                 public.setdefault("plus_trial", "unknown")
                 public.setdefault("plus_trial_detail", "尚未检测 Plus 试用资格")
                 public.setdefault("plus_trial_evidence", "none")
+                # Older scanners used ``eligible`` for any campaign, including
+                # non-zero discounts. Fail closed until a fresh strict scan.
+                if public.get("plus_trial") == "eligible":
+                    public["plus_trial"] = "unknown"
+                    public["plus_trial_detail"] = "历史活动结果未确认 0 元，请重新扫描"
+                    public["plus_trial_evidence"] = (
+                        f"{public.get('plus_trial_evidence') or 'legacy'}:legacy_unconfirmed"
+                    )
             items.append(public)
         report = {
             "schema_version": 2,
@@ -615,12 +624,22 @@ def _chatgpt_account_id(record: dict, access_token: str) -> str:
     return _jwt_chatgpt_account_id(access_token)
 
 
+def _decimal_value(value):
+    """Parse a finite numeric API value without treating malformed data as zero."""
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
 def parse_chatgpt_accounts_check(payload, account_id: str = "") -> dict:
     """Normalize the read-only ``accounts/check`` response.
 
-    A free plan alone is not enough for a trial. The reference flow requires
-    both a free entitlement and an advertised ``eligible_promo_campaigns.plus``
-    entry, which is what ``plus_trial_eligible`` represents here.
+    A free plan and a campaign are not enough to call an offer free. The
+    public scanner only treats an explicit zero price or a 100% discount as
+    ``plus_trial_zero_price``; campaigns with a lower discount are retained as
+    ``discount`` so they cannot enter the zero-price protocol pool.
     """
     accounts = payload.get("accounts") if isinstance(payload, dict) else None
     if not isinstance(accounts, dict):
@@ -662,6 +681,16 @@ def parse_chatgpt_accounts_check(payload, account_id: str = "") -> dict:
     offer_rows = offers.get("offers") if isinstance(offers.get("offers"), list) else []
     offer_ids = [str(row.get("id")) for row in offer_rows if isinstance(row, dict) and row.get("id")]
 
+    discount_percentage = discount.get("percentage") if plus_campaign else None
+    discount_value = _decimal_value(discount_percentage)
+    explicit_zero_path = _zero_price_offer(plus_campaign) if plus_campaign else ""
+    zero_price = bool(
+        is_free
+        and plus_campaign
+        and (explicit_zero_path or (discount_value is not None and discount_value >= 100))
+    )
+    has_campaign = bool(is_free and plus_campaign)
+
     return {
         "ok": True,
         "account_id": selected_id,
@@ -670,10 +699,12 @@ def parse_chatgpt_accounts_check(payload, account_id: str = "") -> dict:
         "has_active_subscription": bool(entitlement.get("has_active_subscription")),
         "is_active_subscription_gratis": bool(entitlement.get("is_active_subscription_gratis")),
         "expires_at": entitlement.get("expires_at"),
-        "plus_trial_eligible": bool(is_free and plus_campaign),
+        "plus_trial_eligible": bool(has_campaign and zero_price),
+        "plus_trial_has_campaign": has_campaign,
+        "plus_trial_zero_price": bool(zero_price),
         "plus_trial_campaign_id": plus_campaign.get("id") if plus_campaign else None,
         "plus_trial_title": metadata.get("title") if plus_campaign else None,
-        "plus_trial_discount_percentage": discount.get("percentage") if plus_campaign else None,
+        "plus_trial_discount_percentage": discount_percentage,
         "plus_trial_duration_num_periods": duration.get("num_periods") if plus_campaign else None,
         "plus_trial_duration_period": duration.get("period") if plus_campaign else None,
         "eligible_offer_ids": offer_ids,
@@ -742,6 +773,25 @@ def _zero_price_offer(payload) -> str:
                 if isinstance(nested, (dict, list)):
                     queue.append((f"{path}[{index}]", nested))
     return ""
+
+
+def _discount_percentage(payload):
+    """Find an explicit percentage discount in a promotion response."""
+    queue = [payload]
+    while queue:
+        value = queue.pop(0)
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                normalized_key = re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower()
+                if normalized_key in {"percentage", "percent", "discount_percentage"}:
+                    parsed = _decimal_value(nested)
+                    if parsed is not None:
+                        return parsed
+                if isinstance(nested, (dict, list)):
+                    queue.append(nested)
+        elif isinstance(value, list):
+            queue.extend(nested for nested in value if isinstance(nested, (dict, list)))
+    return None
 
 
 def _scan_chatgpt_plus_trial(record: dict, access_token: str, timeout: int) -> dict:
@@ -832,15 +882,40 @@ def _scan_chatgpt_plus_trial(record: dict, access_token: str, timeout: int) -> d
     parsed = parse_chatgpt_accounts_check(payload, account_id=account_id)
     if response.status_code == 200 and parsed.get("ok"):
         evidence = "accounts_check:200"
-        if parsed.get("plus_trial_eligible"):
-            detail = "ChatGPT Plus trial eligible"
+        if parsed.get("plus_trial_zero_price"):
+            detail = "ChatGPT Plus trial explicitly priced at 0"
             title = parsed.get("plus_trial_title")
             if title:
                 detail = f"{detail}: {title}"
             return {
-                "plus_trial": "eligible",
+                "plus_trial": "zero_price",
                 "plus_trial_detail": detail,
-                "plus_trial_evidence": f"{evidence}:eligible",
+                "plus_trial_evidence": f"{evidence}:zero_price",
+                "plus_trial_campaign_id": parsed.get("plus_trial_campaign_id"),
+                "plus_trial_discount_percentage": parsed.get("plus_trial_discount_percentage"),
+                "plus_trial_duration_num_periods": parsed.get("plus_trial_duration_num_periods"),
+                "plus_trial_duration_period": parsed.get("plus_trial_duration_period"),
+            }
+        if parsed.get("plus_trial_has_campaign"):
+            percentage = _decimal_value(parsed.get("plus_trial_discount_percentage"))
+            title = parsed.get("plus_trial_title")
+            if percentage is not None and percentage < 100:
+                detail = f"ChatGPT Plus campaign is {parsed.get('plus_trial_discount_percentage')}% off; not free"
+                if title:
+                    detail = f"{detail}: {title}"
+                return {
+                    "plus_trial": "discount",
+                    "plus_trial_detail": detail,
+                    "plus_trial_evidence": f"{evidence}:discount",
+                    "plus_trial_campaign_id": parsed.get("plus_trial_campaign_id"),
+                    "plus_trial_discount_percentage": parsed.get("plus_trial_discount_percentage"),
+                    "plus_trial_duration_num_periods": parsed.get("plus_trial_duration_num_periods"),
+                    "plus_trial_duration_period": parsed.get("plus_trial_duration_period"),
+                }
+            return {
+                "plus_trial": "unknown",
+                "plus_trial_detail": "Plus campaign found, but the payable amount is not confirmed as 0",
+                "plus_trial_evidence": f"{evidence}:price_unconfirmed",
                 "plus_trial_campaign_id": parsed.get("plus_trial_campaign_id"),
                 "plus_trial_discount_percentage": parsed.get("plus_trial_discount_percentage"),
                 "plus_trial_duration_num_periods": parsed.get("plus_trial_duration_num_periods"),
@@ -928,10 +1003,18 @@ def _scan_chatgpt_coupon_trial(record: dict, access_token: str, timeout: int) ->
                 "plus_trial_evidence": f"{evidence}:zero:{zero_price_path}",
             }
         if response.status_code == 200 and state == "eligible" and not redeemed_by_user:
+            discount_percentage = _discount_percentage(payload)
+            if discount_percentage is not None and discount_percentage < 100:
+                return {
+                    "plus_trial": "discount",
+                    "plus_trial_detail": f"命中 Plus 优惠，但折扣为 {discount_percentage}%（不是 0 元）",
+                    "plus_trial_evidence": f"{evidence}:discount",
+                    "plus_trial_discount_percentage": str(discount_percentage),
+                }
             return {
-                "plus_trial": "eligible",
-                "plus_trial_detail": "命中 Plus 免费试用资格",
-                "plus_trial_evidence": evidence,
+                "plus_trial": "unknown",
+                "plus_trial_detail": "命中 Plus 活动，但接口未确认应付金额为 0 元",
+                "plus_trial_evidence": f"{evidence}:price_unconfirmed",
             }
         if response.status_code == 200 and ineligible:
             return {
@@ -1347,11 +1430,18 @@ def scan_pool(
     for record in selected:
         cached = previous.get(str(record.get("id")))
         cache_age = now - _checked_at_epoch(cached or {})
+        legacy_plus_result = (
+            include_plus_trial is not False
+            and record.get("platform") == "chatgpt"
+            and cached
+            and str(cached.get("plus_trial") or "") == "eligible"
+        )
         if (
             not force
             and cache_seconds > 0
             and cached
             and 0 <= cache_age < cache_seconds
+            and not legacy_plus_result
         ):
             scanned[str(record["id"])] = dict(cached)
         else:

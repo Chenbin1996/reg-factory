@@ -388,6 +388,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,s
 .asset-status-badge.unknown,.asset-status-badge.error{color:var(--quiet)}
 .asset-trial-badge{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border:1px solid var(--line);border-radius:5px;font-size:9.5px;white-space:nowrap}
 .asset-trial-badge.eligible,.asset-trial-badge.zero_price{border-color:rgba(229,168,75,.6);color:#f0c77e;background:rgba(229,168,75,.1)}
+.asset-trial-badge.discount{border-color:rgba(214,126,75,.6);color:#e9a274;background:rgba(214,126,75,.1)}
 .asset-trial-badge.active{border-color:rgba(65,184,120,.5);color:var(--green);background:rgba(65,184,120,.08)}
 .asset-trial-badge.ineligible{color:#b0b5bd;background:rgba(116,123,133,.08)}
 .asset-trial-badge.unknown,.asset-trial-badge.disabled{color:var(--quiet)}

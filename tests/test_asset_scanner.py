@@ -278,7 +278,7 @@ class AssetScannerTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "banned")
 
-    def test_chatgpt_plus_trial_eligible_signal_is_labeled(self):
+    def test_chatgpt_plus_campaign_without_price_is_not_called_zero_price(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {
             "state": "eligible",
@@ -293,11 +293,11 @@ class AssetScannerTests(unittest.TestCase):
         with patch.object(asset_scanner, "_web_session", return_value=session):
             result = asset_scanner._scan_chatgpt_plus_trial(record, "access-token", 10)
 
-        self.assertEqual(result["plus_trial"], "eligible")
-        self.assertIn("免费试用", result["plus_trial_detail"])
+        self.assertEqual(result["plus_trial"], "unknown")
+        self.assertIn("0 元", result["plus_trial_detail"])
         self.assertEqual(session.get.call_args.kwargs["params"]["coupon"], "plus-1-month-free")
 
-    def test_chatgpt_accounts_check_plus_campaign_is_eligible(self):
+    def test_chatgpt_accounts_check_100_percent_campaign_is_zero_price(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {
             "accounts": {
@@ -326,12 +326,43 @@ class AssetScannerTests(unittest.TestCase):
         with patch.object(asset_scanner, "_web_session", return_value=session):
             result = asset_scanner._scan_chatgpt_plus_trial(record, "access-token", 10)
 
-        self.assertEqual(result["plus_trial"], "eligible")
+        self.assertEqual(result["plus_trial"], "zero_price")
         self.assertEqual(result["plus_trial_campaign_id"], "plus-trial")
-        self.assertEqual(result["plus_trial_evidence"], "accounts_check:200:eligible")
+        self.assertEqual(result["plus_trial_evidence"], "accounts_check:200:zero_price")
         self.assertEqual(
             session.get.call_args.kwargs["params"], {"timezone_offset_min": "-"}
         )
+
+    def test_chatgpt_accounts_check_discount_is_not_zero_price(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "accounts": {
+                "default": {
+                    "account": {"plan_type": "free"},
+                    "entitlement": {"subscription_plan": "chatgptfreeplan"},
+                    "eligible_promo_campaigns": {
+                        "plus": {
+                            "id": "plus-discount",
+                            "metadata": {
+                                "title": "Half price",
+                                "discount": {"percentage": 50},
+                            },
+                        }
+                    },
+                }
+            }
+        }
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        record = {"email": "discount@example.com", "_token": {"planType": "free"}}
+
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            result = asset_scanner._scan_chatgpt_plus_trial(record, "access-token", 10)
+
+        self.assertEqual(result["plus_trial"], "discount")
+        self.assertIn("50%", result["plus_trial_detail"])
 
     def test_chatgpt_accounts_check_without_campaign_is_ineligible(self):
         response = MagicMock(status_code=200)
@@ -431,22 +462,22 @@ class AssetScannerTests(unittest.TestCase):
             asset_scanner,
             "_scan_chatgpt_plus_trial",
             return_value={
-                "plus_trial": "eligible",
-                "plus_trial_detail": "命中 Plus 免费试用资格",
-                "plus_trial_evidence": "promo_campaign:200:eligible",
+                "plus_trial": "zero_price",
+                "plus_trial_detail": "明确 0 元",
+                "plus_trial_evidence": "promo_campaign:200:zero:offer.amount_due",
             },
         ) as check:
             result = asset_scanner.check_chatgpt_plus_trial_for_session(
                 session, "new-trial@example.com", timeout=15
             )
 
-        self.assertEqual(result["plus_trial"], "eligible")
+        self.assertEqual(result["plus_trial"], "zero_price")
         check.assert_called_once()
         report = asset_scanner.get_report()
         item = next(
             entry for entry in report["items"] if entry["email"] == "new-trial@example.com"
         )
-        self.assertEqual(item["plus_trial"], "eligible")
+        self.assertEqual(item["plus_trial"], "zero_price")
         self.assertEqual(item["registration_country"], "SG")
         cache_text = (self.root / "runtime" / "state" / "asset_pool_scan.json").read_text(
             encoding="utf-8"

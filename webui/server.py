@@ -1601,7 +1601,8 @@ def _protocol_pool_eligible_emails():
     """Return cached, redacted pool identities that previously passed trial scan."""
     from common import asset_scanner
 
-    allowed = {"eligible", "zero_price"}
+    # Only an explicitly zero-priced offer may enter the protocol pool.
+    allowed = {"zero_price"}
     report = asset_scanner.get_report()
     emails = []
     seen = set()
@@ -1810,7 +1811,8 @@ async def api_chatgpt_plus_protocol_batch(request: Request):
             return item, await asyncio.to_thread(_plus_trial_gate_sync, item)
 
     checks = await asyncio.gather(*(check_one(item) for item in candidates))
-    allowed = {"eligible", "zero_price"}
+    # A campaign/discount is not proof of a 0 yuan checkout.
+    allowed = {"zero_price"}
     eligible = [item for item, result in checks if result.get("plus_trial") in allowed]
     skipped = [
         {"email": result.get("email") or item["email"], "reason": result.get("plus_trial") or "unknown"}
@@ -1819,7 +1821,7 @@ async def api_chatgpt_plus_protocol_batch(request: Request):
     ]
     if not eligible:
         return JSONResponse(
-            {"error": "没有命中 Plus 优惠资格的账号，未创建协议任务", "skipped": skipped},
+            {"error": "没有命中明确 0 元试用资格的账号，未创建协议任务", "skipped": skipped},
             status_code=422,
         )
 
@@ -2002,13 +2004,14 @@ async def _plus_trial_gate(path: str, method: str, body: bytes):
             return await asyncio.to_thread(_plus_trial_gate_sync, item)
 
     results = await asyncio.gather(*(check_one(item) for item in items))
-    allowed = {"eligible", "zero_price"}
+    # Fail closed unless the latest read-only check proved a zero price.
+    allowed = {"zero_price"}
     blocked = [item for item in results if item.get("plus_trial") not in allowed]
     if blocked:
         return JSONResponse(
             {
                 "ok": False,
-                "error": "提链/支付仅允许有 Plus 优惠资格的账号",
+                "error": "提链/支付仅允许明确 0 元试用资格的账号",
                 "accounts": blocked,
             },
             status_code=422,

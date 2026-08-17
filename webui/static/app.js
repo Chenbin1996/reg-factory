@@ -407,7 +407,7 @@ const ASSET_SCAN_PLATFORM_LABELS = {
   outlook:'Outlook', chatgpt:'ChatGPT', claude:'Claude', grok:'Grok', kiro:'Kiro',
 };
 const ASSET_PLUS_TRIAL_LABELS = {
-  eligible:'可试用', zero_price:'0 元优惠', ineligible:'暂无优惠', active:'已有套餐', unknown:'资格未知', disabled:'检测关闭',
+  eligible:'待确认', zero_price:'0 元试用', discount:'有折扣（非0元）', ineligible:'暂无优惠', active:'已有套餐', unknown:'资格未知', disabled:'检测关闭',
 };
 const ASSET_SCAN_PAGE_SIZE = 25;
 

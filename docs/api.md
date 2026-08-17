@@ -114,8 +114,9 @@ ChatGPT 注册可通过 `--country JP` 等两位 ISO 国家码约束出口。脚
 
 | `plus_trial` | 含义 |
 |---|---|
-| `eligible` | 活动接口明确返回可使用 Plus 免费试用 |
-| `zero_price` | 活动接口返回明确的应付 0 元或格式化 0 元价格 |
+| `eligible` | 兼容旧缓存的活动标记，不代表已确认 0 元，不能进入协议号池 |
+| `zero_price` | 活动接口返回明确的应付 0 元、格式化 0 元价格或 100% 折扣 |
+| `discount` | 活动接口确认有折扣但低于 100%，不是 0 元 |
 | `ineligible` | 活动接口明确返回不符合、已领取或已过期 |
 | `active` | 本地会话表明账号已有 Plus 或其他付费套餐 |
 | `unknown` | 缺少 AT、网络失败或接口没有返回明确资格 |
@@ -125,7 +126,7 @@ ChatGPT 注册可通过 `--country JP` 等两位 ISO 国家码约束出口。脚
 
 ## Plus 协议提链
 
-Plus 导入页把“授权导入”“渠道选择”“批量协议提链”和“批量协议支付”放在一个任务面板中。OAuth 导入成功后可从本地 session 读取当前 AT；也可选择“号池有资格账号”，直接载入资产扫描缓存中标记为 `eligible` 或 `zero_price` 且存在可用本地 session 的账号。无论来源如何，协议任务都会逐账号实时复检优惠资格，未再次命中的账号不会进入提链或支付。
+Plus 导入页把“授权导入”“渠道选择”“批量协议提链”和“批量协议支付”放在一个任务面板中。OAuth 导入成功后可从本地 session 读取当前 AT；也可选择“号池有资格账号”，直接载入资产扫描缓存中标记为 `zero_price` 且存在可用本地 session 的账号。`eligible`、`discount` 和 `unknown` 不会进入协议号池。无论来源如何，协议任务都会逐账号实时复检优惠资格，未再次命中的账号不会进入提链或支付。
 
 渠道目录包括 PayPal、GoPay、GCash、GrabPay、UPI、iDEAL、PIX、Kakao Pay、BLIK、TWINT、Direct Card Checkout 和 MoMo。BLIK 的上游协议不支持批量，因此在批量界面中明确禁用。除 PayPal 外，批量任务只生成支付链接或二维码；PayPal 可通过明确选择“批量协议支付”、勾选真实支付确认并再次确认弹窗后调用上游 `paypal_auto` 执行器。支付资料可仅在本次任务中录入，也可使用协议引擎已有的 `paypal_auto` 配置。任务输入文件以本机权限保护，子进程结束即删除；最终报告不保存 AT、Cookie、卡片、地址或接码 URL。
 

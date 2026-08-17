@@ -263,18 +263,18 @@ class ChatGPTPlusTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "同时填写"):
             webui_server._parse_paypal_payment_details({"cards": "4242424242424242|12/30|123"})
 
-    def test_protocol_pool_source_uses_only_cached_eligible_chatgpt_accounts(self):
+    def test_protocol_pool_source_uses_only_cached_zero_price_chatgpt_accounts(self):
         report = {"items": [
-            {"platform": "chatgpt", "email": "eligible@example.com", "plus_trial": "eligible"},
             {"platform": "chatgpt", "email": "zero@example.com", "plus_trial": "zero_price"},
+            {"platform": "chatgpt", "email": "discount@example.com", "plus_trial": "discount"},
             {"platform": "chatgpt", "email": "free@example.com", "plus_trial": "ineligible"},
             {"platform": "outlook", "email": "mail@example.com", "plus_trial": "eligible"},
-            {"platform": "chatgpt", "email": "ELIGIBLE@example.com", "plus_trial": "eligible"},
+            {"platform": "chatgpt", "email": "unknown@example.com", "plus_trial": "unknown"},
         ]}
         with patch("common.asset_scanner.get_report", return_value=report):
             self.assertEqual(
                 webui_server._protocol_pool_eligible_emails(),
-                ["eligible@example.com", "zero@example.com"],
+                ["zero@example.com"],
             )
 
     def test_explicit_empty_protocol_pool_does_not_fall_back_to_all_sessions(self):
@@ -374,15 +374,15 @@ class ChatGPTPlusTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("有效的 JSON", response.body.decode("utf-8"))
 
-    def test_plus_checkout_gate_allows_only_eligible_accounts(self):
+    def test_plus_checkout_gate_allows_only_zero_price_accounts(self):
         with patch.object(
             webui_server,
             "_plus_trial_gate_sync",
             return_value={
-                "email": "eligible@example.com",
-                "plus_trial": "eligible",
-                "detail": "eligible",
-                "evidence": "accounts_check:200:eligible",
+                "email": "zero@example.com",
+                "plus_trial": "zero_price",
+                "detail": "zero price",
+                "evidence": "accounts_check:200:zero_price",
             },
         ):
             allowed = asyncio.run(
