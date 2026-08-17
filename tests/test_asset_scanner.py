@@ -297,6 +297,25 @@ class AssetScannerTests(unittest.TestCase):
         self.assertIn("0 元", result["plus_trial_detail"])
         self.assertEqual(session.get.call_args.kwargs["params"]["coupon"], "plus-1-month-free")
 
+    def test_chatgpt_coupon_100_percent_discount_is_zero_price(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "state": "eligible",
+            "discount": {"percentage": 100},
+            "redemption": {"redeemed_by_user": False},
+        }
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        record = {"email": "zero-discount@example.com", "_token": {"planType": "free"}}
+
+        with patch.object(asset_scanner, "_web_session", return_value=session):
+            result = asset_scanner._scan_chatgpt_plus_trial(record, "access-token", 10)
+
+        self.assertEqual(result["plus_trial"], "zero_price")
+        self.assertIn("100%", result["plus_trial_detail"])
+
     def test_chatgpt_accounts_check_100_percent_campaign_is_zero_price(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {

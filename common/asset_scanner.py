@@ -1004,6 +1004,13 @@ def _scan_chatgpt_coupon_trial(record: dict, access_token: str, timeout: int) ->
             }
         if response.status_code == 200 and state == "eligible" and not redeemed_by_user:
             discount_percentage = _discount_percentage(payload)
+            if discount_percentage is not None and discount_percentage >= 100:
+                return {
+                    "plus_trial": "zero_price",
+                    "plus_trial_detail": "命中 Plus 100% 折扣，按 0 元试用处理",
+                    "plus_trial_evidence": f"{evidence}:zero_discount",
+                    "plus_trial_discount_percentage": str(discount_percentage),
+                }
             if discount_percentage is not None and discount_percentage < 100:
                 return {
                     "plus_trial": "discount",
