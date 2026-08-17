@@ -337,6 +337,21 @@ class ChatGPTPlusTests(unittest.TestCase):
         self.assertEqual(gopay["stage_proxy_countries"]["approve"], "JP")
         self.assertEqual(gopay["approve_proxy_pool"], gopay["checkout_proxy_pool"])
 
+    def test_protocol_worker_formats_exception_rows_without_optional_fields(self):
+        from tools import run_protocol_payment_batch as worker
+
+        row = worker._public_result("one@example.com", {
+            "ok": False,
+            "error": RuntimeError("route unavailable"),
+            "error_code": "worker_exception",
+        })
+        self.assertEqual(row["payment_status"], "")
+        self.assertEqual(worker._result_detail(row), "route unavailable")
+        self.assertEqual(
+            worker._result_detail({"error": "proxy mismatch"}),
+            "proxy mismatch",
+        )
+
     def test_protocol_batch_rejects_malformed_json_before_execution(self):
         from starlette.requests import Request
 

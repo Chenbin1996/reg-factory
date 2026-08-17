@@ -185,6 +185,17 @@ def _public_result(email: str, result: object) -> dict[str, Any]:
     }
 
 
+def _result_detail(row: dict[str, Any]) -> str:
+    artifact = str(row.get("url") or "") or ("QR 已生成" if row.get("qr_data") else "")
+    return str(
+        row.get("payment_status")
+        or artifact
+        or row.get("error")
+        or row.get("error_code")
+        or "无可用协议结果"
+    )
+
+
 def _execute_paypal_payment(
     item: dict[str, str],
     *,
@@ -388,11 +399,15 @@ def main() -> int:
                 try:
                     row = future.result()
                 except Exception as exc:  # noqa: BLE001
-                    row = {"email": email, "ok": False, "status": "", "operation": "extract_link", "url": "", "qr_data": "", "error": _safe_text(exc), "error_code": "worker_exception"}
+                    row = _public_result(email, {
+                        "ok": False,
+                        "operation": "execute_payment" if args.operation == "pay" else "extract_link",
+                        "error": exc,
+                        "error_code": "worker_exception",
+                    })
                 rows.append(row)
-                artifact = row["url"] or ("QR 已生成" if row["qr_data"] else "")
-                state = "OK" if row["ok"] else "FAIL"
-                detail = row["payment_status"] or artifact or row["error"] or row["error_code"] or "无可用协议结果"
+                state = "OK" if row.get("ok") else "FAIL"
+                detail = _result_detail(row)
                 print(f"[protocol][{state}] {row['email']} {detail}", flush=True)
 
         report = {
