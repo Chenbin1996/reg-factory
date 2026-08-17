@@ -60,7 +60,7 @@ _PLATFORMS = {
 
 EMAIL_PROVIDERS = ("outlook", "icloud", "temporary", "other")
 LIFECYCLE_BUCKETS = ("exported", "quarantine")
-QUARANTINE_STATUSES = ("banned", "expired", "invalid")
+QUARANTINE_STATUSES = ("banned", "expired", "invalid", "unknown")
 _OUTLOOK_EMAIL_DOMAINS = {"outlook.com", "hotmail.com", "live.com", "msn.com"}
 _ICLOUD_EMAIL_DOMAINS = {"icloud.com", "me.com", "mac.com"}
 _TEMPORARY_EMAIL_MARKERS = (

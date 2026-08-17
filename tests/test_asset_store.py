@@ -439,6 +439,23 @@ class AssetStoreTests(unittest.TestCase):
         quarantined = list((self.root / "runtime" / "assets" / "quarantine").rglob("*.json"))
         self.assertEqual(len(quarantined), 2)
 
+    def test_unknown_platform_asset_moves_to_quarantine(self):
+        self._write_chatgpt_assets()
+        report = {
+            "items": [{
+                "platform": "chatgpt",
+                "email": "user@example.com",
+                "source": "full_profile_20260101_000000.json,user@example.com.session.json",
+                "status": "unknown",
+            }],
+        }
+
+        lifecycle = asset_store.quarantine_scan_report(report)
+
+        self.assertEqual(lifecycle["moved_accounts"], 1)
+        self.assertEqual(lifecycle["moved_files"], 2)
+        self.assertEqual(asset_store.summary()["platforms"]["chatgpt"], {"cookies": 0, "sessions": 0})
+
     def test_chatgpt_can_export_registration_mailbox_by_provider(self):
         (self.root / "emails.txt").write_text(
             "outlook@outlook.com----pw1----rt1----cid1\n"
