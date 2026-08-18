@@ -1619,6 +1619,45 @@ def create_chatgpt_icloud_mailbox():
     return create_mailbox(provider="icloud", mail_type="icloud")
 
 
+def _icloud_registration_root(email):
+    """Return the canonical iCloud mother address used by plus submail."""
+    local, separator, domain = str(email or "").strip().lower().partition("@")
+    if not separator:
+        return ""
+    return f"{local.split('+', 1)[0]}@{domain}"
+
+
+def _known_icloud_registration_roots():
+    """Load mother addresses OpenAI has already rejected as existing users."""
+    data_root = _os.environ.get("REG_FACTORY_DATA_DIR", "").strip() or "."
+    path = _os.path.join(data_root, "emails_error_chatgpt.txt")
+    roots = set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if "user_already_exists" not in line.lower():
+                    continue
+                email = line.split("----", 1)[0].strip()
+                root = _icloud_registration_root(email)
+                if root:
+                    roots.add(root)
+    except OSError:
+        pass
+    return roots
+
+
+def _allocate_untainted_chatgpt_icloud_mailbox(max_attempts=12):
+    tainted_roots = _known_icloud_registration_roots()
+    for _ in range(max(1, int(max_attempts))):
+        mailbox = create_chatgpt_icloud_mailbox()
+        root = _icloud_registration_root(mailbox.get("email"))
+        if root and root in tainted_roots:
+            print(f"  [email] skipping known ChatGPT iCloud mother mailbox: {root}")
+            continue
+        return mailbox
+    raise RuntimeError("iCloud submail pool repeatedly returned known ChatGPT mother mailboxes")
+
+
 def allocate_chatgpt_registration_mailbox():
     """Allocate the configured mailbox, falling back without reusing claimed mail."""
     if FIXED_EMAIL:
@@ -1632,7 +1671,7 @@ def allocate_chatgpt_registration_mailbox():
 
     if EMAIL_PROVIDER == "icloud":
         try:
-            mailbox = create_chatgpt_icloud_mailbox()
+            mailbox = _allocate_untainted_chatgpt_icloud_mailbox()
             print(f"  [email] iCloud submail allocated: {mailbox['email']}")
             return {
                 "email": mailbox["email"],
@@ -1672,7 +1711,7 @@ def allocate_chatgpt_registration_mailbox():
         return None
     print("  [email] Outlook pool exhausted; switching to iCloud mailbox")
     try:
-        mailbox = create_chatgpt_icloud_mailbox()
+        mailbox = _allocate_untainted_chatgpt_icloud_mailbox()
         print(f"  [email] iCloud submail allocated: {mailbox['email']}")
         return {
             "email": mailbox["email"],
@@ -2547,6 +2586,27 @@ async def register_one(index, total, p):
             await teardown(bb, pid, delete=not keep)
             if keep:
                 print(f"  [debug] window kept for inspection: {name} (id={pid})")
+
+
+async def register_one_with_mailbox_retries(index, total, p):
+    """Retry iCloud allocation failures without changing the requested count."""
+    attempts = 1
+    if EMAIL_PROVIDER == "icloud" and not FIXED_EMAIL:
+        attempts = max(
+            1,
+            min(20, _env_int("CHATGPT_ICLOUD_MAILBOX_ATTEMPTS", 8)),
+        )
+    result = None
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            print(
+                f"  [email] retrying registration with a new iCloud mailbox "
+                f"({attempt}/{attempts})"
+            )
+        result = await register_one(index, total, p)
+        if result:
+            return result
+    return result
 
 
 async def blur_field(page, selector):
@@ -3443,7 +3503,9 @@ async def main():
                 )
                 async with async_playwright() as p:
                     try:
-                        sk = await register_one(i, args.count, p)
+                        sk = await register_one_with_mailbox_retries(
+                            i, args.count, p
+                        )
                         results.append(sk)
                     except Exception as e:
                         print(f"  #{i} fatal: {e}")

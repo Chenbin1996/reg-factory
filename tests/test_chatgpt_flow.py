@@ -91,6 +91,53 @@ class ChatGPTFlowTests(unittest.TestCase):
         self.assertEqual(mailbox["email"], "code@example.com")
         create.assert_called_once_with(provider="icloud", mail_type="icloud")
 
+    def test_icloud_allocation_skips_mother_mailbox_rejected_by_openai(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(
+                os.path.join(root, "emails_error_chatgpt.txt"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(
+                    "used+old@icloud.com--------user_already_exists: existing\n"
+                )
+            mailboxes = [
+                {"email": "used+new@icloud.com"},
+                {"email": "fresh+new@icloud.com"},
+            ]
+            with patch.dict(
+                os.environ, {"REG_FACTORY_DATA_DIR": root}, clear=False
+            ), patch.object(
+                register_chatgpt,
+                "create_chatgpt_icloud_mailbox",
+                side_effect=mailboxes,
+            ) as create:
+                mailbox = register_chatgpt._allocate_untainted_chatgpt_icloud_mailbox()
+
+        self.assertEqual(mailbox["email"], "fresh+new@icloud.com")
+        self.assertEqual(create.call_count, 2)
+
+    def test_icloud_registration_retries_until_requested_account_succeeds(self):
+        with patch.object(
+            register_chatgpt, "EMAIL_PROVIDER", "icloud"
+        ), patch.object(
+            register_chatgpt, "FIXED_EMAIL", None
+        ), patch.dict(
+            os.environ, {"CHATGPT_ICLOUD_MAILBOX_ATTEMPTS": "3"}, clear=False
+        ), patch.object(
+            register_chatgpt,
+            "register_one",
+            AsyncMock(side_effect=[None, "session-cookie"]),
+        ) as register:
+            result = asyncio.run(
+                register_chatgpt.register_one_with_mailbox_retries(
+                    1, 1, MagicMock()
+                )
+            )
+
+        self.assertEqual(result, "session-cookie")
+        self.assertEqual(register.await_count, 2)
+
     def test_exhausted_outlook_pool_falls_back_to_icloud(self):
         mailbox = {
             "id": "icloud-box",
