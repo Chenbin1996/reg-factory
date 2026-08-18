@@ -7,6 +7,7 @@
 - ChatGPT 注册支持明确区分注册密码页和已有账号登录密码页，避免误填随机密码。
 - BitBrowser 临时返回“正在打开/启动中”时自动重试；ChatGPT 调试模式可记录脱敏的认证请求状态，便于定位 Cloudflare 和授权跳转问题。
 - Codex 授权支持 SUB2API 或 CPA 授权地址来源，并保留 refresh token 导入流程。
+- 修复 WebUI 保存代理配置后，注册子进程仍继承旧代理环境，导致 ChatGPT 邮箱提交页面被重置的问题。
 
 **验证**
 - 完成 ChatGPT iCloud 实际注册、邮箱验证码、Codex OAuth 和 SUB2API 导入验证。
