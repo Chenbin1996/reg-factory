@@ -231,6 +231,8 @@ SCRIPTS = [
              "default": "", "help": "邮箱来源；留空使用 CHATGPT_EMAIL_PROVIDER 配置"},
             {"flag": "--codex", "type": "bool", "default": False,
              "help": "注册成功后直接导入 SUB2API；需配置 SUB2API_*，OAuth 期间可能需要手机验证"},
+            {"flag": "--enable-2fa", "type": "bool", "default": True,
+             "help": "注册完成后启用验证器 TOTP，并把密钥写入账号资产"},
             {"flag": "--import-c2a", "type": "bool", "default": False, "help": "注册后导入 chatgpt2api"},
             {"flag": "--concurrency", "type": "int", "default": 1,
              "help": "并发数；住宅代理池隔离出口；指定固定 Clash 节点也可共享 IP 并发"},
@@ -655,11 +657,13 @@ ENV_SCHEMA = [
     {"group": "ChatGPT 邮箱", "items": [
         {"key": "CHATGPT_EMAIL_PROVIDER", "type": "choice", "choices": ["pool", "icloud"],
          "default": "pool", "help": "ChatGPT 默认邮箱来源；icloud 使用下方 API 自动申请并轮询验证码"},
+        {"key": "CHATGPT_ENABLE_2FA", "type": "choice", "choices": ["true", "false"],
+         "default": "true", "help": "注册完成后重认证并启用验证器 TOTP，同时保存密钥"},
         {"key": "ICLOUD_MAIL_API_BASE", "default": "https://mail.no-replyca.xyz",
          "help": "iCloud 邮箱 API 请求地址；email.manageh.shop 是文档站，不是接口地址"},
         {"key": "ICLOUD_MAIL_API_KEY", "secret": True, "help": "iCloud 邮箱 API key"},
         {"key": "ICLOUD_MAIL_TYPE", "type": "choice", "choices": ["icloud-code", "icloud"],
-         "default": "icloud-code", "help": "ChatGPT 始终使用 icloud-code；icloud 仅供其它流程申请普通 iCloud 子邮箱"},
+         "default": "icloud-code", "help": "ChatGPT 注册固定使用低成本 iCloud 子邮箱；此项供其它流程选择邮箱类型"},
         {"key": "ICLOUD_MAIL_SERVICE", "default": "openai", "help": "ChatGPT 固定按 openai 服务申请接码邮箱"},
     ]},
     {"group": "临时邮箱(Claude/Grok 注册取码)", "tests": [{"target": "yyds", "label": "测试 YYDS"}], "items": [

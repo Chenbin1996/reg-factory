@@ -117,6 +117,9 @@ OUTLOOK_GRAPH_RECOVERY_POLL_INTERVAL = _env_int(
 
 # ChatGPT 邮箱来源：pool=emails.txt Outlook 池；icloud=自动申请 iCloud 地址并通过 API 取码。
 CHATGPT_EMAIL_PROVIDER = _env("CHATGPT_EMAIL_PROVIDER", "pool").strip().lower() or "pool"
+CHATGPT_ENABLE_2FA = _env("CHATGPT_ENABLE_2FA", "true").strip().lower() in (
+    "1", "true", "yes", "on"
+)
 
 # MoeMail（beilunyang/moemail，需自部署）
 MOEMAIL_BASE_URL = _env("MOEMAIL_BASE_URL", "https://moemail.example.com")
