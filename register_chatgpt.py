@@ -1589,10 +1589,8 @@ async def recover_stuck_chatgpt_email_submit(page, email):
 
 
 def create_chatgpt_icloud_mailbox():
-    """Allocate a service-filtered inbox; generic iCloud aliases are not code pools."""
-    return create_mailbox(
-        provider="icloud", mail_type="icloud-code", service="openai"
-    )
+    """Allocate a low-cost iCloud submail for registration and code polling."""
+    return create_mailbox(provider="icloud", mail_type="icloud")
 
 
 def allocate_chatgpt_registration_mailbox():
@@ -1609,7 +1607,7 @@ def allocate_chatgpt_registration_mailbox():
     if EMAIL_PROVIDER == "icloud":
         try:
             mailbox = create_chatgpt_icloud_mailbox()
-            print(f"  [email] iCloud OpenAI code mailbox allocated: {mailbox['email']}")
+            print(f"  [email] iCloud submail allocated: {mailbox['email']}")
             return {
                 "email": mailbox["email"],
                 "password": "",
@@ -1649,7 +1647,7 @@ def allocate_chatgpt_registration_mailbox():
     print("  [email] Outlook pool exhausted; switching to iCloud mailbox")
     try:
         mailbox = create_chatgpt_icloud_mailbox()
-        print(f"  [email] iCloud OpenAI code mailbox allocated: {mailbox['email']}")
+        print(f"  [email] iCloud submail allocated: {mailbox['email']}")
         return {
             "email": mailbox["email"],
             "password": "",
