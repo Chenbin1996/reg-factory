@@ -92,6 +92,16 @@ _PROXY_ENV_KEYS = (
     "CHATGPT_RESIDENTIAL_ROTATE_RETRIES",
 )
 
+# The same updater inheritance problem affects provider credentials after they
+# are edited in the WebUI.  Keep this list narrow so unrelated explicit system
+# environment overrides retain their existing precedence.
+_LIVE_ENV_KEYS = frozenset(_PROXY_ENV_KEYS) | {
+    "ICLOUD_MAIL_API_BASE",
+    "ICLOUD_MAIL_API_KEY",
+    "ICLOUD_MAIL_TYPE",
+    "ICLOUD_MAIL_SERVICE",
+}
+
 
 def _asset_api_denied(request: Request):
     configured = _read_config_val("REG_FACTORY_ASSET_API_KEY", "").strip()
@@ -807,7 +817,7 @@ def _write_env_file(path, updates):
 def _apply_saved_env(updates):
     """让当前 WebUI 与后续子进程看到新配置，同时保留启动前系统变量的优先级。"""
     for key, value in updates.items():
-        if key in BOOT_ENV and key not in _PROXY_ENV_KEYS:
+        if key in BOOT_ENV and key not in _LIVE_ENV_KEYS:
             continue
         if value == "":
             os.environ.pop(key, None)
@@ -2771,7 +2781,7 @@ def _child_env(platform: str = ""):
     # Do not leak values loaded from an earlier .env after the active file
     # changes or removes them. Explicit startup values keep precedence.
     for key in managed_keys:
-        if key not in BOOT_ENV or key in _PROXY_ENV_KEYS:
+        if key not in BOOT_ENV or key in _LIVE_ENV_KEYS:
             if key in saved_env:
                 env[key] = saved_env[key]
             else:

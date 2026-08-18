@@ -118,6 +118,26 @@ class WebUIEnvReloadTests(unittest.TestCase):
             server._apply_saved_env({"CHATGPT_PROXY_MODE": "clash_auto"})
             self.assertEqual(os.environ["CHATGPT_PROXY_MODE"], "clash_auto")
 
+    def test_child_env_uses_saved_icloud_key_over_stale_updater_value(self):
+        path = self._env_file("unused")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("ICLOUD_MAIL_API_KEY=current-key\n")
+        stale = {"ICLOUD_MAIL_API_KEY": "stale-key"}
+        with patch.object(server, "ENV_PATH", path), patch.object(
+            server, "BOOT_ENV", stale
+        ), patch.dict(os.environ, stale, clear=False):
+            child = server._child_env("chatgpt")
+
+        self.assertEqual(child["ICLOUD_MAIL_API_KEY"], "current-key")
+
+    def test_saved_icloud_key_update_overrides_stale_updater_value_immediately(self):
+        stale = {"ICLOUD_MAIL_API_KEY": "stale-key"}
+        with patch.object(server, "BOOT_ENV", stale), patch.dict(
+            os.environ, stale, clear=False
+        ):
+            server._apply_saved_env({"ICLOUD_MAIL_API_KEY": "current-key"})
+            self.assertEqual(os.environ["ICLOUD_MAIL_API_KEY"], "current-key")
+
     def test_status_exposes_loaded_version_and_process_id(self):
         with patch.object(server, "_fingerprint_provider", return_value="bitbrowser"):
             with patch.object(server, "_read_config_val", side_effect=lambda _key, default="": default):

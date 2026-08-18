@@ -12,11 +12,12 @@
 - 修复邮箱提交后 SPA 仍处于 `?email=` 过渡态时重复提交空邮箱的问题。
 - 修正 `?email=` 仅代表前端路由提示、不能代表发码成功的误判；邮箱表单仍可见时会重新确认 React 输入值并再次提交。
 - ChatGPT 注册完成后默认执行二次邮箱 OTP 重认证，启用验证器 TOTP；2FA secret 随网页 session 和 Codex 本地凭据保存，Codex OAuth 登录也会自动提交动态码。
+- 修复 WebUI 自更新后继承旧 iCloud API 配置、覆盖当前 `.env` 并误报 `402 insufficient quota` 的问题。
 - Cloudflare/Turnstile 风控节点加入 30 分钟持久化污点，自动探测和轮换期间暂时跳过。
 
 **验证**
 - 完成 ChatGPT iCloud 实际注册、邮箱验证码、Codex OAuth 和 SUB2API 导入验证。
-- Python 全量测试：580 passed。
+- Python 全量测试：582 passed。
 
 ---
 
