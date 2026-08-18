@@ -9,6 +9,8 @@
 - Codex 授权支持 SUB2API 或 CPA 授权地址来源，并保留 refresh token 导入流程。
 - 修复 WebUI 保存代理配置后，注册子进程仍继承旧代理环境，导致 ChatGPT 邮箱提交页面被重置的问题。
 - ChatGPT 注册改用低成本 iCloud 子邮箱，继续保留分享链接和验证码轮询。
+- 修复邮箱提交后 SPA 仍处于 `?email=` 过渡态时重复提交空邮箱的问题。
+- Cloudflare/Turnstile 风控节点加入 30 分钟持久化污点，自动探测和轮换期间暂时跳过。
 
 **验证**
 - 完成 ChatGPT iCloud 实际注册、邮箱验证码、Codex OAuth 和 SUB2API 导入验证。

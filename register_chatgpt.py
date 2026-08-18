@@ -21,7 +21,7 @@ import re
 import string
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -35,6 +35,7 @@ from common.cookies import save_platform_cookies
 from common import emails as email_pool
 from common.temp_email import create_mailbox, poll_verification_code
 from common import proxy_switch
+from common import node_quarantine
 
 try:
     from config import CHATGPT2API_URL, CHATGPT2API_KEY, CHATGPT_EMAIL_PROVIDER
@@ -244,6 +245,9 @@ def _chatgpt_node_candidates():
     """Resolve and cache the candidate pool shared by preflight and CF rotation."""
     global _active_cf_nodes
     if _active_cf_nodes:
+        _active_cf_nodes = node_quarantine.filter_nodes(_active_cf_nodes)
+        if not _active_cf_nodes:
+            raise RuntimeError("no usable ChatGPT nodes: all candidates are temporarily tainted")
         return list(_active_cf_nodes)
 
     from common import proxy_switch
@@ -254,8 +258,10 @@ def _chatgpt_node_candidates():
 
     candidates = list(CF_NODES) if CF_NODES else _discover_chatgpt_nodes()
     limit = max(1, _env_int("CHATGPT_NODE_PROBE_LIMIT", 12))
-    _active_cf_nodes = candidates[:limit]
+    _active_cf_nodes = node_quarantine.filter_nodes(candidates[:limit])
     _cf_node_idx[0] = 0
+    if not _active_cf_nodes:
+        raise RuntimeError("no usable ChatGPT nodes: all candidates are temporarily tainted")
     return list(_active_cf_nodes)
 
 
@@ -302,6 +308,9 @@ async def _click_turnstile(page):
 def _activate_cf_node(node):
     """切换 Clash 节点并断开旧连接，避免新注册会话沿用旧出口。"""
     try:
+        if node_quarantine.is_tainted(node):
+            print(f"  [node] skip temporarily tainted ChatGPT node: {node}")
+            return None
         from common import proxy_switch
         import _clash_verge as cv
         api = _os.environ.get("CLASH_API", "http://127.0.0.1:9097")
@@ -316,6 +325,25 @@ def _activate_cf_node(node):
     except Exception as e:
         print(f"  [cf] 切节点失败: {str(e)[:80]}")
         return None
+
+
+def _taint_active_chatgpt_node(reason):
+    """Persist a short cooldown for the route that triggered a browser risk page."""
+    node = _get_active_chatgpt_node()
+    if not node:
+        try:
+            node = proxy_switch.current_node()
+        except Exception:
+            node = None
+    if not node or str(node).lower() in {"direct", "residential"}:
+        return None
+    record = node_quarantine.taint(node, reason=reason)
+    if record:
+        print(
+            f"  [node] tainted for {int(record['expires_at'] - time.time())}s: "
+            f"{record['node']} ({record['reason']})"
+        )
+    return record
 
 
 def _switch_cf_node():
@@ -1478,6 +1506,16 @@ async def chatgpt_email_submission_advanced(page):
     return True
 
 
+def _chatgpt_email_handoff_started(page, email):
+    """Recognize OpenAI's pending handoff when the old SPA input is cleared."""
+    try:
+        values = parse_qs(urlsplit(page.url or "").query).get("email", [])
+        expected = str(email or "").strip().casefold()
+        return bool(expected) and any(str(value).strip().casefold() == expected for value in values)
+    except Exception:
+        return False
+
+
 async def wait_for_chatgpt_auth_step(page, timeout=20):
     """Wait through the blank redirect between email submit and the next form."""
     deadline = time.monotonic() + max(0, timeout)
@@ -1947,6 +1985,7 @@ async def register_one(index, total, p):
                             print("  [cf] Turnstile 点击后放行")
                         else:
                             profile_error = "cf_blocked"
+                            _taint_active_chatgpt_node("cloudflare_turnstile")
 
                     if not await _is_cf_blocked(page):
                         email_entry_ready = await ensure_chatgpt_email_entry(page)
@@ -2081,7 +2120,7 @@ async def register_one(index, total, p):
             body_l = (await page.locator("body").inner_text()).lower()
         except Exception:
             body_l = ""
-        if any(k in body_l for k in ["必須", "必填", "required", "is required"]):
+        if any(k in body_l for k in ["必須", "必填", "required", "is required"]) and not _chatgpt_email_handoff_started(page, email):
             print("  [2] still on login (email required), refilling once...")
             await dismiss_cookie_banner(page)
             if not await fill_email_verified(page, email_input, email):
@@ -2100,6 +2139,12 @@ async def register_one(index, total, p):
             auth_step = await wait_for_chatgpt_auth_step(page)
             if auth_step not in {"email", "unknown"}:
                 break
+            if _chatgpt_email_handoff_started(page, email):
+                print("  [2] email handoff is pending; waiting instead of resubmitting a cleared field")
+                auth_step = await wait_for_chatgpt_auth_step(page, timeout=10)
+                if auth_step not in {"email", "unknown"}:
+                    break
+                continue
             print(f"  [2] email form did not advance, retrying submit {submit_retry + 1}/2...")
             try:
                 await dismiss_cookie_banner(page)
@@ -2150,6 +2195,7 @@ async def register_one(index, total, p):
                     break
             if not challenge_cleared and await detect_challenge(page):
                 print("  [!][FAIL] challenge remained after 30s")
+                _taint_active_chatgpt_node("post_email_challenge")
                 email_pool.mark_error(PLATFORM, email, email_pw, "challenge_after_email")
                 return None
 

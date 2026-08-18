@@ -382,6 +382,21 @@ class ChatGPTFlowTests(unittest.TestCase):
 
         self.assertFalse(asyncio.run(exercise()))
 
+    def test_email_handoff_query_prevents_duplicate_submit_after_visual_clear(self):
+        page = MagicMock()
+        page.url = "https://chatgpt.com/auth/login?email=speedlol8%2Babc%40icloud.com"
+        self.assertTrue(
+            register_chatgpt._chatgpt_email_handoff_started(
+                page, "speedlol8+abc@icloud.com"
+            )
+        )
+        page.url = "https://chatgpt.com/auth/login"
+        self.assertFalse(
+            register_chatgpt._chatgpt_email_handoff_started(
+                page, "speedlol8+abc@icloud.com"
+            )
+        )
+
     def test_birthday_part_handles_camel_case_without_misreading_birthday(self):
         self.assertIsNone(register_chatgpt._birthday_part("birthday"))
         self.assertEqual(
