@@ -45,12 +45,13 @@ except Exception:
 try:
     from config import (
         SUB2API_URL, SUB2API_EMAIL, SUB2API_PASSWORD, SUB2API_GROUP,
-        CPA_URL, CPA_MGMT_KEY,
+        CPA_URL, CPA_MGMT_KEY, CODEX_AUTH_URL_SOURCE,
     )
 except Exception:
     SUB2API_URL = SUB2API_EMAIL = SUB2API_PASSWORD = ""
     SUB2API_GROUP = "codex"
     CPA_URL = CPA_MGMT_KEY = ""
+    CODEX_AUTH_URL_SOURCE = "sub2"
 
 PLATFORM = "chatgpt"
 SIGNUP_URL = "https://chatgpt.com/auth/login"
@@ -579,6 +580,74 @@ class EmailVerificationRetryNeeded(RuntimeError):
     pass
 
 
+def _classify_chatgpt_password_step(
+    url: str = "",
+    body: str = "",
+    autocomplete: str = "",
+    input_name: str = "",
+) -> str:
+    """Classify a visible OpenAI password form without relying on its locale.
+
+    The signup flow currently has both ``create-account/password`` and
+    ``log-in/password`` variants.  A password input by itself is ambiguous,
+    especially while the SPA keeps the previous form mounted, so explicit
+    route/autocomplete/login copy wins over the signup fallback.
+    """
+    haystack = " ".join(
+        str(value or "").strip().lower()
+        for value in (url, body, autocomplete, input_name)
+    )
+    login_markers = (
+        "/log-in/password",
+        "/login/password",
+        "current-password",
+        "sign in to your account",
+        "sign in to chatgpt",
+        "登录你的账户",
+        "登入你的帳戶",
+        "se connecter",
+    )
+    if any(marker in haystack for marker in login_markers):
+        return "login"
+    return "create"
+
+
+async def detect_chatgpt_password_step(page) -> str:
+    """Return ``create``, ``login`` or ``none`` for the visible password step."""
+    try:
+        locator = page.locator(
+            'input[type="password"], input[name="password"], '
+            'input[name="new-password"]'
+        )
+        count = await locator.count()
+        visible = None
+        for index in range(count):
+            candidate = locator.nth(index)
+            try:
+                if await candidate.is_visible():
+                    visible = candidate
+                    break
+            except Exception:
+                continue
+        if visible is None:
+            return "none"
+        attrs = []
+        for name in ("autocomplete", "name", "placeholder", "aria-label"):
+            try:
+                attrs.append(await visible.get_attribute(name) or "")
+            except Exception:
+                attrs.append("")
+        try:
+            body = await page.locator("body").inner_text(timeout=2000)
+        except Exception:
+            body = ""
+        return _classify_chatgpt_password_step(
+            getattr(page, "url", ""), body, attrs[0], " ".join(attrs[1:])
+        )
+    except Exception:
+        return "none"
+
+
 def _openai_error_from_text(text, status=0, url=""):
     raw = (text or "").strip()
     lower = raw.lower()
@@ -723,16 +792,33 @@ async def _try_pass_chatgpt_turnstile(page, rounds=4, wait=4):
 
 
 class AuthResponseMonitor:
-    """Collect failed auth POST responses without printing tokens or query strings."""
+    """Collect auth failures without printing tokens or query strings.
+
+    ``CHATGPT_DEBUG_AUTH=1`` additionally records redacted request events. This
+    is opt-in because a stalled SPA hand-off can fail during a GET/navigation.
+    """
 
     def __init__(self):
         self.errors = []
         self._tasks = []
+        self.debug = str(_os.environ.get("CHATGPT_DEBUG_AUTH", "")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        self.events = []
+        self.failures = []
 
     def observe(self, response):
         try:
             parsed = urlsplit(response.url)
-            if response.request.method.upper() != "POST" or parsed.hostname != "auth.openai.com":
+            hostname = (parsed.hostname or "").lower()
+            if hostname not in {"auth.openai.com", "chatgpt.com"}:
+                return
+            method = response.request.method.upper()
+            if self.debug and len(self.events) < 160:
+                path = parsed.path or "/"
+                if hostname == "auth.openai.com" or path.startswith(("/auth", "/api")):
+                    self.events.append(f"{method} {hostname}{path} -> {response.status}")
+            if method != "POST" or hostname != "auth.openai.com":
                 return
             if not any(
                 marker in parsed.path.lower()
@@ -740,6 +826,24 @@ class AuthResponseMonitor:
             ):
                 return
             self._tasks.append(asyncio.create_task(self._record(response, parsed.path)))
+        except Exception:
+            pass
+
+    def observe_failure(self, request):
+        if not self.debug:
+            return
+        try:
+            parsed = urlsplit(request.url)
+            hostname = (parsed.hostname or "").lower()
+            if hostname not in {"auth.openai.com", "chatgpt.com"}:
+                return
+            path = parsed.path or "/"
+            if hostname == "auth.openai.com" or path.startswith(("/auth", "/api")):
+                failure = str(request.failure or "request failed")[:120]
+                if len(self.failures) < 80:
+                    self.failures.append(
+                        f"{request.method.upper()} {hostname}{path} !! {failure}"
+                    )
         except Exception:
             pass
 
@@ -764,6 +868,23 @@ class AuthResponseMonitor:
     async def latest(self):
         await self._drain()
         return self.errors[-1] if self.errors else None
+
+
+    async def debug_summary(self):
+        await self._drain()
+        if not self.debug:
+            return ""
+        parts = []
+        if self.events:
+            parts.append("responses=" + " | ".join(self.events[-24:]))
+        if self.failures:
+            parts.append("failed=" + " | ".join(self.failures[-12:]))
+        if self.errors:
+            parts.append("auth_errors=" + " | ".join(
+                f"{e.get('code')}:{e.get('status')}:{e.get('url')}"
+                for e in self.errors[-4:]
+            ))
+        return " ; ".join(parts) or "no auth requests observed"
 
 
 async def is_email_verification_route_error(page):
@@ -1602,13 +1723,20 @@ def import_chatgpt2api(session, email):
 
 
 async def extract_codex(page, email, p=None, ctx=None, release_current=None):
-    """注册成功后顺手走 Codex OAuth 提取 refresh_token 导入 SUB2API（--codex）。
+    """注册成功后顺手走 Codex OAuth（--codex）。
     复用刚注册完已登录的 page（无需像 oauth_codex.py 那样重载 cookie 再登），
-    直接在该窗口打开 SUB2API 生成的授权链接 -> 同意 -> 捕获 localhost:1455 回调 -> 换码建号。
-    带真 refresh_token 的 OAuth 凭据，SUB2API 当 oauth 账号可续期（网页 session 无 rt 会 401）。
+    默认打开 SUB2API 生成的授权链接并换码建号；CPA 模式则由 CPA 生成授权链接并接收 callback。
+    SUB2API 模式会保存带真 refresh_token 的 OAuth 凭据，网页 session 本身没有可续期的 rt。
     失败只打印告警，不影响注册成功判定。返回是否成功。"""
-    if not (SUB2API_URL and SUB2API_EMAIL and SUB2API_PASSWORD):
+    auth_source = str(_os.environ.get("CODEX_AUTH_URL_SOURCE", CODEX_AUTH_URL_SOURCE) or "sub2").strip().lower()
+    if auth_source not in {"sub2", "cpa"}:
+        print(f"  [codex] 未知 CODEX_AUTH_URL_SOURCE={auth_source}，跳过")
+        return False
+    if auth_source == "sub2" and not (SUB2API_URL and SUB2API_EMAIL and SUB2API_PASSWORD):
         print("  [codex] 未配置 SUB2API_URL/EMAIL/PASSWORD（.env），跳过")
+        return False
+    if auth_source == "cpa" and not (CPA_URL and CPA_MGMT_KEY):
+        print("  [codex] CPA 模式未配置 CPA_URL/CPA_MGMT_KEY（.env），跳过")
         return False
     try:
         from common.uploaders import _origin
@@ -1618,7 +1746,7 @@ async def extract_codex(page, email, p=None, ctx=None, release_current=None):
         return False
 
     group = CODEX_GROUP or SUB2API_GROUP
-    origin = _origin(SUB2API_URL)
+    origin = _origin(SUB2API_URL) if auth_source == "sub2" else ""
     # 注册完页面可能停在 "You're all set / Continue" 欢迎拦层（或各种 onboarding 弹层），
     # 不清掉就直接开授权，auth_url 会被拦/重定向，drive_authorize 在循环里卡死。
     # 先尽力点掉 Continue、并导航到干净首页，给 OAuth 一个干净起点。
@@ -1646,11 +1774,19 @@ async def extract_codex(page, email, p=None, ctx=None, release_current=None):
     # 实测部分新号 OAuth 必弹手机(手机要求偏向绑账号)，赌免手机多半白跑，故默认直接接码；想赌设 N>0。
     skip_n = _env_int("CODEX_PHONE_SKIP_ATTEMPTS", 0)
     try:
-        # SUB2API: 登录 + 找 openai 分组（PKCE/换码由 SUB2API 包办）
-        token = ox.sub2api_login(origin, SUB2API_EMAIL, SUB2API_PASSWORD)
-        group_id = ox.find_group_id(origin, token, group)
+        token = None
+        group_id = None
+        if auth_source == "sub2":
+            # SUB2API: 登录 + 找 openai 分组（PKCE/换码由 SUB2API 包办）
+            token = ox.sub2api_login(origin, SUB2API_EMAIL, SUB2API_PASSWORD)
+            group_id = ox.find_group_id(origin, token, group)
+        else:
+            print("  [codex] CPA: 使用管理接口生成授权地址并接收 callback")
         _skipmsg = f"免手机直连先试 {skip_n} 次，弹手机才接码" if skip_n > 0 else "直接一次性接码(不赌免手机)"
-        print(f"  [codex] SUB2API: group={group}(#{group_id})，{_skipmsg}")
+        if auth_source == "sub2":
+            print(f"  [codex] SUB2API: group={group}(#{group_id})，{_skipmsg}")
+        else:
+            print(f"  [codex] CPA 授权，{_skipmsg}")
 
         # 每次尝试关窗口重开+重登(cookie)，确保是 OpenAI 眼里全新会话(同窗口重发 auth_url
         # 不改变其"要不要手机"的风控决定)，且避开刚注册窗口的促销弹层(Claim offer 等会挡住
@@ -1673,8 +1809,17 @@ async def extract_codex(page, email, p=None, ctx=None, release_current=None):
 
         # 驱动授权（先免手机 N 次，最后一次放开手机），捕获 localhost:1455 回调
         codex_metadata = {}
+        auth_url = ""
+        def _generate_auth():
+            nonlocal auth_url
+            if auth_source == "cpa":
+                auth_url, state = ox.generate_cpa_auth_url(CPA_URL, CPA_MGMT_KEY)
+                return auth_url, "", state
+            auth_url, session_id, state = ox.generate_auth_url(origin, token)
+            return auth_url, session_id, state
+
         code, session_id, cb_state, msg = await ox.authorize_with_retry(
-            page, lambda: ox.generate_auth_url(origin, token),
+            page, _generate_auth,
             account_email=email, phone_skip_attempts=skip_n,
             skip_timeout=120, phone_timeout=timeout, manual_phone=CODEX_MANUAL_PHONE,
             reset_page=reset_fn, sms_provider=CODEX_SMS_PROVIDER,
@@ -1687,6 +1832,18 @@ async def extract_codex(page, email, p=None, ctx=None, release_current=None):
         if not code:
             print(f"  [codex] 授权未完成: {msg}")
             return False
+
+        if auth_source == "cpa":
+            callback = ox.callback_url(code, cb_state, auth_url)
+            cpa_result = ox.submit_cpa_callback(
+                CPA_URL,
+                CPA_MGMT_KEY,
+                callback,
+                retries=_env_int("CODEX_CPA_CALLBACK_RETRIES", 5),
+                retry_delay=float(_os.environ.get("CODEX_CPA_CALLBACK_RETRY_DELAY", "3") or "3"),
+            )
+            print(f"  [codex][CPA] callback 已提交（{str(cpa_result.get('message') or 'accepted')[:120]}）✅")
+            return True
 
         # 换码 + 建 oauth 账号（带 refresh_token）
         exch = ox.exchange_code(origin, token, session_id, code, cb_state)
@@ -1769,6 +1926,7 @@ async def register_one(index, total, p):
                 auth_monitor = AuthResponseMonitor()
                 asset_monitor = ChatGPTAuthAssetMonitor()
                 page.on("response", auth_monitor.observe)
+                page.on("requestfailed", auth_monitor.observe_failure)
                 asset_monitor.attach(page)
 
                 print(
@@ -1971,6 +2129,8 @@ async def register_one(index, total, p):
             verification_requested_at = time.time()
             auth_step = await recover_stuck_chatgpt_email_submit(page, email)
             if auth_step in {"email", "unknown"}:
+                if auth_monitor and auth_monitor.debug:
+                    print(f"  [auth-debug] {await auth_monitor.debug_summary()}")
                 print("  [2][FAIL] email form remained on login after clean-page recovery")
                 email_pool.mark_error(PLATFORM, email, email_pw, "email_submit_stuck")
                 return None
@@ -1995,11 +2155,22 @@ async def register_one(index, total, p):
                 email_pool.mark_error(PLATFORM, email, email_pw, "challenge_after_email")
                 return None
 
-        # 密码输入（注册流程会让设密码）
-        pw_input = page.locator('input[type="password"], input[name="password"], input[name="new-password"]')
-        if await pw_input.count() > 0:
-            print("  [3] fill password")
-            await human_type(page, 'input[type="password"]', password)
+        # 密码输入。登录密码页说明邮箱已经是已有账号，不能把随机注册密码
+        # 填进去；只有明确的 signup password 页面才继续。
+        password_step = await detect_chatgpt_password_step(page)
+        if password_step == "login":
+            reason = "existing_account_login_password_required"
+            print("  [3][FAIL] mailbox is already registered; login password page reached")
+            email_pool.mark_error(PLATFORM, email, email_pw, reason)
+            return None
+        if password_step == "create":
+            print("  [3] fill signup password")
+            await human_type(
+                page,
+                'input[type="password"]:visible, input[name="password"]:visible, '
+                'input[name="new-password"]:visible',
+                password,
+            )
             await asyncio.sleep(1)
             if not await click_exact(page, "Continue"):
                 sub = page.locator('button[type="submit"]')
@@ -2221,6 +2392,14 @@ async def register_one(index, total, p):
             if sess:
                 sess["registration_country"] = _get_active_chatgpt_country() or ""
                 sess["network_node"] = chatgpt_network_label()
+                if isinstance(mailbox, dict):
+                    share_url = str(
+                        mailbox.get("mail_api_url") or mailbox.get("share_url") or ""
+                    ).strip()
+                    if share_url:
+                        # Keep the URL in the session consumed by account
+                        # importers so a later manual login can read OTP mail.
+                        sess["mail_api_url"] = share_url
             if sess and save_chatgpt_tokens(sess, email):
                 print("  [OK] chatgpt 标准 token 已保存")
                 await check_chatgpt_plus_trial_after_registration(sess, email)

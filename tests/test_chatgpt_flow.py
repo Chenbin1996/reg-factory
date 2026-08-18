@@ -13,6 +13,34 @@ import oauth_codex
 
 
 class ChatGPTFlowTests(unittest.TestCase):
+    def test_password_step_classifies_existing_account_before_signup_fallback(self):
+        self.assertEqual(
+            register_chatgpt._classify_chatgpt_password_step(
+                "https://auth.openai.com/log-in/password",
+                "Enter your password",
+                "current-password",
+                "password",
+            ),
+            "login",
+        )
+        self.assertEqual(
+            register_chatgpt._classify_chatgpt_password_step(
+                "https://auth.openai.com/create-account/password",
+                "Create a password",
+                "new-password",
+                "password",
+            ),
+            "create",
+        )
+
+    def test_password_step_does_not_treat_hidden_or_missing_fields_as_password_page(self):
+        field = MagicMock()
+        field.count = AsyncMock(return_value=1)
+        field.nth.return_value.is_visible = AsyncMock(return_value=False)
+        page = MagicMock()
+        page.locator.return_value = field
+        self.assertEqual(asyncio.run(register_chatgpt.detect_chatgpt_password_step(page)), "none")
+
     def test_chatgpt_registration_prefers_a_verified_graph_mailbox(self):
         async def exercise():
             mailbox = ("good@outlook.com", "pw", "rt", "client")

@@ -688,6 +688,12 @@ ENV_SCHEMA = [
     {"group": "CPA(codex 授权文件导入)", "items": [
         {"key": "CPA_URL", "help": "CPA 管理接口地址"},
         {"key": "CPA_MGMT_KEY", "secret": True, "help": "CPA 管理 key"},
+        {"key": "CODEX_AUTH_URL_SOURCE", "type": "choice", "choices": ["sub2", "cpa"],
+         "default": "sub2", "help": "Codex 授权地址来源；cpa 模式由 CPA 生成 PKCE 并直接接收 callback。"},
+        {"key": "CODEX_CPA_CALLBACK_RETRIES", "type": "int", "default": 5,
+         "help": "CPA callback 遇到 409/429/5xx 时的重试次数。"},
+        {"key": "CODEX_CPA_CALLBACK_RETRY_DELAY", "type": "int", "default": 3,
+         "help": "CPA callback 重试基础间隔秒数。"},
     ]},
     {"group": "chatgpt2api(普通网页号)", "items": [
         {"key": "CHATGPT2API_URL", "help": "chatgpt2api host(用 --import-c2a 时必填)"},

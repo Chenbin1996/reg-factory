@@ -1,6 +1,17 @@
 ﻿# 更新日志
 
-## 2026-08-17 - 2.0.2
+## 2026-08-18 - 2.0.3
+
+**ChatGPT 与 Codex 注册**
+- iCloud 邮箱创建自动请求 `share=1`，生成免 API Key 的 `/api/share/{share_token}` 链接，并随 ChatGPT session 保存到 `mail_api_url`，方便后续手动取码。
+- ChatGPT 注册支持明确区分注册密码页和已有账号登录密码页，避免误填随机密码。
+- BitBrowser 临时返回“正在打开/启动中”时自动重试；ChatGPT 调试模式可记录脱敏的认证请求状态，便于定位 Cloudflare 和授权跳转问题。
+- Codex 授权支持 SUB2API 或 CPA 授权地址来源，并保留 refresh token 导入流程。
+
+**验证**
+- 完成 ChatGPT iCloud 实际注册、邮箱验证码、Codex OAuth 和 SUB2API 导入验证。
+
+---
 
 **资产池与导出**
 - 资产扫描、正常状态筛选和批量导出流程支持 Outlook/iCloud 四段式账号，并在手动导出后移出号池。

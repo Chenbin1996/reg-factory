@@ -220,6 +220,10 @@ TOKEN_OUTPUT_DIR = _env("TOKEN_OUTPUT_DIR", "tokens")
 # CPA 管理接口（ChatGPT codex 授权文件导入）
 CPA_URL = _env("CPA_URL", "")
 CPA_MGMT_KEY = _env("CPA_MGMT_KEY", "")
+# Codex 授权地址来源：sub2 保持旧流程；cpa 由 CPA 生成 PKCE 并接收 callback。
+CODEX_AUTH_URL_SOURCE = _env("CODEX_AUTH_URL_SOURCE", "sub2").strip().lower() or "sub2"
+CODEX_CPA_CALLBACK_RETRIES = int(_env("CODEX_CPA_CALLBACK_RETRIES", "5") or "5")
+CODEX_CPA_CALLBACK_RETRY_DELAY = float(_env("CODEX_CPA_CALLBACK_RETRY_DELAY", "3") or "3")
 
 # SUB2API 管理接口（ChatGPT codex-session / Grok SSO 转 OAuth 导入）
 SUB2API_URL = _env("SUB2API_URL", "")
