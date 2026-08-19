@@ -899,33 +899,36 @@ function setPlusRunControls(running){
   $('#btn-plus-payment-config').disabled = running;
 }
 
-function renderCustomSmsSummary(pool){
-  $('#custom-sms-summary').textContent = `可用 ${pool.available || 0} / 占用 ${pool.leased || 0} / 已用 ${pool.used || 0}`;
+function renderCustomSmsSummary(pool, summaryId='custom-sms-summary'){
+  const summary = $(`#${summaryId}`);
+  if(summary) summary.textContent = `可用 ${pool.available || 0} / 占用 ${pool.leased || 0} / 已用 ${pool.used || 0}`;
 }
 
-async function loadCustomSmsPool(){
+async function loadCustomSmsPool(summaryId='custom-sms-summary'){
   try{
     const response = await fetch('/api/sms/custom');
     const pool = await readJsonResponse(response);
     if(!response.ok) throw new Error(pool.error || `HTTP ${response.status}`);
-    renderCustomSmsSummary(pool);
+    renderCustomSmsSummary(pool, summaryId);
     return pool;
   }catch(error){
-    $('#custom-sms-summary').textContent = '读取失败';
+    const summary = $(`#${summaryId}`);
+    if(summary) summary.textContent = '读取失败';
     return null;
   }
 }
 
-async function importCustomSmsPool(){
-  const text = $('#custom-sms-input').value.trim();
-  const message = $('#custom-sms-message');
+async function importCustomSmsPoolInto(inputId, summaryId, messageId, buttonId, preservePlusState=false){
+  const input = $(`#${inputId}`);
+  const text = input.value.trim();
+  const message = $(`#${messageId}`);
   message.className = '';
   if(!text){
     message.textContent = '请先粘贴号码与记录 URL';
     message.className = 'bad';
     return;
   }
-  const button = $('#btn-custom-sms-import');
+  const button = $(`#${buttonId}`);
   button.disabled = true;
   try{
     const response = await fetch('/api/sms/custom', {
@@ -935,16 +938,23 @@ async function importCustomSmsPool(){
     });
     const result = await readJsonResponse(response);
     if(!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-    renderCustomSmsSummary(result);
+    renderCustomSmsSummary(result, summaryId);
     message.textContent = `新增 ${result.added}，更新 ${result.updated}，跳过 ${result.skipped}，格式错误 ${result.bad}`;
     message.className = result.bad ? 'bad' : '';
-    if(result.added || result.updated) $('#custom-sms-input').value = '';
+    if(result.added || result.updated) input.value = '';
   }catch(error){
     message.textContent = error.message || String(error);
     message.className = 'bad';
   }finally{
-    button.disabled = !!plusRun;
+    button.disabled = preservePlusState ? !!plusRun : false;
   }
+}
+
+async function importCustomSmsPool(){
+  return importCustomSmsPoolInto(
+    'custom-sms-input', 'custom-sms-summary',
+    'custom-sms-message', 'btn-custom-sms-import', true
+  );
 }
 
 $('#btn-custom-sms-import').onclick = importCustomSmsPool;
@@ -1384,6 +1394,30 @@ function renderForm(s){
     advancedArgs.forEach(a=>moreGrid.appendChild(renderArgField(a)));
     more.appendChild(moreGrid);
     p.appendChild(more);
+  }
+
+  // Single-platform ChatGPT also needs a visible custom-number import path.
+  // The pool is shared with Plus/Codex workflows and is consumed by provider=custom.
+  if(s.id === 'register_chatgpt' && s.args.some(a=>a.flag === '--codex-sms-provider' && (a.choices || []).includes('custom'))){
+    const custom = document.createElement('details');
+    custom.className = 'custom-sms-import';
+    custom.innerHTML = `<summary>自定义手机号池 <span id="single-custom-sms-summary">正在读取</span></summary>
+      <label class="plus-field plus-field-wide">
+        <span>手机号与短信记录 URL（每行一个）</span>
+        <textarea id="single-custom-sms-input" spellcheck="false" autocomplete="off" placeholder="+13435775857----https://example.com/smsrecord?token=..."></textarea>
+      </label>
+      <div class="custom-sms-actions">
+        <button id="single-custom-sms-import" class="btn-secondary" type="button">导入号码</button>
+        <span id="single-custom-sms-message" role="status" aria-live="polite"></span>
+      </div>`;
+    custom.addEventListener('toggle', event=>{
+      if(event.currentTarget.open) loadCustomSmsPool('single-custom-sms-summary');
+    });
+    p.appendChild(custom);
+    custom.querySelector('#single-custom-sms-import').onclick = ()=>importCustomSmsPoolInto(
+      'single-custom-sms-input', 'single-custom-sms-summary',
+      'single-custom-sms-message', 'single-custom-sms-import'
+    );
   }
 
   const actions = document.createElement('div'); actions.className='form-actions';

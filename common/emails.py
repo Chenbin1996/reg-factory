@@ -26,7 +26,6 @@ _CHATGPT_RETRYABLE_ERROR_MARKERS = (
     "email_verification_not_completed",
     "email_verification_",
     "email_submit_stuck",
-    "no_session_cookie",
     "entry_",
 )
 

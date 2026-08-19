@@ -77,6 +77,7 @@ ENABLE_2FA = CHATGPT_ENABLE_2FA
 CODEX_GROUP = None  # SUB2API 目标分组（默认取 config.SUB2API_GROUP）
 CODEX_MANUAL_PHONE = False  # add-phone 手动模式（不接码，自己在浏览器填号收码）
 CODEX_SMS_PROVIDER = "auto"  # auto / custom / smsman / firefox / hero
+CODEX_PHONE = ""
 CODEX_TIMEOUT = 120  # Codex 授权捕获超时秒
 CHATGPT_NODE = "auto"
 CHATGPT_COUNTRY = "auto"
@@ -2003,6 +2004,7 @@ async def extract_codex(
             page, _generate_auth,
             account_email=email, phone_skip_attempts=skip_n,
             skip_timeout=120, phone_timeout=timeout, manual_phone=CODEX_MANUAL_PHONE,
+            semi_phone=CODEX_PHONE,
             reset_page=reset_fn, sms_provider=CODEX_SMS_PROVIDER,
             result_metadata=codex_metadata, totp_secret=totp_secret)
         if reset_fn is not None:
@@ -2571,6 +2573,13 @@ async def register_one(index, total, p):
             mail_bb = mail_pid = mail_page = None
         if verification_code_failed:
             print("  [4][FAIL] verification code unavailable; stopping before onboarding")
+            return None
+        auth_url_lower = str(page.url or "").lower()
+        if any(marker in auth_url_lower for marker in (
+            "/mfa-challenge", "multi-factor", "two-factor", "authenticator"
+        )):
+            print("  [FAIL] email reached an existing-account MFA challenge; quarantining mailbox")
+            email_pool.mark_error(PLATFORM, email, email_pw, "mfa_required")
             return None
         check_timeout()
 
@@ -3549,6 +3558,8 @@ async def main():
                         help="Codex add-phone 手动模式: 不接码, 自己在浏览器填号收码")
     parser.add_argument("--codex-sms-provider", choices=["auto", "custom", "smsman", "firefox", "hero"], default="auto",
                         help="Codex 自动接码平台；auto 按默认顺序")
+    parser.add_argument("--codex-phone", default="",
+                        help="自定义手机号(E.164)：自动填写并等待手动输入验证码")
     parser.add_argument("--codex-timeout", type=int, default=120,
                         help="Codex 授权捕获超时秒 (手动填号会自动抬到至少 300)")
     args = parser.parse_args()
@@ -3556,6 +3567,7 @@ async def main():
     global REGISTER_TIMEOUT, KEEP_ON_FAIL, FIXED_EMAIL, FIXED_PASSWORD, FIXED_REFRESH_TOKEN, FIXED_CLIENT_ID, EMAIL_PROVIDER
     global IMPORT_C2A, PLUS_SUBSCRIPTION, C2A_URL, C2A_KEY
     global EXTRACT_CODEX, ENABLE_2FA, CODEX_GROUP, CODEX_MANUAL_PHONE, CODEX_SMS_PROVIDER, CODEX_TIMEOUT, CHATGPT_NODE, CHATGPT_COUNTRY
+    global CODEX_PHONE
     REGISTER_TIMEOUT = args.timeout
     KEEP_ON_FAIL = args.keep_on_fail
     FIXED_EMAIL = args.email
@@ -3574,6 +3586,7 @@ async def main():
     ENABLE_2FA = CHATGPT_ENABLE_2FA if args.enable_2fa is None else args.enable_2fa
     CODEX_GROUP = args.codex_group
     CODEX_MANUAL_PHONE = args.codex_manual_phone
+    CODEX_PHONE = args.codex_phone.strip()
     CODEX_SMS_PROVIDER = args.codex_sms_provider
     CODEX_TIMEOUT = args.codex_timeout
     CHATGPT_NODE = args.node
