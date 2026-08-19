@@ -1819,6 +1819,7 @@ const GUIDE_STEPS = [
     body:`<p><strong>bitbrowser</strong> 是默认值，需要先启动比特浏览器，并确认本地 API 通常为 <code>http://127.0.0.1:54345</code>。它为每个账号提供独立 Profile、Cookie 和指纹。</p>
       <p><strong>bundled</strong> 使用程序自带或系统可用的 Chromium。</p>
       <p><strong>custom</strong> 使用普通 Chrome，填写 <code>CUSTOM_BROWSER_PATH</code>。Windows 常见路径是 <code>C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe</code>。</p>
+      <p><strong>custom_api</strong> 用于接入自己的指纹浏览器。填写 API 根地址和可选 Key；兼容 BitBrowser 时保持 <code>auto</code>，常见 REST API 选择 <code>generic</code>，再填写启动接口路径。启动响应返回 <code>ws</code>、<code>cdp</code>、<code>endpoint</code> 或 <code>debugPort</code> 即可。</p>
       <p>填写后使用本组的连通测试确认浏览器可用。</p>`,
   },
   {
