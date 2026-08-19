@@ -338,7 +338,16 @@ async def human_type(page, selector, text, delay_range=(0.05, 0.18)):
     await asyncio.sleep(random.uniform(0.2, 0.5))
 
 
-async def react_fill(page, selector, text, tries=3, delay=55, verbose=True, settle=0.6):
+async def react_fill(
+    page,
+    selector,
+    text,
+    tries=3,
+    delay=55,
+    verbose=True,
+    settle=0.6,
+    check_validity=True,
+):
     """填 React 受控输入，确保框架 state 真正更新。
 
     坑：page.fill()/locator.fill() 只写 DOM 的 .value，不触发 React 的合成
@@ -351,7 +360,9 @@ async def react_fill(page, selector, text, tries=3, delay=55, verbose=True, sett
     每轮回读 input_value() 校验。返回是否成功写入。
 
     settle: 键入后等 React 同步再回读的秒数。邮箱等关键字段用默认 0.6 求稳；
-            onboarding 本地字段可传小值（如 0.15）消除"输完名字停顿很久才输年龄"的卡顿。"""
+            onboarding 本地字段可传小值（如 0.15）消除"输完名字停顿很久才输年龄"的卡顿。
+    check_validity: 是否要求原生 HTML validity 通过。组合控件可能只在 input 中
+                    保存邮箱前缀、在相邻元素渲染域名，此时应关闭该检查。"""
     el = page.locator(selector).first
     try:
         if await el.count() == 0:
@@ -367,6 +378,8 @@ async def react_fill(page, selector, text, tries=3, delay=55, verbose=True, sett
 
     async def _is_valid():
         """Check native HTML validity when the target exposes it."""
+        if not check_validity:
+            return True
         try:
             return bool(await el.evaluate(
                 "node => typeof node.checkValidity !== 'function' || node.checkValidity()"
