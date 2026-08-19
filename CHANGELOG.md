@@ -1,5 +1,19 @@
 ﻿# 更新日志
 
+## 2026-08-19 - 2.0.4
+
+**Remail 与多平台邮箱接入**
+- 新增 Remail Open API 临时邮箱 provider，支持短期邮箱订单、服务令牌轮询和验证码提取。
+- ChatGPT 支持 `--email-provider remail`；Grok、Claude、Kiro 可通过 `TEMP_EMAIL_PROVIDER=remail` 使用同一邮箱适配层。
+- Remail 的邮箱后缀和项目 ID 可配置；若使用 iCloud，所选 Remail 项目必须启用 iCloud 短期接码，公开项目仅支持购买时不会被误用为自动收码。
+- WebUI、CLI 示例和配置模板补充 Remail 参数，保存的 ChatGPT session 记录实际邮箱 provider。
+
+**验证**
+- Remail 创建订单、服务令牌取件和验证码提取单元测试通过。
+- ChatGPT 流程回归测试通过。
+
+---
+
 ## 2026-08-18 - 2.0.3
 
 **ChatGPT 与 Codex 注册**
@@ -15,10 +29,11 @@
 - 修复 WebUI 自更新后继承旧 iCloud API 配置、覆盖当前 `.env` 并误报 `402 insufficient quota` 的问题。
 - iCloud `+` 子邮箱被 OpenAI 按母邮箱识别为已有账号后，持久化跳过该母邮箱并自动换号重试，确保 `--count` 按成功账号目标执行。
 - Cloudflare/Turnstile 风控节点加入 30 分钟持久化污点，自动探测和轮换期间暂时跳过。
+- 修复 Cookie 同意管理器延迟挂载时重渲染登录表单、导致邮箱提交被清空的问题；新窗口预置同意状态，并把兜底等待收敛到提交前一次，减少重复空等。
 
 **验证**
 - 完成 ChatGPT iCloud 实际注册、邮箱验证码、Codex OAuth 和 SUB2API 导入验证。
-- Python 全量测试：584 passed。
+- Python 全量测试：586 passed。
 
 ---
 
