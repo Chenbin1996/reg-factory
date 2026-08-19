@@ -1623,8 +1623,10 @@ async function loadEnv(){
         if(key === 'CUSTOM_BROWSER_PATH' || key === 'REG_FACTORY_BROWSER_PATH' || key === 'REG_FACTORY_BROWSER_HELPER')
           return ['bundled','embedded','local','custom','chrome','chromium'].includes(selected);
         if(key === 'CUSTOM_BROWSER_API' || key.startsWith('CUSTOM_BROWSER_API_')) return ['custom_api','api'].includes(selected);
+        if(key.startsWith('CLOAK_')) return ['cloak','cloakbrowser'].includes(selected);
+        if(key.startsWith('ROXY_')) return ['roxy','roxybrowser'].includes(selected);
         if(key === 'BITBROWSER_API' || key.startsWith('BB_') || key.startsWith('CHATGPT_BROWSER_CORE_VERSION') || key.startsWith('OUTLOOK_BROWSER_') || key.startsWith('GROK_BROWSER_'))
-          return !['bundled','embedded','local','custom','chrome','chromium','adspower','ads_power','ads','custom_api','api'].includes(selected);
+          return !['bundled','embedded','local','custom','chrome','chromium','adspower','ads_power','ads','custom_api','api','cloak','cloakbrowser','roxy','roxybrowser'].includes(selected);
         if(key.startsWith('ADSPOWER_')) return ['adspower','ads_power','ads'].includes(selected);
       }
       if(itemKeys.has('TEMP_EMAIL_PROVIDER')){

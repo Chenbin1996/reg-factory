@@ -855,7 +855,10 @@ class AuthResponseMonitor:
                 return
             if not any(
                 marker in parsed.path.lower()
-                for marker in ("account", "onboarding", "about-you", "email-verification")
+                for marker in (
+                    "account", "onboarding", "about-you", "email-verification",
+                    "verification", "verify",
+                )
             ):
                 return
             self._tasks.append(asyncio.create_task(self._record(response, parsed.path)))
@@ -954,6 +957,37 @@ async def email_verification_succeeded(page):
     ))
 
 
+async def _email_verification_ui_hint(page):
+    """Return a short, non-sensitive rejection hint rendered by the auth UI."""
+    try:
+        body = (await page.locator("body").inner_text(timeout=1500)).strip()
+    except Exception:
+        return ""
+    markers = (
+        "invalid", "expired", "incorrect", "try again", "too many",
+        "code is not", "doesn't match", "not valid", "验证码无效", "验证码错误",
+        "过期", "正しくありません", "期限切れ",
+    )
+    lines = [" ".join(line.split()) for line in body.splitlines()]
+    for line in lines:
+        lowered = line.lower()
+        if line and any(marker.lower() in lowered for marker in markers):
+            return line[:180]
+    return ""
+
+
+async def _wait_for_email_verification_result(page):
+    """Give the SPA time to commit before classifying the form as stuck."""
+    # Auth pages can remount the form and change locale after submit. Sampling
+    # in short intervals avoids treating that transient state as a rejection.
+    for delay in (0, 0.75, 1.5, 3, 5, 5):
+        if await email_verification_succeeded(page):
+            return True
+        if delay:
+            await asyncio.sleep(delay)
+    return await email_verification_succeeded(page)
+
+
 _VERIFICATION_SUBMIT_LABELS = [
     "Continue", "続行", "Verify", "確認", "确认", "继续", "Submit", "次へ",
     "Teruskan", "Sahkan", "Lanjutkan",
@@ -1034,25 +1068,28 @@ async def _fill_and_submit_email_code(
         return False
 
 
-async def _raise_email_verification_error(auth_monitor):
-    if not auth_monitor:
-        return
-    error = await auth_monitor.latest()
-    if not error:
-        return
-    print(
-        f"  [4] verification service rejected: code={error['code']} "
-        f"status={error['status']} path={error['url']} "
-        f"message={error['message'][:120]}"
-    )
-    rejection = f"{error['code']} {error['message']}".lower()
-    if any(marker in rejection for marker in ("invalid", "expired", "incorrect", "code")):
-        raise EmailVerificationRetryNeeded(
+async def _raise_email_verification_error(auth_monitor, page=None):
+    error = await auth_monitor.latest() if auth_monitor else None
+    if error:
+        print(
+            f"  [4] verification service rejected: code={error['code']} "
+            f"status={error['status']} path={error['url']} "
+            f"message={error['message'][:120]}"
+        )
+        rejection = f"{error['code']} {error['message']}".lower()
+        if any(marker in rejection for marker in ("invalid", "expired", "incorrect", "code")):
+            raise EmailVerificationRetryNeeded(
+                f"email_verification_rejected:{error['code']}:{error['message'][:80]}"
+            )
+        raise RuntimeError(
             f"email_verification_rejected:{error['code']}:{error['message'][:80]}"
         )
-    raise RuntimeError(
-        f"email_verification_rejected:{error['code']}:{error['message'][:80]}"
-    )
+    hint = await _email_verification_ui_hint(page) if page is not None else ""
+    if hint:
+        print(f"  [4] verification UI rejected: {hint}")
+        raise EmailVerificationRetryNeeded(
+            f"email_verification_ui_rejected:{hint[:80]}"
+        )
 
 
 async def submit_email_verification_code(
@@ -1063,7 +1100,7 @@ async def submit_email_verification_code(
         await auth_monitor.clear()
     if not await _fill_and_submit_email_code(page, code_sel, code):
         raise RuntimeError("email_verification_form_unavailable")
-    await asyncio.sleep(5)
+    await _wait_for_email_verification_result(page)
     await dump_state(page, "after-code")
     if await email_verification_succeeded(page):
         print("  [4] email verification accepted")
@@ -1078,7 +1115,7 @@ async def submit_email_verification_code(
         )
         if not await click_any_exact(page, _VERIFICATION_RETRY_LABELS):
             break
-        await asyncio.sleep(5)
+        await _wait_for_email_verification_result(page)
         if not any(
             marker in page.url.lower()
             for marker in ("verification", "verify", "email-verification")
@@ -1088,7 +1125,7 @@ async def submit_email_verification_code(
             await _fill_and_submit_email_code(
                 page, code_sel, code, tries=2, verbose=False
             )
-            await asyncio.sleep(5)
+            await _wait_for_email_verification_result(page)
         await dump_state(page, f"after-code-route-retry-{attempt + 1}")
         if await email_verification_succeeded(page):
             print("  [4] email verification accepted")
@@ -1098,7 +1135,7 @@ async def submit_email_verification_code(
         raise RuntimeError(
             "email_verification_route_error: auth route kept returning HTML after Retry"
         )
-    await _raise_email_verification_error(auth_monitor)
+    await _raise_email_verification_error(auth_monitor, page)
 
     if any(
         marker in page.url.lower()
@@ -1133,12 +1170,12 @@ async def submit_email_verification_code(
             submit_method="request_submit",
         ):
             raise RuntimeError("email_verification_submit_unavailable")
-        await asyncio.sleep(5)
+        await _wait_for_email_verification_result(page)
         await dump_state(page, "after-code-retry")
         if await email_verification_succeeded(page):
             print("  [4] email verification accepted")
             return
-        await _raise_email_verification_error(auth_monitor)
+        await _raise_email_verification_error(auth_monitor, page)
         if any(
             marker in page.url.lower()
             for marker in ("verification", "verify", "email-verification")
@@ -2358,13 +2395,19 @@ async def register_one(index, total, p):
                 浏览器兜底只是去查同一个收件箱、纯浪费；取不到码该靠上层 resend 重发，而非开窗口。
                 received_after: resend 后传重发时刻，只收该时刻后到的邮件(旧码已被 OpenAI 作废)。"""
                 nonlocal mail_bb, mail_pid, mail_page, mail_logged_in
+                code_timeout = max(
+                    30, min(180, _env_int("CHATGPT_VERIFICATION_CODE_TIMEOUT", 90))
+                )
+                poll_interval = max(
+                    2, min(15, _env_int("CHATGPT_VERIFICATION_POLL_INTERVAL", 5))
+                )
                 if mailbox and mailbox.get("provider") in {"icloud", "remail"}:
                     mailbox_provider = mailbox.get("provider")
                     c = await poll_verification_code(
                         mailbox["id"], mailbox_provider, email=mailbox["email"],
                         token=mailbox.get("token"), api_key=mailbox.get("api_key"),
                         base_url=mailbox.get("mail_api_url") or mailbox.get("base_url") or None,
-                        max_wait=120, poll_interval=4,
+                        max_wait=code_timeout, poll_interval=poll_interval,
                         sender_hint=(), subject_hint=(), code_regex=r"\b(\d{6})\b",
                         exclude_codes=tuple(verification_seen_codes),
                     )
@@ -2374,7 +2417,7 @@ async def register_one(index, total, p):
                 c = await asyncio.get_event_loop().run_in_executor(
                     None, functools.partial(
                         get_code_by_token, email, refresh_token, client_id or None,
-                        OAI_SENDER, OAI_SUBJECT, r"\b(\d{6})\b", 40, 5,
+                        OAI_SENDER, OAI_SUBJECT, r"\b(\d{6})\b", code_timeout, poll_interval,
                         received_after=received_after,
                         exclude_codes=tuple(verification_seen_codes))
                 )
