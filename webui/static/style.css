@@ -254,8 +254,10 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,s
 .env-group{margin-top:18px;border-top:1px solid var(--line)}
 .env-group-title{
   min-height:44px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px;
-  background:var(--surface-raised);font-size:12px;font-weight:650
+  background:var(--surface-raised);font-size:12px;font-weight:650;cursor:pointer
 }
+.env-group-title:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.env-group-title .test-area,.env-group-title button{cursor:pointer}
 .env-notice{
   margin:10px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;
   color:var(--muted);font-size:11.5px;line-height:1.5

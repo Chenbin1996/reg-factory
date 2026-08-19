@@ -1576,7 +1576,7 @@ async function loadEnv(){
       const current = String(it.value ?? '').trim();
       return current !== '' && current !== String(it.default ?? '').trim();
     }).length;
-    box.innerHTML = `<div class="env-group-title">
+    box.innerHTML = `<div class="env-group-title" role="button" tabindex="0" aria-expanded="false">
         <span class="env-group-name">${g.group}<small>${configuredCount?`已配置 ${configuredCount} 项`:'使用默认配置'}</small></span>
         <span class="test-area"><button type="button" class="btn-env-all" hidden>显示全部</button>${tests}<span class="test-result" data-result-for="${g.group}"></span><button type="button" class="btn-env-toggle" aria-expanded="false">智能配置</button></span>
       </div>${notice}<div class="env-smart-empty" hidden>当前没有需要填写的项目；可使用默认配置，或点击“显示全部”调整。</div>`;
@@ -1611,6 +1611,7 @@ async function loadEnv(){
     });
     const state = {open:false, all:false};
     const toggleButton = box.querySelector('.btn-env-toggle');
+    const title = box.querySelector('.env-group-title');
     const allButton = box.querySelector('.btn-env-all');
     const noticeBox = box.querySelector('.env-notice');
     const emptyBox = box.querySelector('.env-smart-empty');
@@ -1659,6 +1660,7 @@ async function loadEnv(){
       allButton.textContent = state.all ? '智能显示' : '显示全部';
       toggleButton.textContent = state.open ? '收起' : '智能配置';
       toggleButton.setAttribute('aria-expanded', state.open ? 'true' : 'false');
+      title.setAttribute('aria-expanded', state.open ? 'true' : 'false');
       box.classList.toggle('env-group-open', state.open);
     };
     box.querySelectorAll('select[data-env]').forEach(control=>control.addEventListener('change', refreshGroup));
@@ -1668,6 +1670,19 @@ async function loadEnv(){
       refreshGroup();
     });
     allButton.addEventListener('click', ()=>{ state.all = !state.all; refreshGroup(); });
+    const toggleFromTitle = event=>{
+      if(event.target.closest('button, input, select, a')) return;
+      state.open = !state.open;
+      if(!state.open) state.all = false;
+      refreshGroup();
+    };
+    title.addEventListener('click', toggleFromTitle);
+    title.addEventListener('keydown', event=>{
+      if((event.key === 'Enter' || event.key === ' ') && !event.target.closest('button, input, select, a')){
+        event.preventDefault();
+        toggleFromTitle(event);
+      }
+    });
     refreshGroup();
     // 绑定该组的测试按钮
     box.querySelectorAll('.btn-test').forEach(btn=>{
