@@ -2797,6 +2797,7 @@ def api_env_get():
         for it in g["items"]:
             items.append({
                 "key": it["key"],
+                "label": it.get("label", it["key"]),
                 "value": cur.get(it["key"], ""),
                 "required": it.get("required", False),
                 "secret": it.get("secret", False),
@@ -2804,6 +2805,8 @@ def api_env_get():
                 "default": it.get("default", ""),
                 "type": it.get("type", "str"),
                 "choices": it.get("choices", []),
+                "advanced": it.get("advanced", False),
+                "smart": it.get("smart", False),
             })
         groups.append({
             "group": g["group"],
