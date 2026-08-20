@@ -1479,8 +1479,9 @@ async def api_asset_scan_start(request: Request):
     if invalid:
         return JSONResponse({"error": f"不支持的平台：{', '.join(invalid)}"}, status_code=400)
     try:
-        concurrency = min(2, max(1, int((data or {}).get("concurrency") or 1)))
-        account_concurrency = min(8, max(1, int((data or {}).get("account_concurrency") or 4)))
+        platform_limit, account_limit = asset_scanner.scan_concurrency_limits()
+        concurrency = min(platform_limit, max(1, int((data or {}).get("concurrency") or 1)))
+        account_concurrency = min(account_limit, max(1, int((data or {}).get("account_concurrency") or 4)))
         timeout = min(60, max(5, int((data or {}).get("timeout") or 15)))
     except (TypeError, ValueError):
         return JSONResponse({"error": "concurrency 和 timeout 必须是整数"}, status_code=400)

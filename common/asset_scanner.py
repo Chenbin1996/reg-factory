@@ -24,6 +24,9 @@ from common import asset_store
 
 
 PLATFORMS = ("outlook", "chatgpt", "claude", "grok", "kiro")
+DEFAULT_MAX_PLATFORM_CONCURRENCY = len(PLATFORMS)
+DEFAULT_MAX_ACCOUNT_CONCURRENCY = 32
+HARD_MAX_ACCOUNT_CONCURRENCY = 64
 STATUSES = (
     "normal",
     "unlock",
@@ -73,6 +76,25 @@ def _env_number(name: str, default, minimum, maximum, cast=float):
     except (TypeError, ValueError):
         value = cast(default)
     return min(maximum, max(minimum, value))
+
+
+def scan_concurrency_limits() -> tuple[int, int]:
+    """Return configurable safety ceilings for platform and account workers."""
+    platform_limit = int(_env_number(
+        "ASSET_SCAN_MAX_PLATFORM_CONCURRENCY",
+        DEFAULT_MAX_PLATFORM_CONCURRENCY,
+        1,
+        len(PLATFORMS),
+        int,
+    ))
+    account_limit = int(_env_number(
+        "ASSET_SCAN_MAX_ACCOUNT_CONCURRENCY",
+        DEFAULT_MAX_ACCOUNT_CONCURRENCY,
+        1,
+        HARD_MAX_ACCOUNT_CONCURRENCY,
+        int,
+    ))
+    return platform_limit, account_limit
 
 
 def _checked_at_epoch(item: dict) -> float:
@@ -1455,7 +1477,8 @@ def _scan_platform_safely(
     results = []
     consecutive_risk = 0
     breaker_reason = ""
-    account_concurrency = min(8, max(1, int(account_concurrency)))
+    _, account_limit = scan_concurrency_limits()
+    account_concurrency = min(account_limit, max(1, int(account_concurrency)))
 
     def delayed_scan(record: dict) -> dict:
         if max_interval > 0:
@@ -1532,8 +1555,9 @@ def scan_pool(
     # Concurrency controls independent platforms only. Accounts within one
     # platform use bounded batches so breaker decisions are applied before the
     # next batch is submitted.
-    concurrency = min(2, max(1, int(concurrency)))
-    account_concurrency = min(8, max(1, int(account_concurrency)))
+    platform_limit, account_limit = scan_concurrency_limits()
+    concurrency = min(platform_limit, max(1, int(concurrency)))
+    account_concurrency = min(account_limit, max(1, int(account_concurrency)))
     timeout = min(60, max(5, int(timeout)))
     cache_seconds = int(_env_number(
         "ASSET_SCAN_CACHE_SECONDS",
