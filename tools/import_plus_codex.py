@@ -104,6 +104,7 @@ class MailCodeProvider:
         self.icloud_api_url = str(record.get("mail_api_url") or "").strip()
         self.icloud_api_key = str(record.get("mail_api_key") or "").strip()
         self.icloud_token = str(record.get("two_factor") or "").strip()
+        self.totp_secret = self.icloud_token
         self.mail_page = None
         self.mail_prelogged = False
 
@@ -139,7 +140,9 @@ class MailCodeProvider:
         if not password:
             raise RuntimeError("邮箱 Graph token 不可用且没有邮箱密码兜底")
         self.mail_page = await self.context.new_page()
-        self.mail_prelogged = await prelogin_outlook(self.mail_page, email, password)
+        self.mail_prelogged = await prelogin_outlook(
+            self.mail_page, email, password, totp_secret=self.totp_secret
+        )
         if not self.mail_prelogged:
             raise RuntimeError("Outlook 邮箱密码登录失败，无法自动取 OpenAI 验证码")
         await self.main_page.bring_to_front()
@@ -194,6 +197,7 @@ class MailCodeProvider:
                 max_wait=self.max_wait,
                 poll=8,
                 skip_login=self.mail_prelogged,
+                totp_secret=self.totp_secret,
             )
             self.mail_prelogged = bool(code) or self.mail_prelogged
             await self.main_page.bring_to_front()
