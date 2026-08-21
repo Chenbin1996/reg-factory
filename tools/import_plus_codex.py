@@ -20,7 +20,6 @@ from common import oauth_codex as ox
 from common import proxy_switch
 from common.account_records import (
     is_icloud_email,
-    is_outlook_email,
     masked_email,
     parse_account_text,
 )
@@ -139,8 +138,6 @@ class MailCodeProvider:
         password = self.record.get("password") or ""
         if not password:
             raise RuntimeError("邮箱 Graph token 不可用且没有邮箱密码兜底")
-        if not is_outlook_email(email):
-            raise RuntimeError("非 Outlook 邮箱需要配置 iCloud 接码 API 或直接提供有效 session token")
         self.mail_page = await self.context.new_page()
         self.mail_prelogged = await prelogin_outlook(self.mail_page, email, password)
         if not self.mail_prelogged:
@@ -397,7 +394,7 @@ async def run(args):
     finally:
         if args.delete_input:
             source_path.unlink(missing_ok=True)
-    records, errors = parse_account_text(raw)
+    records, errors = parse_account_text(raw, plus_credentials=True)
     if errors:
         lines = ", ".join(str(item["line"]) for item in errors[:10])
         raise RuntimeError(f"账号格式错误或重复：第 {lines} 行")

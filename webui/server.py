@@ -1578,9 +1578,9 @@ async def api_chatgpt_plus_import_codex(request: Request):
     if len(account_text) > 5_000_000:
         return JSONResponse({"error": "批量账号内容超过 5 MB"}, status_code=413)
 
-    from common.account_records import canonical_account_line, parse_account_text
+    from common.account_records import canonical_plus_account_line, parse_account_text
 
-    records, errors = parse_account_text(account_text)
+    records, errors = parse_account_text(account_text, plus_credentials=True)
     if errors:
         return JSONResponse(
             {"error": "账号格式错误或存在重复邮箱", "details": errors[:20]},
@@ -1646,7 +1646,7 @@ async def api_chatgpt_plus_import_codex(request: Request):
     )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(canonical_account_line(item) for item in records) + "\n")
+            handle.write("\n".join(canonical_plus_account_line(item) for item in records) + "\n")
         with contextlib.suppress(OSError):
             os.chmod(input_path, 0o600)
 
