@@ -61,6 +61,7 @@ class AccountRecordTests(unittest.TestCase):
         record = parse_account_line(raw, plus_credentials=True)
         self.assertEqual(record["email"], "fixture@example.com")
         self.assertEqual(record["password"], "CardPassword123")
+        self.assertEqual(record["account_password"], "CardPassword123")
         self.assertEqual(record["two_factor"], "JBSWY3DPEHPK3PXP")
         self.assertFalse(record["refresh_token"])
 

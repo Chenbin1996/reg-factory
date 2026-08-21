@@ -118,6 +118,12 @@ def _from_mapping(value: dict) -> dict:
         or ""
     ).strip()
     password = str(value.get("password") or value.get("pass") or value.get("pwd") or "").strip()
+    account_password = str(
+        value.get("account_password")
+        or value.get("chatgpt_password")
+        or value.get("login_password")
+        or ""
+    ).strip()
     refresh_token = str(
         value.get("refresh_token")
         or value.get("refreshToken")
@@ -202,6 +208,7 @@ def _from_mapping(value: dict) -> dict:
         "source_type": source_type,
         "email": email,
         "password": password,
+        "account_password": account_password,
         "refresh_token": refresh_token,
         "client_id": client_id,
         "access_token": access_token,
@@ -321,7 +328,12 @@ def parse_account_line(line: str, *, plus_credentials: bool = False) -> dict:
         elif len(fields) == 3 and third.startswith("M."):
             mapping = {"email": email, "password": password, "refresh_token": third}
         elif len(fields) == 3 and plus_credentials and _looks_like_totp_secret(third):
-            mapping = {"email": email, "password": password, "two_factor": third}
+            mapping = {
+                "email": email,
+                "password": password,
+                "account_password": password,
+                "two_factor": third,
+            }
         elif len(fields) == 3 and CLIENT_ID_RE.fullmatch(fourth):
             mapping = {"email": email, "password": password, "refresh_token": third, "client_id": fourth}
         elif CLIENT_ID_RE.fullmatch(third) and not CLIENT_ID_RE.fullmatch(fourth):
@@ -434,7 +446,7 @@ def canonical_account_line(record: dict) -> str:
         payload = {
             key: record.get(key)
             for key in (
-                "source_type", "email", "password", "refresh_token", "client_id",
+                "source_type", "email", "password", "account_password", "refresh_token", "client_id",
                 "access_token", "session_token", "cookies", "plan_type", "codex_phone_status",
                 "mail_api_url", "mail_api_key", "two_factor",
             )
@@ -476,7 +488,7 @@ def canonical_plus_account_line(record: dict) -> str:
     ):
         payload = {
             key: record.get(key)
-            for key in ("email", "password", "two_factor", "provider")
+            for key in ("email", "password", "account_password", "two_factor", "provider")
             if record.get(key) not in (None, "", [], {})
         }
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

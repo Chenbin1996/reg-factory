@@ -353,6 +353,7 @@ async def import_one(index, total, record, playwright, origin, sub2api_token, gr
                 email_code_provider=mail_provider,
                 allow_phone=not getattr(args, "skip_phone", False),
                 totp_secret=record.get("two_factor") or "",
+                account_password=record.get("account_password") or "",
             )
             if not code:
                 raise RuntimeError(message or "Codex OAuth 授权未完成")
