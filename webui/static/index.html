@@ -392,6 +392,20 @@
             <span>仅领取最近一次扫描为正常的邮箱</span>
           </label>
 
+          <label class="asset-field">
+            <span>按扫描状态领取</span>
+            <select id="asset-status-filter">
+              <option value="">不按状态筛选</option>
+              <option value="normal">正常</option>
+              <option value="unlock">待解锁</option>
+              <option value="banned">封禁</option>
+              <option value="expired">过期</option>
+              <option value="restricted">受限</option>
+              <option value="invalid">凭据异常</option>
+              <option value="unknown">未知</option>
+              <option value="error">检测异常</option>
+            </select>
+          </label>
           <div class="asset-request">
             <div class="asset-request-head"><span>请求地址</span><button id="btn-copy-url" class="btn-inline" type="button">复制地址</button></div>
             <code id="asset-request-url"></code>

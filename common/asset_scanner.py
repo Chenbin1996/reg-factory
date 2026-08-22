@@ -498,32 +498,48 @@ def _scan_outlook(record: dict, timeout: int) -> dict:
             return dict(history)
         return {"status": "unknown", "detail": "缺少 Graph refresh token，无法在线确认", "evidence": "local:missing_refresh_token"}
 
-    with _web_session("outlook") as session:
-        response = session.post(
-            "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
-            data={
-                "client_id": client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "scope": "https://graph.microsoft.com/Mail.Read",
-            },
-            timeout=timeout,
-        )
+    response = None
+    payload = {}
+    for attempt in range(2):
         try:
-            payload = response.json()
-        except Exception:
-            payload = {}
-        if response.status_code == 200 and payload.get("access_token"):
-            graph = session.get(
-                "https://graph.microsoft.com/v1.0/me/mailFolders/inbox?$select=id",
-                headers={"Authorization": f"Bearer {payload['access_token']}"},
-                timeout=timeout,
-            )
-            if graph.status_code == 200:
-                return {"status": "normal", "detail": "Graph 邮箱访问正常", "evidence": "microsoft_graph:200"}
-            if graph.status_code in {401, 403}:
-                return {"status": "restricted", "detail": f"Graph 邮箱访问 HTTP {graph.status_code}", "evidence": f"microsoft_graph:{graph.status_code}"}
-            return {"status": "error", "detail": f"Graph 检测 HTTP {graph.status_code}", "evidence": f"microsoft_graph:{graph.status_code}"}
+            with _web_session("outlook") as session:
+                response = session.post(
+                    "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+                    data={
+                        "client_id": client_id,
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "scope": "https://graph.microsoft.com/Mail.Read",
+                    },
+                    timeout=timeout,
+                )
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = {}
+                if response.status_code >= 500 and attempt == 0:
+                    time.sleep(0.25)
+                    continue
+                if response.status_code == 200 and payload.get("access_token"):
+                    graph = session.get(
+                        "https://graph.microsoft.com/v1.0/me/mailFolders/inbox?$select=id",
+                        headers={"Authorization": f"Bearer {payload['access_token']}"},
+                        timeout=timeout,
+                    )
+                    if graph.status_code >= 500 and attempt == 0:
+                        time.sleep(0.25)
+                        continue
+                    if graph.status_code == 200:
+                        return {"status": "normal", "detail": "Graph 邮箱访问正常", "evidence": "microsoft_graph:200"}
+                    if graph.status_code in {401, 403}:
+                        return {"status": "restricted", "detail": f"Graph 邮箱访问 HTTP {graph.status_code}", "evidence": f"microsoft_graph:{graph.status_code}"}
+                    return {"status": "error", "detail": f"Graph 检测 HTTP {graph.status_code}", "evidence": f"microsoft_graph:{graph.status_code}"}
+        except requests.RequestException:
+            if attempt == 0:
+                time.sleep(0.25)
+                continue
+            raise
+        break
 
     description = str(payload.get("error_description") or payload.get("error") or "").lower()
     error_codes = {str(value) for value in payload.get("error_codes", [])}

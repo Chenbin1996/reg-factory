@@ -1194,6 +1194,7 @@ def api_asset_email(
     pristine_only: bool = False,
     normal_only: bool = False,
     no_graph_only: bool = False,
+    status: str = "",
 ):
     denied = _asset_api_denied(request)
     if denied:
@@ -1208,7 +1209,8 @@ def api_asset_email(
             email_provider=email_provider,
             pristine_only=pristine_only,
             no_graph_only=no_graph_only,
-            verified_only=normal_only and not no_graph_only,
+            verified_only=normal_only and not no_graph_only and not bool(str(status).strip()),
+            status=status,
         )
     )
 
@@ -1221,6 +1223,7 @@ def api_asset_cookie(
     index: int | None = None,
     codex_phone_status: str = "",
     email_provider: str = "",
+    status: str = "",
 ):
     denied = _asset_api_denied(request)
     if denied:
@@ -1235,6 +1238,7 @@ def api_asset_cookie(
             claim_once=True,
             codex_phone_status=codex_phone_status,
             email_provider=email_provider,
+            status=status,
         )
     )
 
@@ -1314,7 +1318,8 @@ async def api_asset_export(request: Request):
     resource = str(data.get("resource") or "emails").strip().lower()
     output_format = str(data.get("format") or ("four" if resource == "emails" else "raw")).strip().lower()
     consume = data.get("consume", True)
-    normal_only = data.get("normal_only", True)
+    status = data.get("status", "")
+    normal_only = data.get("normal_only", not bool(str(status).strip()))
     include_claimed = data.get("include_claimed", consume)
     if not all(isinstance(value, bool) for value in (consume, normal_only, include_claimed)):
         return JSONResponse({"error": "consume, normal_only and include_claimed must be boolean"}, status_code=400)
@@ -1326,10 +1331,11 @@ async def api_asset_export(request: Request):
                 resource,
                 output_format=output_format,
                 limit=data.get("limit", 100),
-                verified_only=normal_only,
+                verified_only=normal_only and not bool(str(status).strip()),
                 email_provider=str(data.get("email_provider") or ""),
                 codex_phone_status=str(data.get("codex_phone_status") or ""),
                 include_claimed=include_claimed,
+                status=status,
             )
             payload = _asset_export_zip(results, resource, output_format)
             lifecycle = (
